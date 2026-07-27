@@ -3,6 +3,12 @@
 Entigram exposes a small MCP surface that acts as the deterministic gate between
 agents and governed workspace state. All tool responses are JSON strings.
 
+MCP operates inside the broader
+[Entigram Workspace Standard](workspace-standard.md): the server exposes only
+authoritative schema paths from `.etg/entigram.yaml`, writes governed proposals
+to `.etg/state.db`, and returns machine-readable envelopes that agents can
+branch on.
+
 ## Response Envelope
 
 Successful responses include `ok: true`.

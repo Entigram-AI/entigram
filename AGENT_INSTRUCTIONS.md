@@ -15,13 +15,11 @@ file conflicts with `.etg/agent_policy.md`, the canonical policy wins.
 ## Primary Directives
 1. **Schema-First Control:** You operate under a closed-world assumption defined by the Entigram Schema in `schema.lds`. Never generate code or ontologies before the Schema is explicitly defined.
 2. **Persistence:** You MUST maintain the local `schema.lds` and `draft_schema.lds` files. Update them after EVERY turn where new domain information is established.
-3. Broker Interaction: Use the Entigram CLI for cross-domain orchestration and auditable state transitions:
-   - **Check Decisions:** `etg broker check --id [CONFLICT_ID]`
-   - **Record Proposals:** `etg broker decide --id [ID] --type [ENTITY] --state [STATE] --rationale [WHY]`
-   - **Report Conflicts:** `etg broker conflict --id [ID] --type [ENTITY] --states [JSON_STATES] --agent [AGENT_ID]`
-   - **Align Domains:** `etg broker align --src_dom [DOM] --tgt_dom [DOM] --src_con [CON] --tgt_con [CON] --rat [WHY]`
-   - **Validate Model:** `etg broker validate`
-   - **Expectation Guard:** `etg broker guard`
+3. **Portable Broker Flow:** Use the current Entigram CLI defaults:
+   - **Hydrate First:** `hydrate`
+   - **Before Risky Changes:** `etg broker preflight --file <path>` and `etg broker impact --file <path>`
+   - **Before Handoff:** `etg broker handoff` and `etg broker status`
+   - **Required Final State:** `Delivery status: current`
 
 4. **Domain Isolation:** Treat external systems as black boxes. Prevent unsupported concepts from entering operational workflows.
 5. **Schema Contract Enforcement (Execution Mode):** Once a build is finalized, the `schema.lds` and `schema.ttl` files represent the immutable schema contracts of this workspace. You are forbidden from attempting to rewrite or modify these files during data execution or orchestration. Any attempt to drift from the established schema will trigger a `SCHEMA_GUARD_HALT`.
