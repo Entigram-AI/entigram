@@ -13,6 +13,29 @@
 * harden SQLite ledger concurrency with WAL mode and busy timeouts
 * close warning-producing registry, broker, router, and hydration resources
 
+## [1.16.0](https://github.com/nyabutid/entigram/compare/v1.15.0...v1.16.0) (2026-07-18)
+
+
+### Features
+
+* make hydrate concise by default ([2b6fe0c](https://github.com/nyabutid/entigram/commit/2b6fe0cfda454a12b5c0100a70bf0f1d578e1a88))
+* make hydrate concise by default ([29c0ea2](https://github.com/nyabutid/entigram/commit/29c0ea2c0157cdc4353015138cec40f7b1b80578))
+
+## [1.15.0](https://github.com/nyabutid/entigram/compare/v1.14.0...v1.15.0) (2026-07-18)
+
+
+### Features
+
+* auto-select Cloudflare coding models ([5ff4552](https://github.com/nyabutid/entigram/commit/5ff4552dcf0ada1906e1f2d443c44dd08d01a936))
+* harden Cloudflare backend and agent governance ([9a68c83](https://github.com/nyabutid/entigram/commit/9a68c8320c925b8b9159f2a3a477e41950bed563))
+* make agent governance portable ([b152b20](https://github.com/nyabutid/entigram/commit/b152b209b089b95e347b7bc75d25e1966db93a2a))
+
+
+### Bug Fixes
+
+* avoid Claude slash model interception ([1885cff](https://github.com/nyabutid/entigram/commit/1885cffb5754bdb1afd0093e3e2c0398acc3631e))
+* normalize Cloudflare proxy message content ([d1914b0](https://github.com/nyabutid/entigram/commit/d1914b08f823e8c222c96d4eb4fc9686a8e3e37e))
+
 ## [1.14.0](https://github.com/nyabutid/entigram/compare/v1.13.0...v1.14.0) (2026-07-09)
 
 

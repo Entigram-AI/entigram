@@ -108,7 +108,7 @@ class TestCommissioner(unittest.TestCase):
         self.assertIn("all modeled expectations have proof", passed_output)
 
     def test_hydration_vector_includes_commissioner_expectations(self):
-        output = get_hydration_vector(Path(self.test_dir))
+        output = get_hydration_vector(Path(self.test_dir), full=True)
 
         self.assertIn('"commissioner"', output)
         self.assertIn("Stable Jump Arc", output)
@@ -118,6 +118,15 @@ class TestCommissioner(unittest.TestCase):
         self.assertIn('"improvement_proposals"', output)
         self.assertIn('"latest_delivery_snapshot"', output)
         self.assertIn('"current_delivery_status"', output)
+
+    def test_default_hydration_summary_includes_expectation_counts(self):
+        output = get_hydration_vector(Path(self.test_dir))
+
+        self.assertIn('"ENTIGRAM_BOOT_SUMMARY"', output)
+        self.assertIn('"expectation_count": 1', output)
+        self.assertIn('"missing_proof_count": 1', output)
+        self.assertIn('"full_vector_command": "hydrate --full"', output)
+        self.assertNotIn('"commissioner"', output)
 
     def test_cli_deliver_records_explicit_artifact_anchor(self):
         artifact_path = Path(self.test_dir, "local-result.txt")

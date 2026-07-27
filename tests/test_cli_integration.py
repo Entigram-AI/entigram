@@ -1,4 +1,5 @@
 import unittest
+import ast
 import os
 import sys
 import shutil
@@ -90,6 +91,21 @@ class TestCLIIntegration(unittest.TestCase):
         self.assertIn('"workspace_schema_version"', output)
         self.assertIn('"agent_policy"', output)
         self.assertIn("Run `hydrate`", output)
+
+    def test_cli_module_does_not_import_yaml_or_injector_at_module_load(self):
+        source = (Path(__file__).parent.parent / "entigram" / "cli_runner" / "etg_cli.py").read_text()
+        tree = ast.parse(source)
+        module_imports = [node for node in tree.body if isinstance(node, (ast.Import, ast.ImportFrom))]
+
+        imported_modules = []
+        for node in module_imports:
+            if isinstance(node, ast.Import):
+                imported_modules.extend(alias.name for alias in node.names)
+            elif node.module:
+                imported_modules.append(node.module)
+
+        self.assertNotIn("yaml", imported_modules)
+        self.assertNotIn("entigram.injector", imported_modules)
 
     def test_agent_instructions_command_keeps_hydrate_first(self):
         success, output = self.run_cli(['agent', 'instructions'])

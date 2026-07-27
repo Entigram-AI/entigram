@@ -5,10 +5,8 @@ import json
 import importlib.util
 import re
 import shutil
-import yaml
 from pathlib import Path
 from datetime import datetime
-from entigram.injector import inject_entigram_manifest
 from entigram.schema_compiler import compile_schema_file
 from entigram.package_builder import PackageBuilder
 from entigram.cli_runner.runner import launch_agent
@@ -28,6 +26,20 @@ def get_package_version() -> str:
         return version("entigram-ai")
     except Exception:
         return "unknown"
+
+
+def _load_yaml_module():
+    try:
+        import yaml as yaml_module
+        return yaml_module
+    except ModuleNotFoundError as exc:
+        if exc.name != "yaml":
+            raise
+        raise RuntimeError(
+            "PyYAML is required for workspace manifest commands. "
+            "Install Entigram in this Python environment or run: "
+            "python3 -m pip install pyyaml"
+        ) from exc
 
 
 def _halt_response(warden, fallback_code, fallback_message, **context):
@@ -446,7 +458,63 @@ def _run_merge_command(args) -> int:
         ledger.close()
 
 
-def get_hydration_vector(target_path: Path, compact: bool = False) -> str:
+def _schema_entity_names(schema_content: str) -> list:
+    return re.findall(r"(?m)^\s*ENTITY:\s*([A-Za-z_][A-Za-z0-9_]*)", schema_content or "")
+
+
+def _first_present(*values, default=None):
+    for value in values:
+        if value is not None:
+            return value
+    return default
+
+
+def _concise_hydration_payload(full_payload: dict, schema_content: str) -> dict:
+    boot = full_payload["ENTIGRAM_BOOT_VECTOR"]
+    status = boot.get("current_delivery_status") or {}
+    snapshot = status.get("snapshot") or boot.get("latest_delivery_snapshot") or {}
+    commissioner = boot.get("commissioner") or {}
+    entity_names = _schema_entity_names(schema_content)
+    return {
+        "ENTIGRAM_BOOT_SUMMARY": {
+            "version": boot.get("version"),
+            "package_version": boot.get("package_version"),
+            "workspace_schema_version": boot.get("workspace_schema_version"),
+            "packages": boot.get("packages", []),
+            "agent_policy_path": boot.get("agent_policy_path"),
+            "agent_policy": boot.get("agent_policy", ""),
+            "schema_path": "schema.lds",
+            "schema_entity_count": len(entity_names),
+            "schema_entities": entity_names,
+            "delivery_status": status.get("status") or "unknown",
+            "warden_status": status.get("warden_status") or snapshot.get("warden_status") or "unknown",
+            "snapshot_id": snapshot.get("snapshot_id"),
+            "expectation_count": _first_present(
+                status.get("expectation_count"),
+                commissioner.get("expectation_count"),
+                snapshot.get("expectation_count"),
+                default=0,
+            ),
+            "missing_proof_count": _first_present(
+                status.get("missing_proof_count"),
+                commissioner.get("missing_proof_count"),
+                snapshot.get("missing_proof_count"),
+                default=0,
+            ),
+            "blocked_count": status.get("blocked_count", 0),
+            "next_commands": [
+                "etg broker preflight --file <path>",
+                "etg broker impact --file <path>",
+                "etg broker handoff",
+                "etg broker status",
+            ],
+            "full_vector_command": "hydrate --full",
+            "timestamp": boot.get("timestamp"),
+        }
+    }
+
+
+def get_hydration_vector(target_path: Path, compact: bool = False, full: bool = False) -> str:
     """Deterministic boot sequence to align LLM state vector by flattening ledger and Schema."""
     entigram_dir = target_path / ".etg"
     manifest_path = entigram_dir / "entigram.yaml"
@@ -457,6 +525,10 @@ def get_hydration_vector(target_path: Path, compact: bool = False) -> str:
         return f"❌ Error: Not an Entigram workspace (missing {manifest_path})"
 
     # 1. Load Manifest
+    try:
+        yaml = _load_yaml_module()
+    except RuntimeError as exc:
+        return f"❌ {exc}"
     with open(manifest_path, "r") as f:
         manifest = yaml.safe_load(f)
 
@@ -541,12 +613,13 @@ def get_hydration_vector(target_path: Path, compact: bool = False) -> str:
             "timestamp": datetime.now().isoformat()
         }
     }
+    output_payload = boot_payload if full else _concise_hydration_payload(boot_payload, schema_content)
 
     output = f"--- ENTIGRAM HYDRATION SEQUENCE ---\n"
     if compact:
-        output += json.dumps(boot_payload, separators=(',', ':'))
+        output += json.dumps(output_payload, separators=(',', ':'))
     else:
-        output += json.dumps(boot_payload, indent=2)
+        output += json.dumps(output_payload, indent=2)
     output += f"\n--- SEQUENCE COMPLETE ---"
     return output
 
@@ -1238,11 +1311,13 @@ def main():
     hydrate_parser = subparsers.add_parser("hydrate", help="Deterministic boot sequence to align LLM state vector")
     hydrate_parser.add_argument("--dir", help="Target directory (defaults to current directory)")
     hydrate_parser.add_argument("--compact", action="store_true", help="Minimize whitespace for extreme token efficiency")
+    hydrate_parser.add_argument("--full", action="store_true", help="Include the full schema, ledger, and delivery state vector")
     hydrate_parser.add_argument("--out", help="Save the hydration vector to a file instead of printing")
 
     boot_parser = subparsers.add_parser("boot", help="Alias for 'hydrate'")
     boot_parser.add_argument("--dir", help="Target directory (defaults to current directory)")
     boot_parser.add_argument("--compact", action="store_true", help="Minimize whitespace for extreme token efficiency")
+    boot_parser.add_argument("--full", action="store_true", help="Include the full schema, ledger, and delivery state vector")
     boot_parser.add_argument("--out", help="Save the hydration vector to a file instead of printing")
 
     align_parser = broker_subparsers.add_parser("align", help="Authorize semantic alignment")
@@ -1315,6 +1390,7 @@ def main():
                 sys.exit(0)
 
         packages = [p.strip() for p in args.packages.split(",")]
+        from entigram.injector import inject_entigram_manifest
         success = inject_entigram_manifest(target_dir, packages, args.engine)
         if success:
             print(f"✅ Workspace initialized at {target_dir}")
@@ -1331,6 +1407,7 @@ def main():
             sys.exit(1)
             
         try:
+            yaml = _load_yaml_module()
             with open(manifest_path, 'r') as f:
                 config = yaml.safe_load(f)
         except Exception as e:
@@ -1691,7 +1768,11 @@ def main():
         else:
             target_path = Path(args.dir).expanduser().resolve()
 
-        vector = get_hydration_vector(target_path, compact=getattr(args, "compact", False))
+        vector = get_hydration_vector(
+            target_path,
+            compact=getattr(args, "compact", False),
+            full=getattr(args, "full", False),
+        )
         
         if getattr(args, "out", None):
             with open(args.out, "w") as f:
@@ -1739,6 +1820,7 @@ def main():
         manifest_path = Path(target_dir) / ".etg" / "entigram.yaml"
         if manifest_path.exists():
             try:
+                yaml = _load_yaml_module()
                 with open(manifest_path, 'r') as f:
                     manifest = yaml.safe_load(f)
                     engine = manifest.get('cli_engine', engine)
@@ -1752,7 +1834,7 @@ def main():
         
         # ACTIVE HYDRATION: Force the LLM state vector to align with the local ontology
         # OPTIMIZATION: Use a temporary boot file for long vectors
-        hydration_vector = get_hydration_vector(Path(target_dir), compact=True)
+        hydration_vector = get_hydration_vector(Path(target_dir), compact=True, full=True)
         
         boot_file = Path(target_dir) / ".etg" / "boot.json"
         with open(boot_file, "w") as f:
@@ -1790,6 +1872,7 @@ def main():
         manifest_path = Path(target_dir) / ".etg" / "entigram.yaml"
         if manifest_path.exists():
             try:
+                yaml = _load_yaml_module()
                 with open(manifest_path, 'r') as f:
                     manifest = yaml.safe_load(f)
                     engine = manifest.get('cli_engine', engine)
@@ -1803,7 +1886,7 @@ def main():
 
         # ACTIVE HYDRATION: Force the LLM state vector to align with the local ontology
         # OPTIMIZATION: Use a temporary boot file for long vectors
-        hydration_vector = get_hydration_vector(Path(target_dir), compact=True)
+        hydration_vector = get_hydration_vector(Path(target_dir), compact=True, full=True)
         
         boot_file = Path(target_dir) / ".etg" / "boot.json"
         with open(boot_file, "w") as f:
@@ -1829,6 +1912,7 @@ def main():
         manifest_path = Path(target_dir) / ".etg" / "entigram.yaml"
         if manifest_path.exists():
             try:
+                yaml = _load_yaml_module()
                 with open(manifest_path, 'r') as f:
                     manifest = yaml.safe_load(f)
                     engine = manifest.get('cli_engine', engine)
@@ -1838,7 +1922,7 @@ def main():
         # 2. Construct Prompt
         # ACTIVE HYDRATION: Force the LLM state vector to align with the local ontology
         # OPTIMIZATION: Use a temporary boot file for long vectors
-        hydration_vector = get_hydration_vector(Path(target_dir), compact=True)
+        hydration_vector = get_hydration_vector(Path(target_dir), compact=True, full=True)
         boot_file = Path(target_dir) / ".etg" / "boot.json"
         with open(boot_file, "w") as f:
             f.write(hydration_vector)
