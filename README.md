@@ -32,14 +32,32 @@ Enterprise agent adoption fails when agents lack trustworthy domain context and 
 
 ## 🚀 Quickstart
 
-### 1. Initialize a Governance Workspace
+Install Entigram with your preferred Python tool:
+
 ```bash
-python3 -m entigram.cli_runner.etg_cli init --dir my-governed-agent
+pipx install entigram-ai
+```
+
+For source checkouts, use the repository virtual environment or run the module
+form from the environment where Entigram's dependencies are installed.
+
+### 1. Initialize a Governance Workspace
+
+```bash
+etg init --dir my-governed-agent
 cd my-governed-agent
 ```
 
+If `etg` is not on `PATH`:
+
+```bash
+python3 -m entigram.cli_runner.etg_cli init --dir my-governed-agent
+```
+
 ### 2. Define your Schema Contracts (Schema)
+
 Create a `schema.lds` to define the entities and relationships your agents are allowed to "know."
+
 ```bash
 ENTITY: Supplier
 ATTRIBUTES:
@@ -48,19 +66,41 @@ ATTRIBUTES:
   - tax_id (String)
 ```
 
-### 3. Hydrate and Launch
-Align your agent's state vector with your local domain models:
+### 3. Hydrate the Agent
+
+Start every agent session by aligning the agent with the local workspace state:
+
 ```bash
-python3 -m entigram.cli_runner.etg_cli agent --engine Antigravity
+hydrate
 ```
 
-Before handoff, verify modeled expectations and record evidence:
+Equivalent fallbacks:
+
 ```bash
-python3 -m entigram.cli_runner.etg_cli broker guard
+etg hydrate
+python3 -m entigram.cli_runner.etg_cli hydrate
 ```
+
+Before risky implementation, schema, ontology, package, or release changes:
+
+```bash
+etg broker preflight --file <path>
+etg broker impact --file <path>
+```
+
+Before handoff:
+
+```bash
+etg broker handoff
+etg broker status
+```
+
+`broker status` must report `Delivery status: current`.
 
 ### 4. Run the Immutable Gate over MCP
+
 Start the local MCP server from the governed workspace:
+
 ```bash
 etg serve
 ```
@@ -139,9 +179,9 @@ and keeps it out of version control. Package users can still suggest, inspect,
 and install packages without managing signing keys.
 
 Before returning work to a human reviewer:
+
 ```bash
-etg broker guard
-etg broker deliver
+etg broker handoff
 etg broker status
 ```
 
@@ -154,6 +194,10 @@ The first export creates a local signing key at
 `.etg/audit_ed25519_private.pem`. Keep that private key out of source control.
 
 For the complete MCP tool contract, see [`docs/mcp-tools.md`](docs/mcp-tools.md).
+For the portable workspace contract, see
+[`docs/workspace-standard.md`](docs/workspace-standard.md). A minimal local
+example is available in
+[`docs/minimal-governed-workspace.md`](docs/minimal-governed-workspace.md).
 
 Run the local Immutable Gate smoke demo:
 ```bash
