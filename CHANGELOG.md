@@ -13,6 +13,14 @@
 * harden SQLite ledger concurrency with WAL mode and busy timeouts
 * close warning-producing registry, broker, router, and hydration resources
 
+## [1.16.1](https://github.com/nyabutid/entigram/compare/v1.16.0...v1.16.1) (2026-07-27)
+
+
+### Documentation
+
+* publish Entigram workspace standard ([428c55b](https://github.com/nyabutid/entigram/commit/428c55bfe432a9ff55a6223811f942b0700b24b0))
+* publish workspace standard ([6ed435d](https://github.com/nyabutid/entigram/commit/6ed435d4645bf7527ed9889d7c2180c928cbb138))
+
 ## [1.16.0](https://github.com/nyabutid/entigram/compare/v1.15.0...v1.16.0) (2026-07-18)
 
 
