@@ -198,6 +198,8 @@ For the portable workspace contract, see
 [`docs/workspace-standard.md`](docs/workspace-standard.md). A minimal local
 example is available in
 [`docs/minimal-governed-workspace.md`](docs/minimal-governed-workspace.md).
+For the recommended OpenCode setup, see
+[`docs/opencode.md`](docs/opencode.md).
 
 Run the local Immutable Gate smoke demo:
 ```bash

@@ -837,7 +837,7 @@ def main():
     # cloudflare-ollama-proxy command
     cloudflare_proxy_parser = subparsers.add_parser(
         "cloudflare-ollama-proxy",
-        help="Run an Ollama-compatible proxy backed by Cloudflare Workers AI",
+        help="Experimental: run an Ollama-compatible proxy backed by Cloudflare Workers AI",
     )
     cloudflare_proxy_parser.add_argument("--host", default="127.0.0.1", help="Bind host")
     cloudflare_proxy_parser.add_argument("--port", type=int, default=11435, help="Bind port")
@@ -884,7 +884,7 @@ def main():
 
     cloudflare_claude_parser = subparsers.add_parser(
         "cloudflare-claude",
-        help="Start a dynamic Cloudflare Ollama proxy and launch Claude Code through it",
+        help="Experimental: start a dynamic Cloudflare Ollama proxy and launch Claude Code through it",
     )
     cloudflare_claude_parser.add_argument("--host", default="127.0.0.1", help="Bind host")
     cloudflare_claude_parser.add_argument("--port", type=int, default=0, help="Bind port; 0 selects a free port")
