@@ -10,6 +10,7 @@ from typing import List, Dict, Any, Optional
 from .broker import EntigramBroker
 from .graphql_bridge import GraphQLBridge
 from .schema_compiler.parser import SchemaParser
+from .workspace_contract import authoritative_schema_paths
 
 p = inflect.engine()
 
@@ -70,25 +71,13 @@ class FederatedRouter:
         return self._cozo
 
     def _load_schema(self):
-        # Load global schema if it exists
-        schema_path = self.target_dir / "schema.lds"
-        if schema_path.exists():
-            parser = SchemaParser(schema_path.read_text())
-            entities, _ = parser.parse()
-            self.entities.update(entities)
-        
-        # Also load schemas from packages
-        packages_dir = self.target_dir / "packages"
-        if packages_dir.exists():
-            for pkg_dir in packages_dir.iterdir():
-                pkg_schema = pkg_dir / "schema.lds"
-                if pkg_schema.exists():
-                    try:
-                        parser = SchemaParser(pkg_schema.read_text())
-                        entities, _ = parser.parse()
-                        self.entities.update(entities)
-                    except Exception as e:
-                        print(f"Warning: Failed to load schema from {pkg_schema}: {e}")
+        for schema_path in authoritative_schema_paths(self.target_dir):
+            try:
+                parser = SchemaParser(schema_path.read_text())
+                entities, _ = parser.parse()
+                self.entities.update(entities)
+            except Exception as e:
+                print(f"Warning: Failed to load schema from {schema_path}: {e}")
 
     def _get_table_name(self, entity_name: str) -> str:
         return p.plural(entity_name.lower())

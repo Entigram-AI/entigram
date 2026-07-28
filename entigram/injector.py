@@ -70,7 +70,8 @@ def inject_entigram_manifest(target_dir: str, selected_packages: list, cli_engin
         "packages": locked_packages,
         "cli_engine": cli_engine,
         "schema_paths": ["schema.lds"],
-        "state_ledger": str(entigram_dir / CANONICAL_LEDGER_NAME),
+        # Keep generated workspaces portable when they are copied or moved.
+        "state_ledger": f".etg/{CANONICAL_LEDGER_NAME}",
         "status": "initialized",
         "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }

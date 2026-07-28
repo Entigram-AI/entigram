@@ -321,6 +321,193 @@ class TestBrokerDeliverySnapshots(unittest.TestCase):
                 ledger.close()
             shutil.rmtree(test_dir)
 
+    def test_delivery_status_detects_runtime_source_drift(self):
+        import tempfile
+        import shutil
+        from pathlib import Path
+
+        from entigram.broker import EntigramBroker
+        from entigram.injector import inject_entigram_manifest
+
+        test_dir = tempfile.mkdtemp()
+        ledger = None
+        try:
+            inject_entigram_manifest(test_dir, ["Entigram Schemas"], "Codex")
+            Path(test_dir, "schema.lds").write_text(self.SCHEMA)
+            runtime_file = Path(test_dir, "entigram", "runtime.py")
+            runtime_file.parent.mkdir()
+            runtime_file.write_text("VALUE = 1\n")
+            ledger = LedgerManager(":memory:")
+            broker = EntigramBroker(test_dir, ledger=ledger)
+
+            checklist = broker.commission_and_record(
+                proofs=["tests/test_loop.py passed"],
+                agent_id="TestAgent",
+            )
+            self.assertTrue(checklist["valid"])
+
+            runtime_file.write_text("VALUE = 2\n")
+            status = broker.delivery_status()
+            self.assertFalse(status["valid"])
+            self.assertTrue(any(change["path"] == "entigram/runtime.py" for change in status["artifact_changes"]))
+        finally:
+            if ledger is not None:
+                ledger.close()
+            shutil.rmtree(test_dir)
+
+    def test_delivery_status_detects_new_governed_source_file(self):
+        import tempfile
+        import shutil
+        from pathlib import Path
+
+        from entigram.broker import EntigramBroker
+        from entigram.injector import inject_entigram_manifest
+
+        test_dir = tempfile.mkdtemp()
+        ledger = None
+        try:
+            inject_entigram_manifest(test_dir, ["Entigram Schemas"], "Codex")
+            Path(test_dir, "schema.lds").write_text(self.SCHEMA)
+            source_dir = Path(test_dir, "src")
+            source_dir.mkdir()
+            Path(source_dir, "existing.ts").write_text("export const value = 1;\n")
+            ledger = LedgerManager(":memory:")
+            broker = EntigramBroker(test_dir, ledger=ledger)
+            checklist = broker.commission_and_record(
+                proofs=["tests/test_loop.py passed"],
+                agent_id="TestAgent",
+            )
+            self.assertTrue(checklist["valid"])
+
+            Path(source_dir, "new-module.ts").write_text("export const added = true;\n")
+            status = broker.delivery_status()
+
+            self.assertFalse(status["valid"])
+            self.assertTrue(any(
+                artifact["path"] == "src/new-module.ts"
+                and artifact["status"] == "unanchored"
+                for artifact in status["unanchored_artifacts"]
+            ))
+        finally:
+            if ledger is not None:
+                ledger.close()
+            shutil.rmtree(test_dir)
+
+    def test_delivery_status_ignores_nonstandard_virtualenv(self):
+        import tempfile
+        import shutil
+        from pathlib import Path
+
+        from entigram.broker import EntigramBroker
+        from entigram.injector import inject_entigram_manifest
+        from entigram.workspace_contract import governed_artifact_paths
+
+        test_dir = tempfile.mkdtemp()
+        ledger = None
+        try:
+            inject_entigram_manifest(test_dir, ["Entigram Schemas"], "Codex")
+            Path(test_dir, "schema.lds").write_text(self.SCHEMA)
+            virtualenv_file = Path(
+                test_dir,
+                ".poet-venv",
+                "lib",
+                "python3.13",
+                "site-packages",
+                "dependency.py",
+            )
+            virtualenv_file.parent.mkdir(parents=True)
+            virtualenv_file.write_text("dependency = True\n")
+            ledger = LedgerManager(":memory:")
+            broker = EntigramBroker(test_dir, ledger=ledger)
+
+            checklist = broker.commission_and_record(
+                proofs=["tests/test_loop.py passed"],
+                agent_id="TestAgent",
+            )
+            status = broker.delivery_status()
+
+            self.assertTrue(checklist["valid"])
+            self.assertTrue(status["valid"])
+            self.assertNotIn(virtualenv_file.resolve(), governed_artifact_paths(test_dir))
+        finally:
+            if ledger is not None:
+                ledger.close()
+            shutil.rmtree(test_dir)
+
+    def test_governed_artifacts_use_git_inventory_and_ignore_rules(self):
+        import shutil
+        import subprocess
+        import tempfile
+        from pathlib import Path
+
+        from entigram.injector import inject_entigram_manifest
+        from entigram.workspace_contract import governed_artifact_paths
+
+        if shutil.which("git") is None:
+            self.skipTest("git is not installed")
+
+        test_dir = tempfile.mkdtemp()
+        try:
+            inject_entigram_manifest(test_dir, ["Entigram Schemas"], "Codex")
+            subprocess.run(
+                ["git", "init", "--quiet"],
+                cwd=test_dir,
+                check=True,
+            )
+            Path(test_dir, ".gitignore").write_text("generated/\n")
+            source = Path(test_dir, "src", "workflow.agent")
+            source.parent.mkdir()
+            source.write_text("governed\n")
+            ignored = Path(test_dir, "generated", "cache.agent")
+            ignored.parent.mkdir()
+            ignored.write_text("ignored\n")
+
+            paths = set(governed_artifact_paths(test_dir))
+
+            self.assertIn(source.resolve(), paths)
+            self.assertNotIn(ignored.resolve(), paths)
+        finally:
+            shutil.rmtree(test_dir)
+
+    def test_governed_artifact_globs_override_git_inventory(self):
+        import shutil
+        import subprocess
+        import tempfile
+        from pathlib import Path
+
+        import yaml
+
+        from entigram.injector import inject_entigram_manifest
+        from entigram.workspace_contract import governed_artifact_paths
+
+        if shutil.which("git") is None:
+            self.skipTest("git is not installed")
+
+        test_dir = tempfile.mkdtemp()
+        try:
+            inject_entigram_manifest(test_dir, ["Entigram Schemas"], "Codex")
+            subprocess.run(
+                ["git", "init", "--quiet"],
+                cwd=test_dir,
+                check=True,
+            )
+            manifest_path = Path(test_dir, ".etg", "entigram.yaml")
+            manifest = yaml.safe_load(manifest_path.read_text())
+            manifest["governed_artifact_globs"] = ["src/*.py"]
+            manifest_path.write_text(yaml.dump(manifest, default_flow_style=False))
+            included = Path(test_dir, "src", "app.py")
+            included.parent.mkdir()
+            included.write_text("included = True\n")
+            excluded = Path(test_dir, "src", "workflow.agent")
+            excluded.write_text("excluded\n")
+
+            paths = set(governed_artifact_paths(test_dir))
+
+            self.assertIn(included.resolve(), paths)
+            self.assertNotIn(excluded.resolve(), paths)
+        finally:
+            shutil.rmtree(test_dir)
+
     def test_export_audit_bundle_has_ed25519_signature(self):
         import base64
         import json

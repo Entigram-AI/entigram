@@ -8,6 +8,7 @@ from entigram.federated_router import FederatedRouter
 from entigram.broker import EntigramBroker
 from entigram.injector import inject_entigram_manifest
 from entigram.sqlite_ledger.injector import DomainSQLiteInjector
+from tests.workspace_helpers import declare_schema_paths
 
 class TestFederatedRouterAlignments(unittest.TestCase):
     def setUp(self):
@@ -40,6 +41,10 @@ class TestFederatedRouterAlignments(unittest.TestCase):
                 }
                 """
             (pkg_dir / "schema.lds").write_text(schema_content)
+        declare_schema_paths(
+            self.test_dir,
+            [self.test_dir / "packages" / pkg / "schema.lds" for pkg in packages],
+        )
 
         # 3. Inject SQLite databases
         injector = DomainSQLiteInjector(str(self.test_dir))

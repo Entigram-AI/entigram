@@ -5,6 +5,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Optional, Any
 
+from ..workspace_contract import (
+    authoritative_schema_paths,
+    workspace_relative_path,
+)
+
 
 @dataclass
 class HaltEvent:
@@ -48,9 +53,9 @@ class Warden:
                 sha256_hash.update(byte_block)
         return sha256_hash.hexdigest()
 
-    def generate_fingerprint(self) -> Dict[str, str]:
+    def generate_fingerprint(self) -> Dict[str, Any]:
         """Generates a fingerprint of the current governed domain (Schema and Ontology)."""
-        fingerprint = {}
+        fingerprint: Dict[str, Any] = {}
         schema_path = self.target_dir / "schema.lds"
         ttl_path = self.target_dir / "schema.ttl"
 
@@ -58,7 +63,16 @@ class Warden:
             fingerprint["schema_checksum"] = self.calculate_checksum(str(schema_path))
         if ttl_path.exists():
             fingerprint["ontology_checksum"] = self.calculate_checksum(str(ttl_path))
-            
+
+        schema_checksums = {}
+        for path in authoritative_schema_paths(self.target_dir, require_existing=False):
+            relative = workspace_relative_path(self.target_dir, path)
+            schema_checksums[relative] = (
+                self.calculate_checksum(str(path)) if path.is_file() else None
+            )
+        if schema_checksums:
+            fingerprint["schema_path_checksums"] = schema_checksums
+
         return fingerprint
 
     def verify_integrity(self, emit_human: bool = True) -> bool:
@@ -75,10 +89,50 @@ class Warden:
             manifest = yaml.safe_load(f) or {}
 
         stored_fingerprint = manifest.get("integrity_fingerprint", {})
-        if not stored_fingerprint:
-            return True # Not yet protected
+        if not isinstance(stored_fingerprint, dict):
+            self.last_halt_event = HaltEvent(
+                halt_code="SCHEMA_MANIFEST_INVALID",
+                message="Workspace integrity fingerprint is invalid.",
+                expected_schema={"integrity_fingerprint": "object"},
+                actual_payload={"integrity_fingerprint": stored_fingerprint},
+                suggested_fix="Restore the manifest, then run `etg warden lock`.",
+                details={"target_dir": str(self.target_dir)},
+            )
+            if emit_human:
+                print("🚨 [SCHEMA_GUARD_HALT] Invalid integrity_fingerprint.")
+            return False
+        try:
+            current_fingerprint = self.generate_fingerprint()
+        except Exception as exc:
+            self.last_halt_event = HaltEvent(
+                halt_code="SCHEMA_MANIFEST_INVALID",
+                message="Workspace schema paths are invalid.",
+                expected_schema={"manifest_path": str(self.manifest_path)},
+                actual_payload={"error": str(exc)},
+                suggested_fix="Correct schema_paths, then run `etg warden lock`.",
+                details={"target_dir": str(self.target_dir)},
+            )
+            if emit_human:
+                print(f"🚨 [SCHEMA_GUARD_HALT] Invalid schema_paths: {exc}")
+            return False
 
-        current_fingerprint = self.generate_fingerprint()
+        schema_checksums = current_fingerprint.get("schema_path_checksums", {})
+        extended_schema_paths = set(schema_checksums) - {"schema.lds"}
+        if extended_schema_paths and "schema_path_checksums" not in stored_fingerprint:
+            self.last_halt_event = HaltEvent(
+                halt_code="SCHEMA_INTEGRITY_COVERAGE_MISSING",
+                message="Authoritative schema paths are not covered by the Warden lock.",
+                expected_schema={"schema_paths": sorted(schema_checksums)},
+                actual_payload={"integrity_fingerprint": stored_fingerprint},
+                suggested_fix="Review the authoritative schemas, then run `etg warden lock`.",
+                details={"target_dir": str(self.target_dir)},
+            )
+            if emit_human:
+                print("🚨 [SCHEMA_GUARD_HALT] Authoritative package schemas are not locked.")
+            return False
+
+        if not stored_fingerprint:
+            return True # Root-only legacy workspaces may not be protected yet.
 
         for key, expected_hash in stored_fingerprint.items():
             actual_hash = current_fingerprint.get(key)
@@ -157,13 +211,28 @@ class Warden:
         """
         from ..schema_compiler.parser import SchemaParser
         self.last_halt_event = None
-        
-        schema_path = self.target_dir / "schema.lds"
-        if not schema_path.exists():
-            return True # No schema contracts to enforce
 
-        parser = SchemaParser(schema_path.read_text())
-        entities, _ = parser.parse()
+        try:
+            schema_paths = authoritative_schema_paths(self.target_dir)
+            entities = {}
+            for schema_path in schema_paths:
+                parsed, _ = SchemaParser(schema_path.read_text()).parse()
+                entities.update(parsed)
+        except Exception as exc:
+            self.last_halt_event = HaltEvent(
+                halt_code="SCHEMA_CONTRACT_INVALID",
+                message="Authoritative schema contracts could not be loaded.",
+                expected_schema={"manifest_path": str(self.manifest_path)},
+                actual_payload={"error": str(exc)},
+                suggested_fix="Correct schema_paths and restore valid LDS contracts.",
+                details={"target_dir": str(self.target_dir)},
+            )
+            if emit_human:
+                print(f"🚨 [SCHEMA_GUARD_HALT] Invalid schema contract: {exc}")
+            return False
+
+        if not entities:
+            return True # No schema contracts to enforce
 
         if entity_name not in entities:
             self.last_halt_event = HaltEvent(

@@ -5,6 +5,7 @@ import hashlib
 import mimetypes
 import platform
 import base64
+import math
 from itertools import combinations
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
@@ -14,6 +15,11 @@ from .sqlite_ledger.manager import LedgerManager
 from .sqlite_ledger.paths import resolve_ledger_path
 from datetime import datetime, timezone
 from .governance.warden import Warden
+from .workspace_contract import (
+    authoritative_schema_paths,
+    governed_artifact_paths,
+    workspace_relative_path,
+)
 
 
 class EntigramBroker:
@@ -351,14 +357,26 @@ class EntigramBroker:
         }
 
     def _default_delivery_artifacts(self) -> List[Tuple[str, str]]:
-        return [
+        artifacts = {
             ("schema.lds", "schema_contract"),
             ("schema.ttl", "ontology_contract"),
             ("draft_schema.lds", "draft_schema_contract"),
             ("draft_schema.ttl", "draft_ontology_contract"),
             ("ontology/schema.ttl", "ontology_contract"),
             (".etg/entigram.yaml", "workspace_manifest"),
-        ]
+        }
+        roles_by_path = dict(artifacts)
+        for path in authoritative_schema_paths(
+            self.target_dir,
+            require_existing=False,
+        ):
+            roles_by_path[workspace_relative_path(self.target_dir, path)] = "schema_contract"
+        for path in governed_artifact_paths(self.target_dir):
+            roles_by_path.setdefault(
+                workspace_relative_path(self.target_dir, path),
+                "governed_source",
+            )
+        return sorted(roles_by_path.items())
 
     def _record_delivery_artifacts(
         self,
@@ -715,16 +733,25 @@ class EntigramBroker:
             })
 
         unanchored_artifacts = []
-        for artifact_path in artifact_paths or []:
-            current = self._capture_artifact(artifact_path, artifact_role)
+        current_candidates = list(self._default_delivery_artifacts())
+        current_candidates.extend(
+            (path, artifact_role) for path in (artifact_paths or [])
+        )
+        seen_current = set()
+        for artifact_path, role in current_candidates:
+            current = self._capture_artifact(artifact_path, role)
             if current.get("missing"):
-                unanchored_artifacts.append({
-                    "path": artifact_path,
-                    "artifact_role": artifact_role,
-                    "status": "missing",
-                })
+                if artifact_path in (artifact_paths or []):
+                    unanchored_artifacts.append({
+                        "path": artifact_path,
+                        "artifact_role": role,
+                        "status": "missing",
+                    })
                 continue
             key = (current["path"], current["artifact_role"])
+            if key in seen_current:
+                continue
+            seen_current.add(key)
             if key not in anchored_keys:
                 unanchored_artifacts.append({
                     "path": current["path"],
@@ -866,11 +893,37 @@ class EntigramBroker:
             agent_id=agent_id,
         )
 
-    def authorize_alignment(self, source_domain: str, target_domain: str, source_concept: str, target_concept: str, confidence: float, rationale: str, _defer_sync: bool = False):
+    def authorize_alignment(
+        self,
+        source_domain: str,
+        target_domain: str,
+        source_concept: str,
+        target_concept: str,
+        confidence: float,
+        rationale: str,
+        _defer_sync: bool = False,
+        *,
+        verified_by: str = "EntigramBroker",
+        evidence_type: str = "human_review",
+        source_artifact: Optional[str] = None,
+        validate_schema: bool = False,
+    ):
         """
         Authorizes a semantic alignment between two isolated domains.
         Pass _defer_sync=True when calling in a batch loop; call sync_all_ontologies() once after the loop.
         """
+        error = self._validate_alignment_authorization(
+            source_domain,
+            target_domain,
+            source_concept,
+            target_concept,
+            confidence,
+            rationale,
+            validate_schema=validate_schema,
+        )
+        if error:
+            print(f"Alignment authorization rejected: {error}")
+            return False
         result = self.ledger.record_alignment(
             source_domain,
             target_domain,
@@ -878,12 +931,63 @@ class EntigramBroker:
             target_concept,
             confidence,
             rationale,
-            evidence_type="human_review",
+            evidence_type=evidence_type,
+            source_artifact=source_artifact,
+            verified_by=verified_by,
             human_review_confidence=confidence,
         )
         if result and not _defer_sync:
             self.sync_all_ontologies()
         return result
+
+    def _validate_alignment_authorization(
+        self,
+        source_domain: str,
+        target_domain: str,
+        source_concept: str,
+        target_concept: str,
+        confidence: float,
+        rationale: str,
+        *,
+        validate_schema: bool,
+    ) -> Optional[str]:
+        values = (source_domain, target_domain, source_concept, target_concept, rationale)
+        if any(not isinstance(value, str) or not value.strip() for value in values):
+            return "domains, concepts, and rationale must be non-empty strings"
+        if source_domain == target_domain:
+            return "source and target domains must differ"
+        if not isinstance(confidence, (int, float)) or not math.isfinite(confidence) or not 0.8 <= confidence <= 1.0:
+            return "confidence must be a finite value between 0.8 and 1.0"
+        if not self.warden.verify_integrity():
+            return "schema integrity check failed"
+        if validate_schema:
+            for domain, concept in ((source_domain, source_concept), (target_domain, target_concept)):
+                if not self._domain_declares_concept(domain, concept):
+                    return f"{domain} does not declare concept '{concept}'"
+        return None
+
+    def _domain_declares_concept(self, domain: str, concept: str) -> bool:
+        from .schema_compiler.parser import SchemaParser
+
+        authoritative = set(authoritative_schema_paths(self.target_dir))
+        candidates = [
+            (self.etg_dir / "packages" / domain / "schema.lds").resolve(),
+            (self.target_dir / "packages" / domain / "schema.lds").resolve(),
+        ]
+        if domain in {".", "root", "workspace"}:
+            candidates.append((self.target_dir / "schema.lds").resolve())
+        for schema_path in candidates:
+            if schema_path not in authoritative:
+                continue
+            entities, _ = SchemaParser(schema_path.read_text()).parse()
+            if concept in entities:
+                return True
+            if "." in concept:
+                entity_name, attribute_name = concept.split(".", 1)
+                entity = entities.get(entity_name)
+                if entity and any(attr["name"] == attribute_name for attr in entity.attributes):
+                    return True
+        return False
 
     def propose_alignment(self, source_domain: str, target_domain: str, source_concept: str, target_concept: str, confidence: float, rationale: str, source_artifact: str = None):
         """
@@ -1011,16 +1115,17 @@ class EntigramBroker:
             if conn:
                 conn.close()
 
-    def update_domain_state(self, domain_name: str, updates: Dict[str, Any]):
+    def update_domain_state(self, domain_name: str, updates: Dict[str, Any]) -> int:
         """
         Updates the domain state with the provided values in the SQLite database.
         """
         db_file = self.etg_dir / "states" / f"{domain_name}.db"
         if not db_file.exists():
             print(f"Cannot update state: {db_file} does not exist.")
-            return
+            return 0
 
         conn = None
+        updated = 0
         try:
             conn = sqlite3.connect(db_file)
             cursor = conn.cursor()
@@ -1037,21 +1142,29 @@ class EntigramBroker:
 
             with conn:
                 for key, value in updates.items():
-                    if "." in key:
-                        table, col = key.split(".", 1)
-                        if table in table_cols and col in table_cols[table]:
-                            cursor.execute(f"UPDATE {table} SET {col} = ?", (value,))
-                        else:
-                            print(f"Warning: Skipping unsafe update key '{key}' — not a valid table.column")
-                    else:
-                        for table in tables:
-                            if key in table_cols[table]:
-                                cursor.execute(f"UPDATE {table} SET {key} = ?", (value,))
+                    if "." not in key:
+                        print(f"Warning: Skipping unqualified update key '{key}'.")
+                        continue
+                    table, col = key.split(".", 1)
+                    if table not in table_cols or col not in table_cols[table]:
+                        print(f"Warning: Skipping unsafe update key '{key}' — not a valid table.column")
+                        continue
+                    quoted_table = '"' + table.replace('"', '""') + '"'
+                    quoted_column = '"' + col.replace('"', '""') + '"'
+                    # Conflict sensing reads one current row per table. Update
+                    # only that row; never broadcast a resolution table-wide.
+                    cursor.execute(
+                        f"UPDATE {quoted_table} SET {quoted_column} = ? "
+                        f"WHERE rowid = (SELECT rowid FROM {quoted_table} ORDER BY rowid DESC LIMIT 1)",
+                        (value,),
+                    )
+                    updated += cursor.rowcount
         except Exception as e:
             print(f"Error updating state in {db_file}: {e}")
         finally:
             if conn:
                 conn.close()
+        return updated
 
     def sync_resolutions(self):
         """
@@ -1062,24 +1175,48 @@ class EntigramBroker:
         alignments = self.ledger.get_alignments(trusted_only=True)
         
         for res in resolutions:
-            target_concept = res['entity_type']
             resolved_val = res['state']
-            
-            # Find all domains linked to this concept via alignments
-            affected_domains = {} # domain -> concept_name
-            
-            for aln in alignments:
-                if aln['source_concept'] == target_concept:
-                    affected_domains[aln['source_domain']] = aln['source_concept']
-                    affected_domains[aln['target_domain']] = aln['target_concept']
-                elif aln['target_concept'] == target_concept:
-                    affected_domains[aln['source_domain']] = aln['source_concept']
-                    affected_domains[aln['target_domain']] = aln['target_concept']
 
-            # Apply updates
-            for domain, concept in affected_domains.items():
-                print(f"🔄 Syncing {domain}: setting {concept} = {resolved_val}")
-                self.update_domain_state(domain, {concept: resolved_val})
+            # Restrict a resolution to the exact alignment that created its
+            # deterministic conflict id. Ambiguous legacy decisions remain in
+            # the ledger but are never broadcast as table-wide writes.
+            matched = [
+                aln for aln in alignments
+                if res["conflict_id"] == f"CONFLICT-{aln['source_domain']}-{aln['target_domain']}-{aln['source_concept']}"
+            ]
+            if len(matched) != 1:
+                print(f"Warning: Skipping unscoped resolution {res['conflict_id']}.")
+                continue
+            alignment = matched[0]
+            for domain, concept in (
+                (alignment["source_domain"], alignment["source_concept"]),
+                (alignment["target_domain"], alignment["target_concept"]),
+            ):
+                qualified = self._qualified_state_key(domain, concept)
+                if not qualified:
+                    print(f"Warning: Skipping ambiguous state target {domain}.{concept}.")
+                    continue
+                print(f"🔄 Syncing {domain}: setting {qualified} = {resolved_val}")
+                self.update_domain_state(domain, {qualified: resolved_val})
+
+    def _qualified_state_key(self, domain_name: str, concept: str) -> Optional[str]:
+        if "." in concept:
+            return concept
+        db_file = self.etg_dir / "states" / f"{domain_name}.db"
+        if not db_file.exists():
+            return None
+        conn = sqlite3.connect(db_file)
+        try:
+            tables = [row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            )]
+            matches = [
+                table for table in tables
+                if concept in {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+            ]
+            return f"{matches[0]}.{concept}" if len(matches) == 1 else None
+        finally:
+            conn.close()
 
     def negotiate_alignments(self, source_schema_path: str, target_schema_path: str, threshold: float = 0.6) -> List[Dict[str, Any]]:
         """
@@ -1122,8 +1259,8 @@ class EntigramBroker:
 
     def import_alignments(self, xml_file_path: str) -> int:
         """
-        Imports and authorizes alignments from an EXMO Align API XML file.
-        Returns the number of authorized alignments.
+        Imports alignment proposals from an EXMO Align API XML file.
+        Imported mappings require explicit authorization before routing.
         """
         from .governance.alignment import AlignmentProtocol
         
@@ -1143,19 +1280,16 @@ class EntigramBroker:
             src_dom, src_con = src.split(":", 1) if ":" in src else ("External", src)
             tgt_dom, tgt_con = tgt.split(":", 1) if ":" in tgt else ("Internal", tgt)
 
-            if self.authorize_alignment(
-                source_domain=src_dom,
-                target_domain=tgt_dom,
-                source_concept=src_con,
-                target_concept=tgt_con,
-                confidence=mapping['confidence'],
-                rationale=f"Imported from {xml_file_path} ({mapping['relation']})",
-                _defer_sync=True,
+            if self.propose_alignment(
+                src_dom,
+                tgt_dom,
+                src_con,
+                tgt_con,
+                mapping['confidence'],
+                f"Imported from {xml_file_path} ({mapping['relation']})",
+                source_artifact=xml_file_path,
             ):
                 count += 1
-
-        if count:
-            self.sync_all_ontologies()  # single flush after batch
         return count
 
     def sense_all(self) -> List[Dict[str, Any]]:

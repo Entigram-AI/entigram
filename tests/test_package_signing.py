@@ -33,7 +33,7 @@ class TestPackageSigning(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.test_dir)
 
-    def test_manifest_is_deterministic_and_skips_generated_files(self):
+    def test_manifest_is_deterministic_and_covers_package_descriptor(self):
         metadata = {"name": "@entigram/demo", "title": "Demo"}
         manifest = create_package_manifest(str(self.package_dir), metadata)
         write_package_manifest(str(self.package_dir), manifest)
@@ -43,7 +43,7 @@ class TestPackageSigning(unittest.TestCase):
 
         self.assertEqual(manifest, regenerated)
         paths = {item["path"] for item in manifest["files"]}
-        self.assertEqual(paths, {"schema.lds", "source_adapter.py"})
+        self.assertEqual(paths, {".etg/entigram.yaml", "schema.lds", "source_adapter.py"})
         self.assertEqual(manifest["package"], "@entigram/demo")
 
     def test_package_signature_verifies_and_detects_tampering(self):
@@ -71,6 +71,27 @@ class TestPackageSigning(unittest.TestCase):
         self.assertTrue(verification.ok)
         self.assertIn(f"missing {SIGNATURE_NAME}", verification.warnings)
 
+    def test_v1_package_signature_remains_verifiable(self):
+        manifest = create_package_manifest(
+            str(self.package_dir),
+            {"name": "@entigram/demo"},
+            manifest_version=1,
+        )
+        write_package_manifest(str(self.package_dir), manifest)
+        sign_package_manifest(str(self.package_dir), key_path=str(self.key_path))
+
+        verification = verify_package(str(self.package_dir))
+
+        self.assertTrue(verification.ok)
+
+    def test_package_manifest_rejects_unsupported_version(self):
+        with self.assertRaisesRegex(ValueError, "unsupported package manifest version"):
+            create_package_manifest(
+                str(self.package_dir),
+                {"name": "@entigram/demo"},
+                manifest_version=3,
+            )
+
     def test_catalog_signature_verifies_and_detects_tampering(self):
         catalog_path = self.test_dir / "standard_package_catalog.json"
         catalog_path.write_text(json.dumps({"packages": [{"name": "@entigram/demo"}]}, indent=2))
@@ -85,6 +106,34 @@ class TestPackageSigning(unittest.TestCase):
 
         self.assertFalse(verification["ok"])
         self.assertIn("signed artifact sha256 mismatch", verification["errors"])
+
+    def test_package_signature_rejects_mismatched_key_id(self):
+        manifest = create_package_manifest(str(self.package_dir), {"name": "@entigram/demo"})
+        write_package_manifest(str(self.package_dir), manifest)
+        sign_package_manifest(str(self.package_dir), key_path=str(self.key_path))
+        signature_path = self.package_dir / SIGNATURE_NAME
+        signature = json.loads(signature_path.read_text())
+        signature["key_id"] = "not-the-public-key-id"
+        signature_path.write_text(json.dumps(signature))
+
+        verification = verify_package(str(self.package_dir))
+
+        self.assertFalse(verification.ok)
+        self.assertIn("signature key id mismatch", verification.errors)
+
+    def test_package_signature_rejects_wrong_artifact_label(self):
+        manifest = create_package_manifest(str(self.package_dir), {"name": "@entigram/demo"})
+        write_package_manifest(str(self.package_dir), manifest)
+        sign_package_manifest(str(self.package_dir), key_path=str(self.key_path))
+        signature_path = self.package_dir / SIGNATURE_NAME
+        signature = json.loads(signature_path.read_text())
+        signature["signed_artifact"] = "standard_package_catalog.json"
+        signature_path.write_text(json.dumps(signature))
+
+        verification = verify_package(str(self.package_dir))
+
+        self.assertFalse(verification.ok)
+        self.assertIn("unexpected signed artifact", verification.errors)
 
 
 if __name__ == "__main__":

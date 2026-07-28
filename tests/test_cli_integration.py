@@ -59,7 +59,7 @@ class TestCLIIntegration(unittest.TestCase):
             self.assertEqual(manifest["workspace_schema_version"], 1)
             self.assertNotIn("entigram_version", manifest)
             self.assertEqual(manifest["schema_paths"], ["schema.lds"])
-            self.assertTrue(manifest["state_ledger"].endswith(".etg/state.db"))
+            self.assertEqual(manifest["state_ledger"], ".etg/state.db")
             policy = Path(".etg/agent_policy.md")
             self.assertTrue(policy.exists())
             self.assertIn("Run `hydrate`", policy.read_text())
@@ -91,6 +91,18 @@ class TestCLIIntegration(unittest.TestCase):
         self.assertIn('"workspace_schema_version"', output)
         self.assertIn('"agent_policy"', output)
         self.assertIn("Run `hydrate`", output)
+
+    def test_align_rejects_unknown_schema_concepts(self):
+        self.run_cli(['init', '--dir', '.', '--force'])
+        success, output = self.run_cli([
+            'broker', '--dir', '.', 'align',
+            '--src_dom', 'UnknownA', '--tgt_dom', 'UnknownB',
+            '--src_con', 'Ghost', '--tgt_con', 'Phantom',
+            '--rat', 'Invalid test',
+        ])
+
+        self.assertFalse(success)
+        self.assertIn("does not declare concept", output)
 
     def test_cli_module_does_not_import_yaml_or_injector_at_module_load(self):
         source = (Path(__file__).parent.parent / "entigram" / "cli_runner" / "etg_cli.py").read_text()

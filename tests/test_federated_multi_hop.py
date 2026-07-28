@@ -7,6 +7,7 @@ from entigram.federated_router import FederatedRouter
 from entigram.broker import EntigramBroker
 from entigram.injector import inject_entigram_manifest
 from entigram.sqlite_ledger.injector import DomainSQLiteInjector
+from tests.workspace_helpers import declare_schema_paths
 
 class TestFederatedMultiHop(unittest.TestCase):
     def setUp(self):
@@ -34,6 +35,10 @@ class TestFederatedMultiHop(unittest.TestCase):
             elif pkg == "SupplyChain":
                 schema = "ENTITY Supplier { id UUID PK \n name String \n goal_id UUID }"
             (pkg_dir / "schema.lds").write_text(schema)
+        declare_schema_paths(
+            self.test_dir,
+            [self.test_dir / "packages" / pkg / "schema.lds" for pkg in packages],
+        )
 
         injector = DomainSQLiteInjector(str(self.test_dir))
         injector.inject_all_active()

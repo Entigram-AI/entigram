@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import subprocess
 import tarfile
@@ -6,6 +7,11 @@ import hashlib
 import yaml
 from pathlib import Path
 from typing import List, Optional
+
+from .package_signing import MANIFEST_NAME, SIGNATURE_NAME, verify_package
+
+
+_PACKAGE_NAME_RE = re.compile(r"^(?:@[A-Za-z0-9_.-]+/)?[A-Za-z0-9_.-]+$")
 
 
 def _safe_extract(tar: tarfile.TarFile, extract_dir: Path) -> None:
@@ -210,6 +216,9 @@ class EntigramRegistry:
         """
         if os.environ.get("ENTIGRAM_REGISTRY_OFFLINE") == "1":
             return False
+        if not _PACKAGE_NAME_RE.fullmatch(package_name):
+            print(f"❌ Invalid package name: {package_name}")
+            return False
 
         registries = self.get_registries()
         local_packages_dir = self.etg_dir / "packages"
@@ -233,6 +242,32 @@ class EntigramRegistry:
                 source_pkg_path = cache_path / "@entigram" / package_name
 
             if source_pkg_path.exists() and source_pkg_path.is_dir():
+                # Legacy packages without provenance remain installable. Once a
+                # package advertises a manifest or signature, fail closed on any
+                # invalid or incomplete provenance instead of copying it.
+                has_provenance = (
+                    (source_pkg_path / MANIFEST_NAME).exists()
+                    or (source_pkg_path / SIGNATURE_NAME).exists()
+                )
+                if has_provenance:
+                    verification = verify_package(str(source_pkg_path))
+                    if not verification.ok:
+                        print(
+                            f"❌ Refusing unverified package '{package_name}': "
+                            + "; ".join(verification.errors)
+                        )
+                        continue
+                    accepted_names = {package_name}
+                    if "/" not in package_name:
+                        accepted_names.add(f"@entigram/{package_name}")
+                    if verification.package not in accepted_names:
+                        print(
+                            f"❌ Refusing package identity mismatch: requested "
+                            f"'{package_name}', signed manifest declares "
+                            f"'{verification.package}'."
+                        )
+                        continue
+
                 # Extract version from package's own manifest
                 pkg_version = "latest"
                 pkg_manifest = source_pkg_path / ".etg" / "entigram.yaml"
@@ -250,8 +285,10 @@ class EntigramRegistry:
 
                 print(f"📦 Installing '{package_name}' (v{pkg_version}) from registry...")
                 shutil.copytree(source_pkg_path, target_pkg_path)
-                
-                self._update_manifest(package_name, pkg_version)
+
+                if not self._update_manifest(package_name, pkg_version):
+                    print(f"❌ Package files copied, but the workspace manifest could not be updated.")
+                    return False
                 print(f"✅ Package '{package_name}' successfully locked to v{pkg_version}.")
                 return True
         
@@ -310,9 +347,10 @@ class EntigramRegistry:
 
         return updates_available
 
-    def _update_manifest(self, package_name: str, version: str):
+    def _update_manifest(self, package_name: str, version: str) -> bool:
         """Ensures the package is listed in the entigram.yaml packages dict."""
-        if not self.manifest_path.exists(): return
+        if not self.manifest_path.exists():
+            return False
         try:
             with open(self.manifest_path, 'r') as f:
                 manifest = yaml.safe_load(f) or {}
@@ -321,11 +359,24 @@ class EntigramRegistry:
             # Backwards compatibility: convert list to dict
             if isinstance(pkgs, list):
                 pkgs = {p: "latest" for p in pkgs}
+            if not isinstance(pkgs, dict):
+                raise ValueError("packages must be a list or object")
                 
             pkgs[package_name] = version
             manifest['packages'] = pkgs
+
+            package_schema = self.etg_dir / "packages" / package_name / "schema.lds"
+            if package_schema.exists():
+                schema_path = package_schema.relative_to(self.target_dir).as_posix()
+                schema_paths = manifest.setdefault("schema_paths", ["schema.lds"])
+                if not isinstance(schema_paths, list):
+                    raise ValueError("schema_paths must be a list")
+                if schema_path not in schema_paths:
+                    schema_paths.append(schema_path)
             
             with open(self.manifest_path, 'w') as f:
                 yaml.dump(manifest, f, default_flow_style=False)
+            return True
         except Exception as e:
             print(f"❌ Error updating manifest lockfile: {e}")
+            return False

@@ -7,6 +7,7 @@ from entigram.federated_router import FederatedRouter
 from entigram.broker import EntigramBroker
 from entigram.injector import inject_entigram_manifest
 from entigram.sqlite_ledger.injector import DomainSQLiteInjector
+from tests.workspace_helpers import declare_schema_paths
 
 class TestSemanticJoins(unittest.TestCase):
     def setUp(self):
@@ -29,6 +30,10 @@ class TestSemanticJoins(unittest.TestCase):
             elif pkg == "TechCorp":
                 schema = "ENTITY Vendor { uid UUID PK \n vendor_name String \n ein String }"
             (pkg_dir / "schema.lds").write_text(schema)
+        declare_schema_paths(
+            self.test_dir,
+            [self.test_dir / "packages" / pkg / "schema.lds" for pkg in packages],
+        )
 
         injector = DomainSQLiteInjector(str(self.test_dir))
         injector.inject_all_active()

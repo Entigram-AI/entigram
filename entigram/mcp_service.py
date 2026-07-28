@@ -3,10 +3,10 @@ import re
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
-import yaml
 from entigram.broker import EntigramBroker
 from entigram.schema_compiler.parser import SchemaParser
 from entigram.governance.algebra import RelationalAlgebraGuard
+from entigram.workspace_contract import configured_schema_paths
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,127}$")
 _CONCEPT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?$")
@@ -269,33 +269,7 @@ class EntigramMCPService:
         return paths
 
     def _configured_schema_paths(self) -> Optional[List[Path]]:
-        manifest_path = self.target_dir / ".etg" / "entigram.yaml"
-        if not manifest_path.exists():
-            return None
-
-        manifest = yaml.safe_load(manifest_path.read_text()) or {}
-        configured = manifest.get("schema_paths")
-        if configured is None:
-            return None
-        if not isinstance(configured, list):
-            raise ValueError("schema_paths must be a list of local LDS file paths")
-
-        paths = []
-        for value in configured:
-            if not isinstance(value, str) or not value.strip():
-                raise ValueError("schema_paths entries must be non-empty strings")
-            candidate = Path(value).expanduser()
-            resolved = candidate.resolve() if candidate.is_absolute() else (self.target_dir / candidate).resolve()
-            try:
-                resolved.relative_to(self.target_dir)
-            except ValueError as exc:
-                raise ValueError(f"schema path escapes workspace: {value}") from exc
-            if resolved.suffix != ".lds":
-                raise ValueError(f"schema path must reference an LDS file: {value}")
-            if not resolved.is_file():
-                raise ValueError(f"schema path does not exist: {value}")
-            paths.append(resolved)
-        return paths
+        return configured_schema_paths(self.target_dir)
 
     def _schema_catalog(self) -> Dict[str, Any]:
         entities: Dict[str, set] = {}
