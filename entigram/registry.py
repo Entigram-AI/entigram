@@ -7,6 +7,8 @@ import yaml
 from pathlib import Path
 from typing import List, Optional
 
+from .package_signing import MANIFEST_NAME, SIGNATURE_NAME, verify_package
+
 
 def _safe_extract(tar: tarfile.TarFile, extract_dir: Path) -> None:
     """Extract ``tar`` into ``extract_dir`` while blocking path traversal.
@@ -233,6 +235,22 @@ class EntigramRegistry:
                 source_pkg_path = cache_path / "@entigram" / package_name
 
             if source_pkg_path.exists() and source_pkg_path.is_dir():
+                # Legacy packages without provenance remain installable. Once a
+                # package advertises a manifest or signature, fail closed on any
+                # invalid or incomplete provenance instead of copying it.
+                has_provenance = (
+                    (source_pkg_path / MANIFEST_NAME).exists()
+                    or (source_pkg_path / SIGNATURE_NAME).exists()
+                )
+                if has_provenance:
+                    verification = verify_package(str(source_pkg_path))
+                    if not verification.ok:
+                        print(
+                            f"❌ Refusing unverified package '{package_name}': "
+                            + "; ".join(verification.errors)
+                        )
+                        continue
+
                 # Extract version from package's own manifest
                 pkg_version = "latest"
                 pkg_manifest = source_pkg_path / ".etg" / "entigram.yaml"
@@ -324,6 +342,13 @@ class EntigramRegistry:
                 
             pkgs[package_name] = version
             manifest['packages'] = pkgs
+
+            package_schema = self.etg_dir / "packages" / package_name / "schema.lds"
+            if package_schema.exists():
+                schema_path = package_schema.relative_to(self.target_dir).as_posix()
+                schema_paths = manifest.setdefault("schema_paths", ["schema.lds"])
+                if schema_path not in schema_paths:
+                    schema_paths.append(schema_path)
             
             with open(self.manifest_path, 'w') as f:
                 yaml.dump(manifest, f, default_flow_style=False)

@@ -1327,6 +1327,8 @@ def main():
     align_parser.add_argument("--tgt_con", required=True)
     align_parser.add_argument("--conf", type=float, default=1.0)
     align_parser.add_argument("--rat", required=True)
+    align_parser.add_argument("--reviewer", default="EntigramBroker", help="Reviewer authorizing the alignment")
+    align_parser.add_argument("--evidence", help="Local evidence artifact or external evidence reference")
 
     synonym_parser = broker_subparsers.add_parser("synonym", help="Manage persistent synonyms for semantic reconciliation")
     synonym_parser.add_argument("--add", help="Add a synonym pair (format: 'term,synonym')")
@@ -2550,7 +2552,17 @@ RELATIONSHIPS:
             broker.sync_resolutions()
             print("✅ Domain states synchronized with human resolutions.")
         elif args.broker_command == "align":
-            if broker.authorize_alignment(args.src_dom, args.tgt_dom, args.src_con, args.tgt_con, args.conf, args.rat):
+            if broker.authorize_alignment(
+                args.src_dom,
+                args.tgt_dom,
+                args.src_con,
+                args.tgt_con,
+                args.conf,
+                args.rat,
+                verified_by=args.reviewer,
+                source_artifact=args.evidence,
+                validate_schema=True,
+            ):
                 print(f"✅ Alignment Authorized.")
             else:
                 sys.exit(1)

@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from entigram.registry import _safe_extract
+from entigram.registry import EntigramRegistry, _safe_extract
 
 
 class TestSafeTarExtract(unittest.TestCase):
@@ -52,6 +52,23 @@ class TestSafeTarExtract(unittest.TestCase):
             _safe_extract(tar, Path(tmp))
             self.assertTrue((Path(tmp) / "pkg" / "file.txt").exists())
             self.assertTrue((Path(tmp) / "pkg" / ".etg" / "entigram.yaml").exists())
+
+    def test_package_manifest_registers_installed_schema(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            etg_dir = target / ".etg"
+            etg_dir.mkdir()
+            (etg_dir / "entigram.yaml").write_text("packages: {}\nschema_paths:\n  - schema.lds\n")
+            package_schema = etg_dir / "packages" / "@entigram" / "demo" / "schema.lds"
+            package_schema.parent.mkdir(parents=True)
+            package_schema.write_text("ENTITY: Demo\n")
+
+            registry = EntigramRegistry(str(target))
+            registry._update_manifest("@entigram/demo", "1.0.0")
+
+            import yaml
+            manifest = yaml.safe_load((etg_dir / "entigram.yaml").read_text())
+            self.assertIn(".etg/packages/@entigram/demo/schema.lds", manifest["schema_paths"])
 
 
 if __name__ == "__main__":

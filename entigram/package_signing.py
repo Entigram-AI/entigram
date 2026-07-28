@@ -30,13 +30,18 @@ def canonical_json_bytes(payload: Dict[str, Any]) -> bytes:
     return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
-def create_package_manifest(package_dir: str, package_metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def create_package_manifest(
+    package_dir: str,
+    package_metadata: Optional[Dict[str, Any]] = None,
+    *,
+    manifest_version: int = 2,
+) -> Dict[str, Any]:
     root = Path(package_dir).expanduser().resolve()
     if not root.is_dir():
         raise FileNotFoundError(f"package directory not found: {package_dir}")
     files = []
     for path in sorted(root.rglob("*")):
-        if not path.is_file() or _should_skip(path, root):
+        if not path.is_file() or _should_skip(path, root, manifest_version):
             continue
         rel = path.relative_to(root).as_posix()
         data = path.read_bytes()
@@ -46,7 +51,7 @@ def create_package_manifest(package_dir: str, package_metadata: Optional[Dict[st
             "size_bytes": len(data),
         })
     manifest = {
-        "manifest_version": 1,
+        "manifest_version": manifest_version,
         "package": package_metadata.get("name") if package_metadata else root.name,
         "metadata": package_metadata or {},
         "files": files,
@@ -104,10 +109,19 @@ def verify_package(package_dir: str, require_signature: bool = True) -> PackageV
         result.ok = False
         result.errors.append(f"missing {MANIFEST_NAME}")
         return result
-    manifest = json.loads(manifest_path.read_text())
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        result.ok = False
+        result.errors.append(f"invalid {MANIFEST_NAME}: {exc}")
+        return result
     result.package = manifest.get("package", root.name)
     try:
-        expected = create_package_manifest(str(root), manifest.get("metadata") or {})
+        expected = create_package_manifest(
+            str(root),
+            manifest.get("metadata") or {},
+            manifest_version=manifest.get("manifest_version", 1),
+        )
     except Exception as exc:
         result.ok = False
         result.errors.append(str(exc))
@@ -205,7 +219,7 @@ def load_or_create_private_key(key_path: Optional[str] = None) -> tuple[Ed25519P
     return private_key, path
 
 
-def _should_skip(path: Path, root: Path) -> bool:
+def _should_skip(path: Path, root: Path, manifest_version: int) -> bool:
     rel_parts = path.relative_to(root).parts
     rel = path.relative_to(root).as_posix()
     if any(part in {".git", "__pycache__"} for part in rel_parts):
@@ -214,7 +228,9 @@ def _should_skip(path: Path, root: Path) -> bool:
         return True
     if rel.endswith(".pyc") or rel.endswith(".pyo") or rel.endswith(".DS_Store"):
         return True
-    if ".etg" in rel_parts:
+    if ".etg" in rel_parts and not (
+        manifest_version >= 2 and rel == ".etg/entigram.yaml"
+    ):
         return True
     return False
 
@@ -238,13 +254,19 @@ def _compare_manifest_files(manifest: Dict[str, Any], expected: Dict[str, Any]) 
 
 
 def _verify_signature_payload(signature: Dict[str, Any], canonical: bytes) -> None:
+    if signature.get("signature_version") != 1:
+        raise ValueError("unsupported signature version")
     if signature.get("signature_type") != "ed25519":
         raise ValueError("unsupported signature type")
+    if signature.get("signed_artifact") not in {MANIFEST_NAME, "standard_package_catalog.json"}:
+        raise ValueError("unexpected signed artifact")
     expected_digest = signature.get("manifest_sha256") or signature.get("catalog_sha256")
     actual_digest = hashlib.sha256(canonical).hexdigest()
     if expected_digest != actual_digest:
         raise ValueError("signed artifact sha256 mismatch")
     public_key_bytes = base64.b64decode(signature.get("public_key", ""))
+    if signature.get("key_id") != hashlib.sha256(public_key_bytes).hexdigest():
+        raise ValueError("signature key id mismatch")
     signature_bytes = base64.b64decode(signature.get("signature", ""))
     public_key = Ed25519PublicKey.from_public_bytes(public_key_bytes)
     try:

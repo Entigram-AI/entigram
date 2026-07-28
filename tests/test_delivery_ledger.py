@@ -321,6 +321,40 @@ class TestBrokerDeliverySnapshots(unittest.TestCase):
                 ledger.close()
             shutil.rmtree(test_dir)
 
+    def test_delivery_status_detects_runtime_source_drift(self):
+        import tempfile
+        import shutil
+        from pathlib import Path
+
+        from entigram.broker import EntigramBroker
+        from entigram.injector import inject_entigram_manifest
+
+        test_dir = tempfile.mkdtemp()
+        ledger = None
+        try:
+            inject_entigram_manifest(test_dir, ["Entigram Schemas"], "Codex")
+            Path(test_dir, "schema.lds").write_text(self.SCHEMA)
+            runtime_file = Path(test_dir, "entigram", "runtime.py")
+            runtime_file.parent.mkdir()
+            runtime_file.write_text("VALUE = 1\n")
+            ledger = LedgerManager(":memory:")
+            broker = EntigramBroker(test_dir, ledger=ledger)
+
+            checklist = broker.commission_and_record(
+                proofs=["tests/test_loop.py passed"],
+                agent_id="TestAgent",
+            )
+            self.assertTrue(checklist["valid"])
+
+            runtime_file.write_text("VALUE = 2\n")
+            status = broker.delivery_status()
+            self.assertFalse(status["valid"])
+            self.assertTrue(any(change["path"] == "entigram/runtime.py" for change in status["artifact_changes"]))
+        finally:
+            if ledger is not None:
+                ledger.close()
+            shutil.rmtree(test_dir)
+
     def test_export_audit_bundle_has_ed25519_signature(self):
         import base64
         import json
