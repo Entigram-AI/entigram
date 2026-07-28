@@ -13,6 +13,21 @@
 * harden SQLite ledger concurrency with WAL mode and busy timeouts
 * close warning-producing registry, broker, router, and hydration resources
 
+## [1.16.2](https://github.com/nyabutid/entigram/compare/v1.16.1...v1.16.2) (2026-07-28)
+
+
+### Bug Fixes
+
+* close governed delivery review gaps ([23bc947](https://github.com/nyabutid/entigram/commit/23bc9476672a98c6c476cebb43feee8196483561))
+* harden governed delivery paths ([8924bab](https://github.com/nyabutid/entigram/commit/8924bab73868ead0292349617fe110972a1708d5))
+* harden governed delivery paths ([5eeea8f](https://github.com/nyabutid/entigram/commit/5eeea8f1b8bd780ec1ac883c8edf8dae4811d46b))
+
+
+### Documentation
+
+* add opencode integration guidance ([2ccedcd](https://github.com/nyabutid/entigram/commit/2ccedcdabae57fbe115671363aab3fafc8af1789))
+* add OpenCode integration guidance ([b09706c](https://github.com/nyabutid/entigram/commit/b09706c273aa569c13d5ea6ac6be17b2f906907b))
+
 ## [1.16.1](https://github.com/nyabutid/entigram/compare/v1.16.0...v1.16.1) (2026-07-27)
 
 
