@@ -47,6 +47,9 @@ packages:
   Entigram Schemas: 0.0.1
 schema_paths:
   - schema.lds
+governed_artifact_globs:
+  - "**/*.py"
+  - "**/*.ts"
 state_ledger: .etg/state.db
 status: initialized
 ```
@@ -54,7 +57,14 @@ status: initialized
 The manifest may also include schema and ontology checksums written by Warden.
 Agents must not edit these checksum values manually. Use the broker handoff flow
 or `etg warden lock` when a governed schema or ontology change requires a new
-lock.
+lock. Warden fingerprints every file in `schema_paths`; adding an authoritative
+schema requires a new lock before it can authorize alignments or state changes.
+
+`governed_artifact_globs` is optional. It selects project files that delivery
+snapshots must anchor and compare in both directions, including newly added
+files. Without it, Entigram uses polyglot source and project-configuration
+defaults while excluding `.git`, `.etg`, virtual environments, dependency
+directories, caches, and build output.
 
 ## Schema Contract
 
@@ -137,6 +147,10 @@ Delivery status: current
 Do not run `warden lock` after `broker deliver`. Locking mutates the manifest
 and can invalidate the delivery snapshot that was just anchored.
 
+Delivery status compares the complete current governed artifact set with the
+snapshot. Changed, removed, renamed, and newly added governed files all require
+recommissioning.
+
 ## MCP Contract
 
 The MCP server starts from the governed workspace:
@@ -210,7 +224,30 @@ etg package verify-catalog --catalog standard_package_catalog.json
 ```
 
 Local exploration should not require signature management, but CI, registries,
-and enterprise workflows can enforce signatures.
+and enterprise workflows can enforce signatures. Entigram pins the official
+standard-package signing key. Custom remote registries must declare trusted
+publisher key IDs:
+
+```bash
+etg registry add \
+  --url https://example.com/packages.git \
+  --trusted-key-id <ed25519-key-id>
+```
+
+This writes a persistent policy to the workspace manifest:
+
+```yaml
+registry_trust:
+  https://example.com/packages.git:
+    require_signature: true
+    trusted_key_ids:
+      - <ed25519-key-id>
+```
+
+Unsigned custom registries require the explicit `--allow-unsigned` option.
+Signatures without a configured or built-in trust root prove file consistency,
+not publisher identity. A registry package version must not be older than the
+version already locked in the workspace manifest.
 
 ## Portability Rules
 

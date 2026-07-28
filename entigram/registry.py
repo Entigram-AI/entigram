@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import subprocess
 import tarfile
@@ -6,8 +7,20 @@ import hashlib
 import yaml
 from pathlib import Path
 from typing import List, Optional
+from urllib.parse import urlparse
 
 from .package_signing import MANIFEST_NAME, SIGNATURE_NAME, verify_package
+
+
+# Published by the signed Entigram standard-package catalog.
+OFFICIAL_PACKAGE_KEY_IDS = frozenset({
+    "a1099d192721cfad013e0ff109fb671a2cb0dd1ceb2c7e63dfdd9295b0dca975",
+})
+_PACKAGE_NAME_RE = re.compile(r"^(?:@[A-Za-z0-9_.-]+/)?[A-Za-z0-9_.-]+$")
+_VERSION_RE = re.compile(
+    r"^v?(?P<release>\d+(?:\.\d+)*)(?:-(?P<prerelease>[0-9A-Za-z.-]+))?"
+    r"(?:\+[0-9A-Za-z.-]+)?$"
+)
 
 
 def _safe_extract(tar: tarfile.TarFile, extract_dir: Path) -> None:
@@ -78,7 +91,13 @@ class EntigramRegistry:
                 print(f"Warning: Could not read registries from manifest: {e}")
         return regs
 
-    def add_registry(self, url: str) -> bool:
+    def add_registry(
+        self,
+        url: str,
+        *,
+        trusted_key_ids: Optional[List[str]] = None,
+        allow_unsigned: bool = False,
+    ) -> bool:
         """Adds a new remote Git URL to the project manifest."""
         if not self.manifest_path.exists():
             print("❌ Entigram workspace not initialized. Run 'etg init' first.")
@@ -90,8 +109,14 @@ class EntigramRegistry:
             if url not in regs:
                 regs.append(url)
                 manifest['registries'] = regs
-                with open(self.manifest_path, 'w') as f:
-                    yaml.dump(manifest, f, default_flow_style=False)
+            if trusted_key_ids or allow_unsigned:
+                trust = manifest.setdefault("registry_trust", {})
+                trust[url] = {
+                    "require_signature": not allow_unsigned,
+                    "trusted_key_ids": sorted(set(trusted_key_ids or [])),
+                }
+            with open(self.manifest_path, 'w') as f:
+                yaml.dump(manifest, f, default_flow_style=False)
             return True
         except Exception as e:
             print(f"Error adding registry: {e}")
@@ -212,6 +237,9 @@ class EntigramRegistry:
         """
         if os.environ.get("ENTIGRAM_REGISTRY_OFFLINE") == "1":
             return False
+        if not _PACKAGE_NAME_RE.fullmatch(package_name):
+            print(f"❌ Invalid package name: {package_name}")
+            return False
 
         registries = self.get_registries()
         local_packages_dir = self.etg_dir / "packages"
@@ -220,6 +248,7 @@ class EntigramRegistry:
         target_pkg_path = local_packages_dir / package_name
             
         for reg_url in registries:
+            trust_policy = self._registry_trust_policy(reg_url)
             if self._is_api_registry(reg_url):
                 cache_path = self._fetch_api_package(reg_url, package_name)
             else:
@@ -235,21 +264,54 @@ class EntigramRegistry:
                 source_pkg_path = cache_path / "@entigram" / package_name
 
             if source_pkg_path.exists() and source_pkg_path.is_dir():
-                # Legacy packages without provenance remain installable. Once a
-                # package advertises a manifest or signature, fail closed on any
-                # invalid or incomplete provenance instead of copying it.
-                has_provenance = (
-                    (source_pkg_path / MANIFEST_NAME).exists()
-                    or (source_pkg_path / SIGNATURE_NAME).exists()
-                )
+                has_manifest = (source_pkg_path / MANIFEST_NAME).exists()
+                has_signature = (source_pkg_path / SIGNATURE_NAME).exists()
+                has_provenance = has_manifest or has_signature
+                if trust_policy["require_signature"] and not (
+                    has_manifest and has_signature
+                ):
+                    print(
+                        f"❌ Refusing unsigned package '{package_name}' from "
+                        f"{reg_url}. Configure a trusted key or explicitly allow "
+                        "unsigned packages for this registry."
+                    )
+                    continue
                 if has_provenance:
-                    verification = verify_package(str(source_pkg_path))
+                    trusted_key_ids = trust_policy["trusted_key_ids"]
+                    verification = verify_package(
+                        str(source_pkg_path),
+                        trusted_key_ids=(
+                            trusted_key_ids
+                            if trusted_key_ids or trust_policy["require_signature"]
+                            else None
+                        ),
+                    )
                     if not verification.ok:
                         print(
                             f"❌ Refusing unverified package '{package_name}': "
                             + "; ".join(verification.errors)
                         )
                         continue
+                    accepted_names = {package_name}
+                    if "/" not in package_name:
+                        accepted_names.add(f"@entigram/{package_name}")
+                    if verification.package not in accepted_names:
+                        print(
+                            f"❌ Refusing package identity mismatch: requested "
+                            f"'{package_name}', signed manifest declares "
+                            f"'{verification.package}'."
+                        )
+                        continue
+                    if not trusted_key_ids:
+                        print(
+                            f"Warning: Package '{package_name}' has a valid "
+                            "self-signature but no configured publisher trust root."
+                        )
+                else:
+                    print(
+                        f"Warning: Installing explicitly allowed unsigned package "
+                        f"'{package_name}' from {reg_url}."
+                    )
 
                 # Extract version from package's own manifest
                 pkg_version = "latest"
@@ -262,14 +324,24 @@ class EntigramRegistry:
                     except Exception as e:
                         print(f"Warning: Could not read package manifest for '{package_name}': {e}")
 
+                locked_version = self._locked_package_version(package_name)
+                if _is_version_downgrade(pkg_version, locked_version):
+                    print(
+                        f"❌ Refusing package downgrade for '{package_name}': "
+                        f"locked v{locked_version}, registry offered v{pkg_version}."
+                    )
+                    continue
+
                 if target_pkg_path.exists():
                     # If it exists, overwrite it (upgrade/reinstall)
                     shutil.rmtree(target_pkg_path)
 
                 print(f"📦 Installing '{package_name}' (v{pkg_version}) from registry...")
                 shutil.copytree(source_pkg_path, target_pkg_path)
-                
-                self._update_manifest(package_name, pkg_version)
+
+                if not self._update_manifest(package_name, pkg_version):
+                    print(f"❌ Package files copied, but the workspace manifest could not be updated.")
+                    return False
                 print(f"✅ Package '{package_name}' successfully locked to v{pkg_version}.")
                 return True
         
@@ -328,9 +400,81 @@ class EntigramRegistry:
 
         return updates_available
 
-    def _update_manifest(self, package_name: str, version: str):
+    def _registry_trust_policy(self, registry_url: str) -> dict:
+        official = self._is_official_registry(registry_url)
+        local = self._is_local_registry(registry_url)
+        trusted_key_ids = set(OFFICIAL_PACKAGE_KEY_IDS if official else ())
+        require_signature = not local
+
+        try:
+            manifest = yaml.safe_load(self.manifest_path.read_text()) or {}
+            configured = (manifest.get("registry_trust") or {}).get(registry_url, {})
+            if not isinstance(configured, dict):
+                raise ValueError(f"registry_trust entry must be an object: {registry_url}")
+            configured_keys = configured.get("trusted_key_ids", [])
+            if not isinstance(configured_keys, list) or not all(
+                isinstance(value, str) and value for value in configured_keys
+            ):
+                raise ValueError(f"trusted_key_ids must be a list of strings: {registry_url}")
+            trusted_key_ids.update(configured_keys)
+            if not official and "require_signature" in configured:
+                if not isinstance(configured["require_signature"], bool):
+                    raise ValueError(f"require_signature must be boolean: {registry_url}")
+                require_signature = configured["require_signature"]
+        except FileNotFoundError:
+            pass
+        except Exception as exc:
+            print(f"❌ Invalid registry trust policy: {exc}")
+            require_signature = True
+            trusted_key_ids = set(OFFICIAL_PACKAGE_KEY_IDS if official else ())
+
+        return {
+            "require_signature": require_signature,
+            "trusted_key_ids": trusted_key_ids,
+        }
+
+    def _locked_package_version(self, package_name: str) -> Optional[str]:
+        try:
+            manifest = yaml.safe_load(self.manifest_path.read_text()) or {}
+            packages = manifest.get("packages", {})
+            if isinstance(packages, list):
+                return "latest" if package_name in packages else None
+            if isinstance(packages, dict):
+                value = packages.get(package_name)
+                return str(value) if value is not None else None
+        except (FileNotFoundError, yaml.YAMLError):
+            return None
+        return None
+
+    def _is_official_registry(self, url: str) -> bool:
+        normalized = url.lower().rstrip("/")
+        if normalized.startswith("git@github.com:"):
+            repository = normalized.split(":", 1)[1].removesuffix(".git")
+            return repository in {
+                "nyabutid/entigram-standard-packages",
+                "entigram/entigram-standard-packages",
+            }
+
+        parsed = urlparse(normalized)
+        if parsed.hostname == "api.entigram.ai":
+            return True
+        if parsed.hostname != "github.com":
+            return False
+        repository = parsed.path.strip("/").removesuffix(".git")
+        return repository in {
+            "nyabutid/entigram-standard-packages",
+            "entigram/entigram-standard-packages",
+        }
+
+    def _is_local_registry(self, url: str) -> bool:
+        if url.startswith("file://"):
+            return Path(url[7:]).expanduser().exists()
+        return Path(url).expanduser().exists()
+
+    def _update_manifest(self, package_name: str, version: str) -> bool:
         """Ensures the package is listed in the entigram.yaml packages dict."""
-        if not self.manifest_path.exists(): return
+        if not self.manifest_path.exists():
+            return False
         try:
             with open(self.manifest_path, 'r') as f:
                 manifest = yaml.safe_load(f) or {}
@@ -339,6 +483,8 @@ class EntigramRegistry:
             # Backwards compatibility: convert list to dict
             if isinstance(pkgs, list):
                 pkgs = {p: "latest" for p in pkgs}
+            if not isinstance(pkgs, dict):
+                raise ValueError("packages must be a list or object")
                 
             pkgs[package_name] = version
             manifest['packages'] = pkgs
@@ -347,10 +493,61 @@ class EntigramRegistry:
             if package_schema.exists():
                 schema_path = package_schema.relative_to(self.target_dir).as_posix()
                 schema_paths = manifest.setdefault("schema_paths", ["schema.lds"])
+                if not isinstance(schema_paths, list):
+                    raise ValueError("schema_paths must be a list")
                 if schema_path not in schema_paths:
                     schema_paths.append(schema_path)
             
             with open(self.manifest_path, 'w') as f:
                 yaml.dump(manifest, f, default_flow_style=False)
+            return True
         except Exception as e:
             print(f"❌ Error updating manifest lockfile: {e}")
+            return False
+
+
+def _is_version_downgrade(candidate: object, current: object) -> bool:
+    candidate_version = _parse_version(candidate)
+    current_version = _parse_version(current)
+    if candidate_version is None or current_version is None:
+        return False
+
+    candidate_release, candidate_prerelease = candidate_version
+    current_release, current_prerelease = current_version
+    width = max(len(candidate_release), len(current_release))
+    candidate_release += (0,) * (width - len(candidate_release))
+    current_release += (0,) * (width - len(current_release))
+    if candidate_release != current_release:
+        return candidate_release < current_release
+    if current_prerelease is None:
+        return candidate_prerelease is not None
+    if candidate_prerelease is None:
+        return False
+    return _compare_prerelease(candidate_prerelease, current_prerelease) < 0
+
+
+def _parse_version(value: object) -> Optional[tuple]:
+    if not isinstance(value, str):
+        value = str(value) if value is not None else ""
+    match = _VERSION_RE.fullmatch(value.strip())
+    if not match:
+        return None
+    release = tuple(int(part) for part in match.group("release").split("."))
+    prerelease = match.group("prerelease")
+    return release, tuple(prerelease.split(".")) if prerelease else None
+
+
+def _compare_prerelease(candidate: tuple, current: tuple) -> int:
+    for candidate_part, current_part in zip(candidate, current):
+        if candidate_part == current_part:
+            continue
+        candidate_numeric = candidate_part.isdigit()
+        current_numeric = current_part.isdigit()
+        if candidate_numeric and current_numeric:
+            return -1 if int(candidate_part) < int(current_part) else 1
+        if candidate_numeric != current_numeric:
+            return -1 if candidate_numeric else 1
+        return -1 if candidate_part < current_part else 1
+    if len(candidate) == len(current):
+        return 0
+    return -1 if len(candidate) < len(current) else 1

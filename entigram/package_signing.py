@@ -4,7 +4,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
@@ -36,6 +36,8 @@ def create_package_manifest(
     *,
     manifest_version: int = 2,
 ) -> Dict[str, Any]:
+    if manifest_version not in {1, 2}:
+        raise ValueError(f"unsupported package manifest version: {manifest_version}")
     root = Path(package_dir).expanduser().resolve()
     if not root.is_dir():
         raise FileNotFoundError(f"package directory not found: {package_dir}")
@@ -100,7 +102,11 @@ def sign_package_manifest(package_dir: str, key_path: Optional[str] = None) -> D
     return payload
 
 
-def verify_package(package_dir: str, require_signature: bool = True) -> PackageVerification:
+def verify_package(
+    package_dir: str,
+    require_signature: bool = True,
+    trusted_key_ids: Optional[Iterable[str]] = None,
+) -> PackageVerification:
     root = Path(package_dir).expanduser().resolve()
     manifest_path = root / MANIFEST_NAME
     signature_path = root / SIGNATURE_NAME
@@ -114,6 +120,11 @@ def verify_package(package_dir: str, require_signature: bool = True) -> PackageV
     except (OSError, json.JSONDecodeError) as exc:
         result.ok = False
         result.errors.append(f"invalid {MANIFEST_NAME}: {exc}")
+        return result
+    shape_errors = _validate_manifest_shape(manifest)
+    if shape_errors:
+        result.ok = False
+        result.errors.extend(shape_errors)
         return result
     result.package = manifest.get("package", root.name)
     try:
@@ -146,8 +157,14 @@ def verify_package(package_dir: str, require_signature: bool = True) -> PackageV
 
     try:
         signature = json.loads(signature_path.read_text())
-        _verify_signature_payload(signature, canonical)
+        _verify_signature_payload(
+            signature,
+            canonical,
+            expected_artifact=MANIFEST_NAME,
+        )
         result.key_id = signature.get("key_id")
+        if trusted_key_ids is not None and result.key_id not in set(trusted_key_ids):
+            raise ValueError(f"untrusted package signing key: {result.key_id}")
     except Exception as exc:
         result.ok = False
         result.errors.append(str(exc))
@@ -190,7 +207,11 @@ def verify_catalog(catalog_path: str, signature_path: Optional[str] = None) -> D
     signature = json.loads(sig_path.read_text())
     errors = []
     try:
-        _verify_signature_payload(signature, canonical)
+        _verify_signature_payload(
+            signature,
+            canonical,
+            expected_artifact=path.name,
+        )
     except Exception as exc:
         errors.append(str(exc))
     return {"ok": not errors, "errors": errors, "key_id": signature.get("key_id")}
@@ -253,12 +274,50 @@ def _compare_manifest_files(manifest: Dict[str, Any], expected: Dict[str, Any]) 
     return errors
 
 
-def _verify_signature_payload(signature: Dict[str, Any], canonical: bytes) -> None:
+def _validate_manifest_shape(manifest: Any) -> List[str]:
+    if not isinstance(manifest, dict):
+        return ["package manifest must be a JSON object"]
+    errors = []
+    if manifest.get("manifest_version") not in {1, 2}:
+        errors.append("unsupported package manifest version")
+    if not isinstance(manifest.get("package"), str) or not manifest.get("package"):
+        errors.append("package must be a non-empty string")
+    if not isinstance(manifest.get("metadata"), dict):
+        errors.append("metadata must be an object")
+    files = manifest.get("files")
+    if not isinstance(files, list):
+        errors.append("files must be a list")
+        return errors
+    paths = []
+    for item in files:
+        if not isinstance(item, dict):
+            errors.append("files entries must be objects")
+            continue
+        path = item.get("path")
+        if not isinstance(path, str) or not path:
+            errors.append("files entries must contain a non-empty path")
+        else:
+            paths.append(path)
+        if not isinstance(item.get("sha256"), str) or not item.get("sha256"):
+            errors.append(f"files entry has invalid sha256: {path}")
+        if not isinstance(item.get("size_bytes"), int) or item.get("size_bytes") < 0:
+            errors.append(f"files entry has invalid size_bytes: {path}")
+    if len(paths) != len(set(paths)):
+        errors.append("files entries must have unique paths")
+    return errors
+
+
+def _verify_signature_payload(
+    signature: Dict[str, Any],
+    canonical: bytes,
+    *,
+    expected_artifact: str,
+) -> None:
     if signature.get("signature_version") != 1:
         raise ValueError("unsupported signature version")
     if signature.get("signature_type") != "ed25519":
         raise ValueError("unsupported signature type")
-    if signature.get("signed_artifact") not in {MANIFEST_NAME, "standard_package_catalog.json"}:
+    if signature.get("signed_artifact") != expected_artifact:
         raise ValueError("unexpected signed artifact")
     expected_digest = signature.get("manifest_sha256") or signature.get("catalog_sha256")
     actual_digest = hashlib.sha256(canonical).hexdigest()

@@ -7,6 +7,7 @@ from entigram.federated_router import FederatedRouter
 from entigram.broker import EntigramBroker
 from entigram.injector import inject_entigram_manifest
 from entigram.sqlite_ledger.injector import DomainSQLiteInjector
+from tests.workspace_helpers import declare_schema_paths
 
 class TestFederatedRouter(unittest.TestCase):
     def setUp(self):
@@ -40,6 +41,10 @@ class TestFederatedRouter(unittest.TestCase):
                 }
                 """
             (pkg_dir / "schema.lds").write_text(schema_content)
+        declare_schema_paths(
+            self.test_dir,
+            [self.test_dir / "packages" / pkg / "schema.lds" for pkg in packages],
+        )
 
         # 3. Inject SQLite databases
         injector = DomainSQLiteInjector(str(self.test_dir))
@@ -130,6 +135,16 @@ class TestFederatedRouter(unittest.TestCase):
         # Verify Bob
         bob = next(r for r in results if r['owner'] == 'Bob')
         self.assertEqual(bob['SpendingLimit']['max_amount'], 1500.00)
+
+    def test_unlisted_package_schema_is_not_authoritative(self):
+        inactive = self.test_dir / ".etg" / "packages" / "Inactive"
+        inactive.mkdir(parents=True)
+        (inactive / "schema.lds").write_text(
+            "ENTITY Undeclared { id UUID PK }"
+        )
+
+        with FederatedRouter(str(self.test_dir)) as router:
+            self.assertNotIn("Undeclared", router.entities)
 
 if __name__ == "__main__":
     unittest.main()

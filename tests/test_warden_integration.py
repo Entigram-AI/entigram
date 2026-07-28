@@ -11,6 +11,7 @@ from entigram.broker import EntigramBroker
 from entigram.cli_runner.etg_cli import main
 from entigram.governance.warden import Warden
 from entigram.injector import inject_entigram_manifest
+from tests.workspace_helpers import declare_schema_paths
 
 class TestWardenIntegration(unittest.TestCase):
     def setUp(self):
@@ -80,6 +81,33 @@ class TestWardenIntegration(unittest.TestCase):
         success = self.broker.propose_resolution("CONFLICT-1", "Supplier", valid_state, "Valid and protected")
         
         self.assertTrue(success, "Broker should have allowed valid payload when protected")
+
+    def test_package_schema_tampering_blocks_alignment_authorization(self):
+        package_paths = []
+        for domain in ("DomainA", "DomainB"):
+            schema_path = (
+                self.test_dir / ".etg" / "packages" / domain / "schema.lds"
+            )
+            schema_path.parent.mkdir(parents=True)
+            schema_path.write_text("ENTITY Original { id UUID PK }")
+            package_paths.append(schema_path)
+        declare_schema_paths(self.test_dir, package_paths)
+
+        for schema_path in package_paths:
+            schema_path.write_text("ENTITY Injected { id UUID PK }")
+
+        self.assertFalse(self.broker.warden.verify_integrity(emit_human=False))
+        self.assertFalse(
+            self.broker.authorize_alignment(
+                "DomainA",
+                "DomainB",
+                "Injected",
+                "Injected",
+                1.0,
+                "Tampered package schema",
+                validate_schema=True,
+            )
+        )
 
     def test_warden_records_structured_halt_event_for_invalid_payload(self):
         self.broker.warden.lock_fingerprint()

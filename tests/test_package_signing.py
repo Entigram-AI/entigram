@@ -113,6 +113,24 @@ class TestPackageSigning(unittest.TestCase):
         self.assertFalse(verification.ok)
         self.assertIn("signature key id mismatch", verification.errors)
 
+    def test_package_signature_requires_configured_trust_root(self):
+        manifest = create_package_manifest(str(self.package_dir), {"name": "@entigram/demo"})
+        write_package_manifest(str(self.package_dir), manifest)
+        signature = sign_package_manifest(str(self.package_dir), key_path=str(self.key_path))
+
+        untrusted = verify_package(
+            str(self.package_dir),
+            trusted_key_ids={"another-publisher"},
+        )
+        trusted = verify_package(
+            str(self.package_dir),
+            trusted_key_ids={signature["key_id"]},
+        )
+
+        self.assertFalse(untrusted.ok)
+        self.assertIn("untrusted package signing key", untrusted.errors[0])
+        self.assertTrue(trusted.ok)
+
 
 if __name__ == "__main__":
     unittest.main()

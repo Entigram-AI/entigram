@@ -15,6 +15,11 @@ from .sqlite_ledger.manager import LedgerManager
 from .sqlite_ledger.paths import resolve_ledger_path
 from datetime import datetime, timezone
 from .governance.warden import Warden
+from .workspace_contract import (
+    authoritative_schema_paths,
+    governed_artifact_paths,
+    workspace_relative_path,
+)
 
 
 class EntigramBroker:
@@ -360,14 +365,17 @@ class EntigramBroker:
             ("ontology/schema.ttl", "ontology_contract"),
             (".etg/entigram.yaml", "workspace_manifest"),
         ]
-        # A delivery claim must be tied to the runtime it certifies, not only
-        # its schema contracts. These source anchors are local and portable.
-        runtime_dir = self.target_dir / "entigram"
-        if runtime_dir.exists():
-            artifacts.extend(
-                (path.relative_to(self.target_dir).as_posix(), "runtime_source")
-                for path in sorted(runtime_dir.rglob("*.py"))
+        artifacts.extend(
+            (workspace_relative_path(self.target_dir, path), "schema_contract")
+            for path in authoritative_schema_paths(
+                self.target_dir,
+                require_existing=False,
             )
+        )
+        artifacts.extend(
+            (workspace_relative_path(self.target_dir, path), "governed_source")
+            for path in governed_artifact_paths(self.target_dir)
+        )
         return artifacts
 
     def _record_delivery_artifacts(
@@ -725,16 +733,25 @@ class EntigramBroker:
             })
 
         unanchored_artifacts = []
-        for artifact_path in artifact_paths or []:
-            current = self._capture_artifact(artifact_path, artifact_role)
+        current_candidates = list(self._default_delivery_artifacts())
+        current_candidates.extend(
+            (path, artifact_role) for path in (artifact_paths or [])
+        )
+        seen_current = set()
+        for artifact_path, role in current_candidates:
+            current = self._capture_artifact(artifact_path, role)
             if current.get("missing"):
-                unanchored_artifacts.append({
-                    "path": artifact_path,
-                    "artifact_role": artifact_role,
-                    "status": "missing",
-                })
+                if artifact_path in (artifact_paths or []):
+                    unanchored_artifacts.append({
+                        "path": artifact_path,
+                        "artifact_role": role,
+                        "status": "missing",
+                    })
                 continue
             key = (current["path"], current["artifact_role"])
+            if key in seen_current:
+                continue
+            seen_current.add(key)
             if key not in anchored_keys:
                 unanchored_artifacts.append({
                     "path": current["path"],
@@ -952,14 +969,15 @@ class EntigramBroker:
     def _domain_declares_concept(self, domain: str, concept: str) -> bool:
         from .schema_compiler.parser import SchemaParser
 
+        authoritative = set(authoritative_schema_paths(self.target_dir))
         candidates = [
-            self.etg_dir / "packages" / domain / "schema.lds",
-            self.target_dir / "packages" / domain / "schema.lds",
+            (self.etg_dir / "packages" / domain / "schema.lds").resolve(),
+            (self.target_dir / "packages" / domain / "schema.lds").resolve(),
         ]
         if domain in {".", "root", "workspace"}:
-            candidates.append(self.target_dir / "schema.lds")
+            candidates.append((self.target_dir / "schema.lds").resolve())
         for schema_path in candidates:
-            if not schema_path.exists():
+            if schema_path not in authoritative:
                 continue
             entities, _ = SchemaParser(schema_path.read_text()).parse()
             if concept in entities:

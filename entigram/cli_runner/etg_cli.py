@@ -789,6 +789,17 @@ def main():
     add_reg_parser = registry_subparsers.add_parser("add", help="Add a remote git repository as a package registry")
     add_reg_parser.add_argument("--url", required=True, help="Git URL of the registry")
     add_reg_parser.add_argument("--dir", default=".", help="Target directory")
+    add_reg_parser.add_argument(
+        "--trusted-key-id",
+        action="append",
+        default=[],
+        help="Trusted Ed25519 package-signing key ID; may be repeated",
+    )
+    add_reg_parser.add_argument(
+        "--allow-unsigned",
+        action="store_true",
+        help="Explicitly allow unsigned packages from this registry",
+    )
     
     list_reg_parser = registry_subparsers.add_parser("list", help="List configured registries")
     list_reg_parser.add_argument("--dir", default=".", help="Target directory")
@@ -1523,7 +1534,11 @@ def main():
         from entigram.registry import EntigramRegistry
         registry = EntigramRegistry(args.dir)
         if args.registry_command == "add":
-            if registry.add_registry(args.url):
+            if registry.add_registry(
+                args.url,
+                trusted_key_ids=args.trusted_key_id,
+                allow_unsigned=args.allow_unsigned,
+            ):
                 print(f"✅ Added registry: {args.url}")
             else:
                 sys.exit(1)
