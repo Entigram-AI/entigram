@@ -104,22 +104,6 @@ class TestCLIIntegration(unittest.TestCase):
         self.assertFalse(success)
         self.assertIn("does not declare concept", output)
 
-    def test_registry_add_persists_trusted_signing_key(self):
-        self.run_cli(['init', '--dir', '.', '--force'])
-
-        success, output = self.run_cli([
-            'registry', 'add',
-            '--url', 'https://example.com/packages.git',
-            '--trusted-key-id', 'publisher-key-id',
-        ])
-
-        self.assertTrue(success)
-        self.assertIn("Added registry", output)
-        manifest = yaml.safe_load(Path(".etg/entigram.yaml").read_text())
-        policy = manifest["registry_trust"]["https://example.com/packages.git"]
-        self.assertTrue(policy["require_signature"])
-        self.assertEqual(policy["trusted_key_ids"], ["publisher-key-id"])
-
     def test_cli_module_does_not_import_yaml_or_injector_at_module_load(self):
         source = (Path(__file__).parent.parent / "entigram" / "cli_runner" / "etg_cli.py").read_text()
         tree = ast.parse(source)

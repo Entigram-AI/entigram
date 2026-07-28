@@ -19,7 +19,7 @@ class TestWorkspaceStandardDocs(unittest.TestCase):
         self.assertIn(".etg/state.db", standard)
         self.assertIn("schema_paths", standard)
         self.assertIn("governed_artifact_globs", standard)
-        self.assertIn("trusted_key_ids", standard)
+        self.assertIn("git ls-files", standard)
         self.assertIn("etg broker export-audit --out entigram-audit.json", standard)
         self.assertIn("workspace_schema_version", standard)
         self.assertIn("Breaking changes", standard)

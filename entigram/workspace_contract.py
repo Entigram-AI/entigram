@@ -1,3 +1,5 @@
+import os
+import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -155,15 +157,63 @@ def governed_artifact_paths(target_dir: WorkspacePath) -> List[Path]:
     root = Path(target_dir).expanduser().resolve()
     manifest = load_workspace_manifest(root)
     configured = manifest.get("governed_artifact_globs")
-    if configured is None:
-        patterns = DEFAULT_GOVERNED_ARTIFACT_GLOBS
-    else:
+    if configured is not None:
         if not isinstance(configured, list) or not configured:
             raise ValueError("governed_artifact_globs must be a non-empty list")
         if not all(isinstance(value, str) and value.strip() for value in configured):
             raise ValueError("governed_artifact_globs entries must be non-empty strings")
-        patterns = tuple(configured)
+        return _globbed_artifact_paths(root, tuple(configured))
 
+    git_paths = _git_artifact_paths(root)
+    if git_paths is not None:
+        return git_paths
+    return _globbed_artifact_paths(root, DEFAULT_GOVERNED_ARTIFACT_GLOBS)
+
+
+def _git_artifact_paths(root: Path) -> Optional[List[Path]]:
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(root),
+                "ls-files",
+                "-z",
+                "--cached",
+                "--others",
+                "--exclude-standard",
+                "--",
+                ".",
+            ],
+            check=True,
+            capture_output=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return None
+
+    paths = set()
+    for raw_path in result.stdout.split(b"\0"):
+        if not raw_path:
+            continue
+        relative = Path(os.fsdecode(raw_path))
+        if relative.is_absolute() or ".." in relative.parts:
+            continue
+        candidate = root / relative
+        if candidate.is_symlink() or not candidate.is_file():
+            continue
+        path = candidate.resolve()
+        try:
+            path.relative_to(root)
+        except ValueError:
+            continue
+        normalized = path.relative_to(root)
+        if _is_ignored_artifact_path(normalized):
+            continue
+        paths.add(path)
+    return sorted(paths)
+
+
+def _globbed_artifact_paths(root: Path, patterns: Tuple[str, ...]) -> List[Path]:
     paths = set()
     for pattern in patterns:
         candidate_pattern = Path(pattern)

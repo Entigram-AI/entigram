@@ -84,6 +84,14 @@ class TestPackageSigning(unittest.TestCase):
 
         self.assertTrue(verification.ok)
 
+    def test_package_manifest_rejects_unsupported_version(self):
+        with self.assertRaisesRegex(ValueError, "unsupported package manifest version"):
+            create_package_manifest(
+                str(self.package_dir),
+                {"name": "@entigram/demo"},
+                manifest_version=3,
+            )
+
     def test_catalog_signature_verifies_and_detects_tampering(self):
         catalog_path = self.test_dir / "standard_package_catalog.json"
         catalog_path.write_text(json.dumps({"packages": [{"name": "@entigram/demo"}]}, indent=2))
@@ -113,23 +121,19 @@ class TestPackageSigning(unittest.TestCase):
         self.assertFalse(verification.ok)
         self.assertIn("signature key id mismatch", verification.errors)
 
-    def test_package_signature_requires_configured_trust_root(self):
+    def test_package_signature_rejects_wrong_artifact_label(self):
         manifest = create_package_manifest(str(self.package_dir), {"name": "@entigram/demo"})
         write_package_manifest(str(self.package_dir), manifest)
-        signature = sign_package_manifest(str(self.package_dir), key_path=str(self.key_path))
+        sign_package_manifest(str(self.package_dir), key_path=str(self.key_path))
+        signature_path = self.package_dir / SIGNATURE_NAME
+        signature = json.loads(signature_path.read_text())
+        signature["signed_artifact"] = "standard_package_catalog.json"
+        signature_path.write_text(json.dumps(signature))
 
-        untrusted = verify_package(
-            str(self.package_dir),
-            trusted_key_ids={"another-publisher"},
-        )
-        trusted = verify_package(
-            str(self.package_dir),
-            trusted_key_ids={signature["key_id"]},
-        )
+        verification = verify_package(str(self.package_dir))
 
-        self.assertFalse(untrusted.ok)
-        self.assertIn("untrusted package signing key", untrusted.errors[0])
-        self.assertTrue(trusted.ok)
+        self.assertFalse(verification.ok)
+        self.assertIn("unexpected signed artifact", verification.errors)
 
 
 if __name__ == "__main__":

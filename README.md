@@ -162,9 +162,9 @@ container, and SQL Server discovery should run `sqlcmd` from the SQL Server
 container image. Host-installed clients are a fallback for operators who
 already manage those binaries, not the default Entigram package path.
 
-Standard packages use deterministic manifests and Ed25519 signatures. The
-official registry key is pinned by the CLI; custom remote registries require a
-trusted publisher key:
+Standard packages can be signed without changing the install experience for
+local exploration. Publishers generate deterministic manifests and Ed25519
+signatures, while CI or registry workflows can opt into enforcement:
 
 ```bash
 etg package sign --package @entigram/postgres --catalog standard_package_catalog.json
@@ -172,15 +172,11 @@ etg package verify --package @entigram/postgres
 etg package sign-catalog --catalog standard_package_catalog.json
 etg package verify-catalog --catalog standard_package_catalog.json
 etg package audit --catalog standard_package_catalog.json --verify-signatures
-etg registry add --url https://example.com/packages.git \
-  --trusted-key-id <ed25519-key-id>
 ```
 
 If `--key` is omitted, Entigram creates `.etg/package_signing_ed25519_private.pem`
-and keeps it out of version control. Unsigned local exploration remains
-available, while an unsigned remote registry must be explicitly added with
-`--allow-unsigned`. Package installation also refuses a version older than the
-version already locked in the workspace manifest.
+and keeps it out of version control. Package users can still suggest, inspect,
+and install packages without managing signing keys.
 
 Before returning work to a human reviewer:
 

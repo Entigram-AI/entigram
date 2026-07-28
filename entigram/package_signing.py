@@ -4,7 +4,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, List, Optional
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
@@ -105,7 +105,6 @@ def sign_package_manifest(package_dir: str, key_path: Optional[str] = None) -> D
 def verify_package(
     package_dir: str,
     require_signature: bool = True,
-    trusted_key_ids: Optional[Iterable[str]] = None,
 ) -> PackageVerification:
     root = Path(package_dir).expanduser().resolve()
     manifest_path = root / MANIFEST_NAME
@@ -163,8 +162,6 @@ def verify_package(
             expected_artifact=MANIFEST_NAME,
         )
         result.key_id = signature.get("key_id")
-        if trusted_key_ids is not None and result.key_id not in set(trusted_key_ids):
-            raise ValueError(f"untrusted package signing key: {result.key_id}")
     except Exception as exc:
         result.ok = False
         result.errors.append(str(exc))

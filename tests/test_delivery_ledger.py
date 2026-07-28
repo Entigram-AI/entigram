@@ -434,6 +434,80 @@ class TestBrokerDeliverySnapshots(unittest.TestCase):
                 ledger.close()
             shutil.rmtree(test_dir)
 
+    def test_governed_artifacts_use_git_inventory_and_ignore_rules(self):
+        import shutil
+        import subprocess
+        import tempfile
+        from pathlib import Path
+
+        from entigram.injector import inject_entigram_manifest
+        from entigram.workspace_contract import governed_artifact_paths
+
+        if shutil.which("git") is None:
+            self.skipTest("git is not installed")
+
+        test_dir = tempfile.mkdtemp()
+        try:
+            inject_entigram_manifest(test_dir, ["Entigram Schemas"], "Codex")
+            subprocess.run(
+                ["git", "init", "--quiet"],
+                cwd=test_dir,
+                check=True,
+            )
+            Path(test_dir, ".gitignore").write_text("generated/\n")
+            source = Path(test_dir, "src", "workflow.agent")
+            source.parent.mkdir()
+            source.write_text("governed\n")
+            ignored = Path(test_dir, "generated", "cache.agent")
+            ignored.parent.mkdir()
+            ignored.write_text("ignored\n")
+
+            paths = set(governed_artifact_paths(test_dir))
+
+            self.assertIn(source.resolve(), paths)
+            self.assertNotIn(ignored.resolve(), paths)
+        finally:
+            shutil.rmtree(test_dir)
+
+    def test_governed_artifact_globs_override_git_inventory(self):
+        import shutil
+        import subprocess
+        import tempfile
+        from pathlib import Path
+
+        import yaml
+
+        from entigram.injector import inject_entigram_manifest
+        from entigram.workspace_contract import governed_artifact_paths
+
+        if shutil.which("git") is None:
+            self.skipTest("git is not installed")
+
+        test_dir = tempfile.mkdtemp()
+        try:
+            inject_entigram_manifest(test_dir, ["Entigram Schemas"], "Codex")
+            subprocess.run(
+                ["git", "init", "--quiet"],
+                cwd=test_dir,
+                check=True,
+            )
+            manifest_path = Path(test_dir, ".etg", "entigram.yaml")
+            manifest = yaml.safe_load(manifest_path.read_text())
+            manifest["governed_artifact_globs"] = ["src/*.py"]
+            manifest_path.write_text(yaml.dump(manifest, default_flow_style=False))
+            included = Path(test_dir, "src", "app.py")
+            included.parent.mkdir()
+            included.write_text("included = True\n")
+            excluded = Path(test_dir, "src", "workflow.agent")
+            excluded.write_text("excluded\n")
+
+            paths = set(governed_artifact_paths(test_dir))
+
+            self.assertIn(included.resolve(), paths)
+            self.assertNotIn(excluded.resolve(), paths)
+        finally:
+            shutil.rmtree(test_dir)
+
     def test_export_audit_bundle_has_ed25519_signature(self):
         import base64
         import json

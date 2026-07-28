@@ -62,9 +62,11 @@ schema requires a new lock before it can authorize alignments or state changes.
 
 `governed_artifact_globs` is optional. It selects project files that delivery
 snapshots must anchor and compare in both directions, including newly added
-files. Without it, Entigram uses polyglot source and project-configuration
-defaults while excluding `.git`, `.etg`, virtual environments, dependency
-directories, caches, and build output.
+files. Without it, Entigram uses `git ls-files` to include tracked and untracked
+non-ignored workspace files across languages. In a non-Git workspace, Entigram
+falls back to polyglot source and project-configuration defaults. Both paths
+exclude `.git`, `.etg`, virtual environments, dependency directories, caches,
+and build output.
 
 ## Schema Contract
 
@@ -224,30 +226,7 @@ etg package verify-catalog --catalog standard_package_catalog.json
 ```
 
 Local exploration should not require signature management, but CI, registries,
-and enterprise workflows can enforce signatures. Entigram pins the official
-standard-package signing key. Custom remote registries must declare trusted
-publisher key IDs:
-
-```bash
-etg registry add \
-  --url https://example.com/packages.git \
-  --trusted-key-id <ed25519-key-id>
-```
-
-This writes a persistent policy to the workspace manifest:
-
-```yaml
-registry_trust:
-  https://example.com/packages.git:
-    require_signature: true
-    trusted_key_ids:
-      - <ed25519-key-id>
-```
-
-Unsigned custom registries require the explicit `--allow-unsigned` option.
-Signatures without a configured or built-in trust root prove file consistency,
-not publisher identity. A registry package version must not be older than the
-version already locked in the workspace manifest.
+and enterprise workflows can enforce signatures.
 
 ## Portability Rules
 

@@ -357,26 +357,26 @@ class EntigramBroker:
         }
 
     def _default_delivery_artifacts(self) -> List[Tuple[str, str]]:
-        artifacts = [
+        artifacts = {
             ("schema.lds", "schema_contract"),
             ("schema.ttl", "ontology_contract"),
             ("draft_schema.lds", "draft_schema_contract"),
             ("draft_schema.ttl", "draft_ontology_contract"),
             ("ontology/schema.ttl", "ontology_contract"),
             (".etg/entigram.yaml", "workspace_manifest"),
-        ]
-        artifacts.extend(
-            (workspace_relative_path(self.target_dir, path), "schema_contract")
-            for path in authoritative_schema_paths(
-                self.target_dir,
-                require_existing=False,
+        }
+        roles_by_path = dict(artifacts)
+        for path in authoritative_schema_paths(
+            self.target_dir,
+            require_existing=False,
+        ):
+            roles_by_path[workspace_relative_path(self.target_dir, path)] = "schema_contract"
+        for path in governed_artifact_paths(self.target_dir):
+            roles_by_path.setdefault(
+                workspace_relative_path(self.target_dir, path),
+                "governed_source",
             )
-        )
-        artifacts.extend(
-            (workspace_relative_path(self.target_dir, path), "governed_source")
-            for path in governed_artifact_paths(self.target_dir)
-        )
-        return artifacts
+        return sorted(roles_by_path.items())
 
     def _record_delivery_artifacts(
         self,
