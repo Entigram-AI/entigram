@@ -60,6 +60,7 @@ class TestCLIIntegration(unittest.TestCase):
             self.assertNotIn("entigram_version", manifest)
             self.assertEqual(manifest["schema_paths"], ["schema.lds"])
             self.assertEqual(manifest["state_ledger"], ".etg/state.db")
+            self.assertEqual(manifest["lifecycle"]["state"], "active")
             policy = Path(".etg/agent_policy.md")
             self.assertTrue(policy.exists())
             self.assertIn("Run `hydrate`", policy.read_text())

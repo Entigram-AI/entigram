@@ -7,6 +7,8 @@
 * add out-of-the-box expectation guard for pre-handoff agent verification
 * add `etg serve` MCP server with schema-gated alignment and conflict tools
 * publish agent discoverability through `ai-catalog.json`
+* add privacy-preserving `etg usage` estimates for static context and observed CLI/MCP traffic
+* add reversible workspace `pause`, `resume`, and archive-first `eject` controls
 
 ### Bug Fixes
 

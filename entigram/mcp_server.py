@@ -3,6 +3,7 @@ import sys
 from typing import Optional
 
 from entigram.mcp_service import EntigramMCPService
+from entigram.usage import MCP_TOOL_DECLARATIONS
 
 
 def create_mcp_server(target_dir: str = ".", host: Optional[str] = None, port: Optional[int] = None):
@@ -54,6 +55,16 @@ def create_mcp_server(target_dir: str = ".", host: Optional[str] = None, port: O
             return service.log_conflict(payload)
         except Exception as exc:
             return _tool_error("INVALID_CONFLICT", f"Invalid Conflict - {exc}")
+
+    registered_tools = {
+        "etg_get_schemas",
+        "etg_get_impact",
+        "etg_propose_alignment",
+        "etg_log_conflict",
+    }
+    declared_tools = {tool["name"] for tool in MCP_TOOL_DECLARATIONS}
+    if registered_tools != declared_tools:
+        raise RuntimeError("MCP usage declarations do not match registered tools")
 
     return mcp
 

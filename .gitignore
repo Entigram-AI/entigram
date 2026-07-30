@@ -16,6 +16,8 @@ boot.json
 **/.etg/*.db
 **/.etg/states/*.db
 **/.etg/states/**/*.db
+.etg/lifecycle/
+**/.etg/lifecycle/
 
 # Env
 .env

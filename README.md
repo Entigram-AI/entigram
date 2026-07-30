@@ -23,6 +23,8 @@ Enterprise agent adoption fails when agents lack trustworthy domain context and 
 - **Expectation Guard:** Convert modeled expectations, implementation rules, and validation checks into a runnable pre-handoff agent gate.
 - **Agent Hydration:** Boot agents with exact project state, schemas, alignments, and settled decisions.
 - **Auditability:** Store every alignment and decision in a local SQLite ledger for full provenance and governance.
+- **Transparent Usage:** Estimate Entigram-owned context and observed CLI/MCP traffic without retaining prompts or responses.
+- **Reversible Enrollment:** Pause, resume, or archive-and-detach workspace governance without deleting project artifacts.
 
 ## Core Workflow
 
@@ -96,6 +98,30 @@ etg broker status
 ```
 
 `broker status` must report `Delivery status: current`.
+
+Inspect Entigram's estimated share of a session:
+
+```bash
+etg usage
+etg usage --total-tokens 50000
+```
+
+Temporarily compact and disable workspace governance:
+
+```bash
+etg pause --reason "Working without governed context"
+etg resume
+```
+
+Archive and detach Entigram while preserving project schemas and code:
+
+```bash
+etg eject --dry-run
+etg eject
+```
+
+Workspace `pause` and `resume` are separate from `etg broker hibernate` and
+`etg broker resume`, which checkpoint one agent near a token or time limit.
 
 ### 4. Run the Immutable Gate over MCP
 
@@ -200,6 +226,8 @@ example is available in
 [`docs/minimal-governed-workspace.md`](docs/minimal-governed-workspace.md).
 For the recommended OpenCode setup, see
 [`docs/opencode.md`](docs/opencode.md).
+For usage accounting and workspace lifecycle behavior, see
+[`docs/workspace-lifecycle.md`](docs/workspace-lifecycle.md).
 
 Run the local Immutable Gate smoke demo:
 ```bash

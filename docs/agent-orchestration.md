@@ -59,3 +59,12 @@ etg broker resume --agent codex-strong
 
 Near the halt window, agents should stop starting risky work and only checkpoint,
 summarize, run read-only validation, or hibernate.
+
+## Workspace Lifecycle Is Separate
+
+`etg pause` and `etg resume` compact or restore Entigram governance for the
+whole workspace. They do not hibernate or resume an individual agent.
+
+Use broker hibernation for continuity across agent token/time limits. Use
+workspace pause when the operator intentionally wants Entigram context and
+governance gates disabled until a later session.

@@ -298,6 +298,25 @@ class LedgerManager:
                 CREATE INDEX IF NOT EXISTS idx_agent_hibernations_resume
                 ON agent_hibernations(status, resume_after)
             ''')
+            # Aggregate-only accounting for Entigram-owned context and tool traffic.
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS usage_events (
+                    id INTEGER PRIMARY KEY,
+                    operation TEXT NOT NULL,
+                    surface TEXT NOT NULL,
+                    input_characters INTEGER NOT NULL DEFAULT 0,
+                    output_characters INTEGER NOT NULL DEFAULT 0,
+                    estimated_input_tokens INTEGER NOT NULL DEFAULT 0,
+                    estimated_output_tokens INTEGER NOT NULL DEFAULT 0,
+                    lifecycle_state TEXT NOT NULL DEFAULT 'active',
+                    metadata TEXT DEFAULT '{}',
+                    observed_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            conn.execute('''
+                CREATE INDEX IF NOT EXISTS idx_usage_events_operation
+                ON usage_events(operation, id)
+            ''')
             # Table for delivery snapshots (frozen boot state at commission pass)
             conn.execute('''
                 CREATE TABLE IF NOT EXISTS delivery_snapshots (
@@ -351,6 +370,116 @@ class LedgerManager:
         for name, ddl in columns.items():
             if name not in existing:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+
+    def record_usage_event(
+        self,
+        *,
+        operation: str,
+        surface: str,
+        input_characters: int,
+        output_characters: int,
+        estimated_input_tokens: int,
+        estimated_output_tokens: int,
+        lifecycle_state: str = "active",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[int]:
+        """Records aggregate usage counts without retaining prompt or response content."""
+        allowed_metadata = {
+            "command",
+            "error_code",
+            "exit_code",
+            "mode",
+            "tool",
+            "transport",
+        }
+        sanitized_metadata = {
+            key: value
+            for key, value in (metadata or {}).items()
+            if key in allowed_metadata
+            and isinstance(value, (str, int, float, bool, type(None)))
+        }
+        conn = self._get_connection()
+        try:
+            with conn:
+                cursor = conn.execute(
+                    '''
+                    INSERT INTO usage_events (
+                        operation, surface, input_characters, output_characters,
+                        estimated_input_tokens, estimated_output_tokens,
+                        lifecycle_state, metadata
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ''',
+                    (
+                        operation,
+                        surface,
+                        max(0, int(input_characters)),
+                        max(0, int(output_characters)),
+                        max(0, int(estimated_input_tokens)),
+                        max(0, int(estimated_output_tokens)),
+                        lifecycle_state if lifecycle_state in {"active", "paused"} else "active",
+                        json.dumps(sanitized_metadata, sort_keys=True),
+                    ),
+                )
+                return cursor.lastrowid
+        finally:
+            if self.db_path != ":memory:":
+                conn.close()
+
+    def get_usage_summary(self) -> Dict[str, Any]:
+        """Returns all-time and current hydration-session aggregate usage."""
+        conn = self._get_connection()
+        try:
+            boundary = conn.execute(
+                '''
+                SELECT id, observed_at
+                FROM usage_events
+                WHERE operation IN ('hydrate', 'boot')
+                ORDER BY id DESC
+                LIMIT 1
+                '''
+            ).fetchone()
+            all_time = self._usage_aggregate(conn)
+            session = self._usage_aggregate(
+                conn,
+                minimum_id=boundary[0] if boundary else None,
+            )
+            return {
+                "session_boundary": (
+                    {"event_id": boundary[0], "observed_at": boundary[1]}
+                    if boundary
+                    else None
+                ),
+                "session": session,
+                "all_time": all_time,
+            }
+        finally:
+            if self.db_path != ":memory:":
+                conn.close()
+
+    def _usage_aggregate(self, conn, minimum_id: Optional[int] = None) -> Dict[str, int]:
+        where = "WHERE id >= ?" if minimum_id is not None else ""
+        params = (minimum_id,) if minimum_id is not None else ()
+        row = conn.execute(
+            f'''
+            SELECT COUNT(*),
+                   COALESCE(SUM(input_characters), 0),
+                   COALESCE(SUM(output_characters), 0),
+                   COALESCE(SUM(estimated_input_tokens), 0),
+                   COALESCE(SUM(estimated_output_tokens), 0)
+            FROM usage_events
+            {where}
+            ''',
+            params,
+        ).fetchone()
+        return {
+            "event_count": int(row[0]),
+            "input_characters": int(row[1]),
+            "output_characters": int(row[2]),
+            "estimated_input_tokens": int(row[3]),
+            "estimated_output_tokens": int(row[4]),
+            "estimated_total_tokens": int(row[3]) + int(row[4]),
+        }
 
     def record_synonym(self, term: str, synonym: str, confidence: float = 1.0) -> bool:
         """Persists a semantic synonym relationship."""
