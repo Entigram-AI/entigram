@@ -81,7 +81,7 @@ jobs:
           echo "Releasing version: $VERSION"
 
           # Clone and update Homebrew tap
-          git clone https://x-access-token:${HOMEBREW_TAP_GITHUB_TOKEN}@github.com/nyabutid/homebrew-entigram.git
+          git clone https://x-access-token:${HOMEBREW_TAP_GITHUB_TOKEN}@github.com/Entigram-AI/homebrew-entigram.git
           cd homebrew-entigram
           FORMULA=$(find Formula -maxdepth 1 -type f -name '*.rb' | sort | head -n 1)
           if [ -z "$FORMULA" ]; then
