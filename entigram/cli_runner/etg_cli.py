@@ -524,6 +524,11 @@ def get_hydration_vector(target_path: Path, compact: bool = False, full: bool = 
     if not manifest_path.exists():
         return f"❌ Error: Not an Entigram workspace (missing {manifest_path})"
 
+    from entigram.workspace_lifecycle import is_workspace_paused, paused_hydration_vector
+
+    if is_workspace_paused(target_path):
+        return paused_hydration_vector(compact=compact)
+
     # 1. Load Manifest
     try:
         yaml = _load_yaml_module()
@@ -657,7 +662,51 @@ def launch_ui(target_dir=None):
         print(f"❌ Failed to launch dashboard: {e}")
         return False
 
-def main():
+
+def _paused_command_allowed(args) -> bool:
+    if args.command in {"usage", "pause", "resume", "eject", "hydrate", "boot"}:
+        return True
+    return args.command == "config" and bool(getattr(args, "list", False))
+
+
+def _emit_lifecycle_error(error, *, json_output: bool = False) -> None:
+    if json_output:
+        print(json.dumps(error.as_dict(), indent=2, sort_keys=True))
+    else:
+        print(f"Error [{error.code}]: {error}")
+
+
+def _emit_lifecycle_result(result, *, json_output: bool = False) -> None:
+    if json_output:
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return
+    state = result.get("state")
+    if state == "paused":
+        if result.get("changed"):
+            print("Entigram workspace governance paused.")
+            print(f"Backup: {result['backup']}")
+        else:
+            print("Entigram workspace governance is already paused.")
+        print("Allowed: etg usage, etg resume, etg eject")
+    elif state == "active":
+        if result.get("changed"):
+            print("Entigram workspace governance resumed.")
+            if result.get("conflict_archive"):
+                print(f"Conflicting paused content: {result['conflict_archive']}")
+        else:
+            print("Entigram workspace governance is already active.")
+        print("Next: hydrate")
+    elif state == "ejected":
+        print("Entigram detached from this workspace.")
+        print(f"Archive: {result['archive']} (mode {result['archive_mode']})")
+        if result.get("residual_references"):
+            print("Residual Entigram references:")
+            for path in result["residual_references"]:
+                print(f"  - {path}")
+        print("Re-enroll with: etg init")
+
+
+def _main():
     if Path(sys.argv[0]).name == "hydrate":
         sys.argv.insert(1, "hydrate")
 
@@ -675,6 +724,29 @@ def main():
     default_engine = get_default_engine()
     init_parser.add_argument("--engine", default=default_engine, help=f"CLI Engine (Detected: {default_engine})")
     init_parser.add_argument("--force", action="store_true", help="Force initialization even if workspace exists")
+
+    # workspace lifecycle and usage commands
+    usage_parser = subparsers.add_parser("usage", help="Estimate Entigram-owned token usage and context")
+    usage_parser.add_argument("--dir", help="Target directory (defaults to current workspace)")
+    usage_parser.add_argument("--total-tokens", type=int, help="Total session tokens for percentage attribution")
+    usage_parser.add_argument("--json", action="store_true", dest="json_output", help="Output stable JSON")
+
+    pause_parser = subparsers.add_parser("pause", help="Pause workspace governance and compact Entigram context")
+    pause_parser.add_argument("--dir", help="Target directory (defaults to current workspace)")
+    pause_parser.add_argument("--reason", help="Optional operator reason recorded in the local pause backup")
+    pause_parser.add_argument("--json", action="store_true", dest="json_output", help="Output stable JSON")
+
+    resume_parser = subparsers.add_parser("resume", help="Resume paused workspace governance")
+    resume_parser.add_argument("--dir", help="Target directory (defaults to current workspace)")
+    resume_parser.add_argument("--force", action="store_true", help="Archive conflicting paused content and restore")
+    resume_parser.add_argument("--json", action="store_true", dest="json_output", help="Output stable JSON")
+
+    eject_parser = subparsers.add_parser("eject", help="Archive and detach Entigram from a workspace")
+    eject_parser.add_argument("--dir", help="Target directory (defaults to current workspace)")
+    eject_parser.add_argument("--archive", help="Archive destination (must not already exist)")
+    eject_parser.add_argument("--dry-run", action="store_true", help="Show the detach plan without changing files")
+    eject_parser.add_argument("--yes", action="store_true", help="Confirm non-interactively")
+    eject_parser.add_argument("--json", action="store_true", dest="json_output", help="Output stable JSON")
 
     # config command
     config_parser = subparsers.add_parser("config", help="Manage workspace configuration")
@@ -1370,10 +1442,119 @@ def main():
 
     args = parser.parse_args()
 
+    if args.command and not _paused_command_allowed(args):
+        from entigram.workspace_lifecycle import is_workspace_paused, paused_error
+
+        target_dir = _resolve_workspace_dir(getattr(args, "dir", None))
+        if is_workspace_paused(target_dir):
+            payload = paused_error()
+            if getattr(args, "json_output", False):
+                print(json.dumps(payload, indent=2, sort_keys=True))
+            else:
+                print("Entigram workspace governance is paused.")
+                print("Run `etg resume` before using this command.")
+            sys.exit(2)
+
     if not args.command:
         parser.print_help()
     elif hasattr(args, 'func'):
         args.func(args)
+    elif args.command == "usage":
+        from contextlib import redirect_stderr, redirect_stdout
+        from io import StringIO
+
+        from entigram.usage import build_usage_report, format_usage_report
+        from entigram.workspace_lifecycle import WorkspaceLifecycleError
+
+        target_path = _resolve_workspace_dir(args.dir)
+        try:
+            with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+                vectors = {
+                    "compact": get_hydration_vector(target_path, compact=True),
+                    "default": get_hydration_vector(target_path),
+                    "full": get_hydration_vector(target_path, full=True),
+                }
+            report = build_usage_report(
+                target_path,
+                hydration_vectors=vectors,
+                total_tokens=args.total_tokens,
+            )
+        except (WorkspaceLifecycleError, ValueError) as exc:
+            if isinstance(exc, WorkspaceLifecycleError):
+                _emit_lifecycle_error(exc, json_output=args.json_output)
+            elif args.json_output:
+                print(json.dumps({
+                    "ok": False,
+                    "error": {
+                        "code": "INVALID_USAGE_REQUEST",
+                        "message": str(exc),
+                        "details": {},
+                    },
+                }, indent=2, sort_keys=True))
+            else:
+                print(f"Error: {exc}")
+            sys.exit(1)
+        print(
+            json.dumps(report, indent=2, sort_keys=True)
+            if args.json_output
+            else format_usage_report(report)
+        )
+    elif args.command == "pause":
+        from entigram.workspace_lifecycle import WorkspaceLifecycleError, pause_workspace
+
+        try:
+            result = pause_workspace(_resolve_workspace_dir(args.dir), reason=args.reason)
+        except WorkspaceLifecycleError as exc:
+            _emit_lifecycle_error(exc, json_output=args.json_output)
+            sys.exit(1)
+        _emit_lifecycle_result(result, json_output=args.json_output)
+    elif args.command == "resume":
+        from entigram.workspace_lifecycle import WorkspaceLifecycleError, resume_workspace
+
+        try:
+            result = resume_workspace(_resolve_workspace_dir(args.dir), force=args.force)
+        except WorkspaceLifecycleError as exc:
+            _emit_lifecycle_error(exc, json_output=args.json_output)
+            sys.exit(1)
+        _emit_lifecycle_result(result, json_output=args.json_output)
+    elif args.command == "eject":
+        from entigram.workspace_lifecycle import (
+            WorkspaceLifecycleError,
+            eject_workspace,
+            plan_eject,
+        )
+
+        target_path = _resolve_workspace_dir(args.dir)
+        archive_path = Path(args.archive).expanduser() if args.archive else None
+        try:
+            if args.dry_run:
+                result = plan_eject(target_path, archive=archive_path)
+                if args.json_output:
+                    print(json.dumps(result, indent=2, sort_keys=True))
+                else:
+                    print("Entigram eject dry run")
+                    print(f"Archive: {result['archive']}")
+                    print("Will remove: .etg")
+                    if result["instruction_files"]:
+                        print("Entigram blocks will be removed from:")
+                        for path in result["instruction_files"]:
+                            print(f"  - {path}")
+                return
+            if not args.yes:
+                if not sys.stdin.isatty():
+                    print("Error: non-interactive eject requires --yes.")
+                    sys.exit(2)
+                confirmation = input(
+                    "Archive and detach Entigram from this workspace? Type 'eject' to continue: "
+                ).strip()
+                if confirmation != "eject":
+                    print("Aborted.")
+                    return
+            result = eject_workspace(target_path, archive=archive_path)
+        except WorkspaceLifecycleError as exc:
+            _emit_lifecycle_error(exc, json_output=args.json_output)
+            sys.exit(1)
+        _emit_lifecycle_result(result, json_output=args.json_output)
     elif args.command == "init":
         target_dir = args.dir
         if not target_dir:
@@ -2754,6 +2935,93 @@ RELATIONSHIPS:
 
     else:
         parser.print_help()
+
+
+def _cli_operation(argv) -> str:
+    if Path(argv[0]).name == "hydrate":
+        return "hydrate"
+    for value in argv[1:]:
+        if value == "--version":
+            return ""
+        if not value.startswith("-"):
+            return value
+    return ""
+
+
+def _cli_workspace(argv) -> Path:
+    for index, value in enumerate(argv[1:]):
+        if value.startswith("--dir="):
+            return Path(value.split("=", 1)[1]).expanduser().resolve()
+        if value == "--dir" and index + 2 < len(argv):
+            return Path(argv[index + 2]).expanduser().resolve()
+    return _resolve_workspace_dir()
+
+
+def _track_cli_operation(operation: str, argv) -> bool:
+    if not operation or operation in {
+        "usage",
+        "eject",
+        "serve",
+        "panel-bridge",
+        "cloudflare-ollama-proxy",
+        "cloudflare-claude",
+        "ui",
+        "interview",
+        "model",
+    }:
+        return False
+    if operation == "agent":
+        return any(value in {"start", "instructions"} for value in argv[2:])
+    return True
+
+
+def main():
+    argv = list(sys.argv)
+    operation = _cli_operation(argv)
+    should_track = _track_cli_operation(operation, argv)
+    if not should_track:
+        return _main()
+
+    from entigram.usage import CountingWriter, record_workspace_usage
+
+    target_path = _cli_workspace(argv) if should_track else None
+    input_characters = len(" ".join(argv[1:]))
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
+    counted_stdout = CountingWriter(original_stdout)
+    counted_stderr = CountingWriter(original_stderr)
+    exit_code = 0
+    if should_track:
+        sys.stdout = counted_stdout
+        sys.stderr = counted_stderr
+    try:
+        return _main()
+    except SystemExit as exc:
+        exit_code = exc.code if isinstance(exc.code, int) else 1
+        raise
+    except Exception:
+        exit_code = 1
+        raise
+    finally:
+        if should_track:
+            sys.stdout = original_stdout
+            sys.stderr = original_stderr
+            from entigram.workspace_lifecycle import is_workspace_paused
+
+            paused = bool(target_path and is_workspace_paused(target_path))
+            if not (operation in {"hydrate", "boot"} and paused):
+                record_workspace_usage(
+                    target_path,
+                    operation=operation,
+                    surface="cli",
+                    input_characters=input_characters,
+                    output_characters=(
+                        counted_stdout.character_count + counted_stderr.character_count
+                    ),
+                    lifecycle_state="paused" if paused else "active",
+                    metadata={"command": operation, "exit_code": exit_code},
+                )
+
 
 if __name__ == "__main__":
     main()

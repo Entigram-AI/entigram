@@ -32,6 +32,7 @@ An initialized workspace uses these files and paths:
 | `.etg/state.db` | Yes | Local SQLite ledger for alignments, conflicts, resolutions, delivery evidence, delivery snapshots, and agent state. |
 | `.etg/agent_policy.md` | Recommended | Canonical agent instructions for hydration, impact analysis, and handoff. |
 | `AGENTS.md` or tool-specific instruction files | Recommended | Thin pointers that direct agents to `.etg/agent_policy.md`. |
+| `.etg/lifecycle/pause-backup.json` | While paused | Private, exact backup of Entigram-owned context used for reversible resume. |
 
 Draft files, demos, templates, generated TTL files, and package-local schemas are
 not authoritative unless `.etg/entigram.yaml` lists them in `schema_paths`.
@@ -51,6 +52,8 @@ governed_artifact_globs:
   - "**/*.py"
   - "**/*.ts"
 state_ledger: .etg/state.db
+lifecycle:
+  state: active
 status: initialized
 ```
 
@@ -112,6 +115,52 @@ hydrate --full
 ```
 
 Automation should branch on the JSON fields, not on surrounding prose.
+
+## Workspace Lifecycle Contract
+
+Workspaces without a `lifecycle` block are treated as active for compatibility.
+New workspaces declare:
+
+```yaml
+lifecycle:
+  state: active
+```
+
+`etg pause` changes the state to `paused` only after backing up and compacting
+Entigram-owned policy and marked agent instruction blocks. While paused,
+hydration returns a compact `WORKSPACE_PAUSED` envelope without loading schema
+or ledger context. Governed CLI and MCP operations return the same stable error
+code.
+
+`etg resume` restores exact Entigram-owned content. It preserves edits outside
+marked blocks and refuses to overwrite changed paused content unless `--force`
+is supplied. Forced resume archives the conflict before restoring.
+
+`etg eject` is archive-first. It must validate a complete `.etg` archive and
+set mode `0600` before removing Entigram metadata or marked blocks. Project
+schemas, ontologies, code, and unmarked user content remain in place. Eject
+archives are not resumed directly; `etg init` re-enrolls a workspace.
+
+These commands govern the workspace. `etg broker hibernate` and
+`etg broker resume` govern an individual agent checkpoint and are not aliases.
+
+## Usage Accounting Contract
+
+`etg usage` reports the static Entigram context footprint and observed
+short-lived CLI/MCP traffic using `heuristic_chars_div_4_v1`:
+
+```text
+estimated tokens = ceil(characters / 4)
+```
+
+The latest recorded hydration event is the current session boundary. An
+optional `--total-tokens` value produces an estimated Entigram percentage for
+that session. The estimate is provider-neutral and must not be represented as
+provider billing.
+
+Usage events may persist operation names, aggregate character/token counts,
+lifecycle state, timestamps, and small operational metadata. Raw arguments,
+prompts, responses, stdout, and stderr must not be persisted.
 
 ## Broker Gate Lifecycle
 

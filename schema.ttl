@@ -31,6 +31,9 @@ mk:Entigram_Agent_Task a owl:Class ;
 mk:Entigram_Agent_Hibernation a owl:Class ;
     rdfs:label "Entigram_Agent_Hibernation" .
 
+mk:Entigram_Usage_Event a owl:Class ;
+    rdfs:label "Entigram_Usage_Event" .
+
 mk:Entigram_Conflict a owl:Class ;
     rdfs:label "Entigram_Conflict" .
 
@@ -420,6 +423,56 @@ mk:Entigram_Agent_Hibernation_resumed_at a owl:DatatypeProperty ;
     rdfs:domain mk:Entigram_Agent_Hibernation ;
     rdfs:range xsd:dateTime ;
     rdfs:label "resumed_at" .
+
+mk:Entigram_Usage_Event_id a owl:DatatypeProperty ;
+    rdfs:domain mk:Entigram_Usage_Event ;
+    rdfs:range xsd:string ;
+    rdfs:label "id" .
+
+mk:Entigram_Usage_Event_operation a owl:DatatypeProperty ;
+    rdfs:domain mk:Entigram_Usage_Event ;
+    rdfs:range xsd:string ;
+    rdfs:label "operation" .
+
+mk:Entigram_Usage_Event_surface a owl:DatatypeProperty ;
+    rdfs:domain mk:Entigram_Usage_Event ;
+    rdfs:range xsd:string ;
+    rdfs:label "surface" .
+
+mk:Entigram_Usage_Event_input_characters a owl:DatatypeProperty ;
+    rdfs:domain mk:Entigram_Usage_Event ;
+    rdfs:range xsd:integer ;
+    rdfs:label "input_characters" .
+
+mk:Entigram_Usage_Event_output_characters a owl:DatatypeProperty ;
+    rdfs:domain mk:Entigram_Usage_Event ;
+    rdfs:range xsd:integer ;
+    rdfs:label "output_characters" .
+
+mk:Entigram_Usage_Event_estimated_input_tokens a owl:DatatypeProperty ;
+    rdfs:domain mk:Entigram_Usage_Event ;
+    rdfs:range xsd:integer ;
+    rdfs:label "estimated_input_tokens" .
+
+mk:Entigram_Usage_Event_estimated_output_tokens a owl:DatatypeProperty ;
+    rdfs:domain mk:Entigram_Usage_Event ;
+    rdfs:range xsd:integer ;
+    rdfs:label "estimated_output_tokens" .
+
+mk:Entigram_Usage_Event_lifecycle_state a owl:DatatypeProperty ;
+    rdfs:domain mk:Entigram_Usage_Event ;
+    rdfs:range xsd:string ;
+    rdfs:label "lifecycle_state" .
+
+mk:Entigram_Usage_Event_metadata a owl:DatatypeProperty ;
+    rdfs:domain mk:Entigram_Usage_Event ;
+    rdfs:range xsd:string ;
+    rdfs:label "metadata" .
+
+mk:Entigram_Usage_Event_observed_at a owl:DatatypeProperty ;
+    rdfs:domain mk:Entigram_Usage_Event ;
+    rdfs:range xsd:dateTime ;
+    rdfs:label "observed_at" .
 
 mk:Entigram_Conflict_id a owl:DatatypeProperty ;
     rdfs:domain mk:Entigram_Conflict ;
@@ -1618,6 +1671,27 @@ mk:Entigram_Agent_Hibernation rdfs:subClassOf [
     ] , [
         a owl:Restriction ;
         owl:onProperty mk:relates_Entigram_Agent_Hibernation_to_Entigram_Project ;
+        owl:minCardinality 1
+    ] .
+
+mk:relates_Entigram_Project_to_Entigram_Usage_Event a owl:ObjectProperty ;
+    rdfs:domain mk:Entigram_Project ;
+    rdfs:range mk:Entigram_Usage_Event ;
+    rdfs:label "relates" .
+
+mk:relates_Entigram_Usage_Event_to_Entigram_Project a owl:ObjectProperty ;
+    owl:inverseOf mk:relates_Entigram_Project_to_Entigram_Usage_Event ;
+    rdfs:domain mk:Entigram_Usage_Event ;
+    rdfs:range mk:Entigram_Project ;
+    rdfs:label "inverse_relates" .
+
+mk:Entigram_Usage_Event rdfs:subClassOf [
+        a owl:Restriction ;
+        owl:onProperty mk:relates_Entigram_Usage_Event_to_Entigram_Project ;
+        owl:maxCardinality 1
+    ] , [
+        a owl:Restriction ;
+        owl:onProperty mk:relates_Entigram_Usage_Event_to_Entigram_Project ;
         owl:minCardinality 1
     ] .
 

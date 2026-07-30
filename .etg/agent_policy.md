@@ -22,6 +22,13 @@ duplicating handoff rules.
 - Unknown entities, invented attributes, unverified alignments, and schema drift
   must be rejected or escalated to the human operator.
 - Resolve conflicts through `.etg/state.db`.
+- `etg pause` temporarily compacts Entigram-owned context and blocks workspace
+  governance operations. `etg resume` restores that context. These workspace
+  commands are separate from `etg broker hibernate` and `etg broker resume`,
+  which checkpoint an individual agent.
+- `etg eject` must archive and validate `.etg` before detaching Entigram. It
+  preserves project schemas, ontologies, application code, and unmarked user
+  instructions.
 
 ## Pre-Handoff Gate
 

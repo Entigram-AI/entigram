@@ -90,6 +90,19 @@ ATTRIBUTES:
   - created_at (DateTime)
   - resumed_at (DateTime)
 
+ENTITY: Entigram_Usage_Event
+ATTRIBUTES:
+  - .id (UUID)
+  - operation (String, MUST)
+  - surface (String, MUST) # cli, mcp
+  - input_characters (Integer)
+  - output_characters (Integer)
+  - estimated_input_tokens (Integer)
+  - estimated_output_tokens (Integer)
+  - lifecycle_state (String) # active, paused
+  - metadata (JSON) # operation metadata only; never prompt or response content
+  - observed_at (DateTime)
+
 ENTITY: Entigram_Conflict
 ATTRIBUTES:
   - .id (UUID)
@@ -380,6 +393,7 @@ RELATIONSHIPS:
 - Entigram_Project (1) [MUST] --- [MAY] (MANY) Entigram_Agent
 - Entigram_Project (1) [MUST] --- [MAY] (MANY) Entigram_Agent_Task
 - Entigram_Project (1) [MUST] --- [MAY] (MANY) Entigram_Agent_Hibernation
+- Entigram_Project (1) [MUST] --- [MAY] (MANY) Entigram_Usage_Event
 - Entigram_Agent (1) [MAY] --- [MAY] (MANY) Entigram_Agent_Task
 - Entigram_Agent (1) [MAY] --- [MAY] (MANY) Entigram_Agent_Hibernation
 - Entigram_Project (1) [MUST] --- [MAY] (MANY) Entigram_Conflict
@@ -477,6 +491,20 @@ EXPECTATION: Agent Hibernation Protocol {
   implementation_rule: The broker must persist hibernation checkpoints with remaining token budget, resume timing, checkpoint summary, exact next action, and pending task IDs.
   validation_check: python -m unittest tests.test_agent_orchestration
   proof: python -m unittest tests.test_agent_orchestration
+}
+
+EXPECTATION: Transparent Token Attribution {
+  developer_expectation: Operators should be able to estimate how much session context and observed tool traffic Entigram consumes without exposing prompt or response content.
+  implementation_rule: `etg usage` must report provider-neutral character-based token estimates for static Entigram context and observed CLI/MCP events, use the latest hydration event as the session boundary, and store aggregate counts rather than raw content.
+  validation_check: python -m unittest tests.test_workspace_lifecycle
+  proof: python -m unittest tests.test_workspace_lifecycle
+}
+
+EXPECTATION: Reversible Workspace Lifecycle {
+  developer_expectation: Operators should be able to pause, resume, or eject Entigram without losing user-owned project artifacts or silently discarding Entigram governance state.
+  implementation_rule: `etg pause` must compact and back up Entigram-owned context, `etg resume` must restore it with conflict detection, and `etg eject` must validate a private archive before removing `.etg` or marked instruction blocks.
+  validation_check: python -m unittest tests.test_workspace_lifecycle
+  proof: python -m unittest tests.test_workspace_lifecycle
 }
 
 EXPECTATION: Out-of-the-box Expectation Guard {
@@ -602,5 +630,6 @@ EXPECTATION: Entigram 1.6 Release Note {
 /* Updated: 2026-06-20 Canonical cross-agent governance policy modeled for discoverability and deterministic handoff */
 /* Updated: 2026-06-20 MCP schema scope and machine-readable gate responses modeled */
 /* Updated: 2026-06-20 MCP docs, audit bundle export, smoke demo, and UI extra boundary modeled */
+/* Updated: 2026-07-30 Transparent usage accounting and reversible workspace lifecycle modeled */
 /* Updated: 2026-06-20 CLI versioning, workspace manifest clarity, signed audit bundles, and 1.6 release note modeled */
 /* Updated: 2026-07-05 Agent capability routing and token-window hibernation modeled */

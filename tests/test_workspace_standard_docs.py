@@ -42,6 +42,19 @@ class TestWorkspaceStandardDocs(unittest.TestCase):
         self.assertIn("workspace-standard.md", mcp_docs)
         self.assertIn("error.code", mcp_docs)
 
+    def test_workspace_standard_documents_usage_and_lifecycle(self):
+        standard = (ROOT / "docs" / "workspace-standard.md").read_text()
+        lifecycle = (ROOT / "docs" / "workspace-lifecycle.md").read_text()
+
+        self.assertIn("lifecycle:", standard)
+        self.assertIn("WORKSPACE_PAUSED", standard)
+        self.assertIn("heuristic_chars_div_4_v1", standard)
+        self.assertIn("Raw arguments", standard)
+        self.assertIn("etg pause", lifecycle)
+        self.assertIn("etg resume --force", lifecycle)
+        self.assertIn("etg eject --dry-run", lifecycle)
+        self.assertIn("0600", lifecycle)
+
     def test_agent_instruction_files_use_current_portable_flow(self):
         for relative_path in [
             "AGY.md",
