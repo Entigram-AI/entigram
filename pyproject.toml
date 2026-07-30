@@ -37,9 +37,9 @@ panel = [
 
 [project.urls]
 Homepage = "https://entigram.ai"
-Source = "https://github.com/nyabutid/entigram"
+Source = "https://github.com/Entigram-AI/entigram"
 Documentation = "https://entigram.ai"
-Tracker = "https://github.com/nyabutid/entigram/issues"
+Tracker = "https://github.com/Entigram-AI/entigram/issues"
 
 [project.scripts]
 etg = "entigram.cli_runner.etg_cli:main"
