@@ -31,6 +31,12 @@ Entigram-initialized workspace.
 - Unknown entities, invented attributes, unverified alignments, and schema drift
   must be rejected or escalated to the human operator.
 - Resolve conflicts through `.etg/state.db`.
+- `etg pause` temporarily compacts Entigram-owned context and blocks governance
+  operations. `etg resume` restores that context. These workspace commands are
+  separate from `etg broker hibernate` and `etg broker resume`, which checkpoint
+  an individual agent.
+- `etg eject` archives `.etg` before detaching Entigram from the workspace. It
+  does not delete project schemas, ontologies, or application code.
 
 ## Pre-Handoff Gate
 
@@ -72,6 +78,7 @@ def inject_entigram_manifest(target_dir: str, selected_packages: list, cli_engin
         "schema_paths": ["schema.lds"],
         # Keep generated workspaces portable when they are copied or moved.
         "state_ledger": f".etg/{CANONICAL_LEDGER_NAME}",
+        "lifecycle": {"state": "active"},
         "status": "initialized",
         "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }

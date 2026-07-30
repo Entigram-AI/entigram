@@ -32,6 +32,24 @@ Failures include a stable code and a human-readable message.
 
 Agents should branch on `error.code`, not prose.
 
+When workspace governance is paused, every Entigram MCP tool returns:
+
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "WORKSPACE_PAUSED",
+    "message": "Entigram workspace governance is paused.",
+    "details": {
+      "allowed_commands": ["etg usage", "etg resume", "etg eject"],
+      "resume_command": "etg resume"
+    }
+  }
+}
+```
+
+Resume the workspace with `etg resume` before retrying the tool.
+
 ## `etg_get_schemas`
 
 Returns the authoritative LDS schemas for the workspace.

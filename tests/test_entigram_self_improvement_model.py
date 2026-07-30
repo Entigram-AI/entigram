@@ -29,6 +29,7 @@ class TestEntigramSelfImprovementModel(unittest.TestCase):
             "Entigram_Delivery_Drift",
             "Entigram_Agent_Task",
             "Entigram_Agent_Hibernation",
+            "Entigram_Usage_Event",
         }
         self.assertTrue(expected_entities.issubset(entities.keys()))
 
@@ -69,6 +70,7 @@ class TestEntigramSelfImprovementModel(unittest.TestCase):
         self.assertIn(("Entigram_Delivery_Snapshot", "Entigram_Delivery_Drift"), relationship_pairs)
         self.assertIn(("Entigram_Project", "Entigram_Agent_Task"), relationship_pairs)
         self.assertIn(("Entigram_Project", "Entigram_Agent_Hibernation"), relationship_pairs)
+        self.assertIn(("Entigram_Project", "Entigram_Usage_Event"), relationship_pairs)
         self.assertIn(("Entigram_Agent", "Entigram_Agent_Task"), relationship_pairs)
         self.assertIn(("Entigram_Agent", "Entigram_Agent_Hibernation"), relationship_pairs)
 
@@ -87,6 +89,7 @@ class TestEntigramSelfImprovementModel(unittest.TestCase):
         self.assertIn("mk:Entigram_Delivery_Drift a owl:Class", ttl)
         self.assertIn("mk:Entigram_Agent_Task a owl:Class", ttl)
         self.assertIn("mk:Entigram_Agent_Hibernation a owl:Class", ttl)
+        self.assertIn("mk:Entigram_Usage_Event a owl:Class", ttl)
         self.assertIn("mk:Entigram_Agent_proof_capabilities a owl:DatatypeProperty", ttl)
         self.assertIn("mk:Entigram_Agent_reliability_score a owl:DatatypeProperty", ttl)
         self.assertIn("mk:Entigram_Agent_Hibernation_next_action a owl:DatatypeProperty", ttl)
@@ -109,6 +112,7 @@ class TestEntigramSelfImprovementModel(unittest.TestCase):
                 "python -m unittest tests.test_cli_integration passed",
                 "python -m unittest tests.test_hydration passed",
                 "python -m unittest tests.test_agent_orchestration passed",
+                "python -m unittest tests.test_workspace_lifecycle passed",
             ]
         )
 
@@ -117,6 +121,8 @@ class TestEntigramSelfImprovementModel(unittest.TestCase):
         self.assertIn("Agent Delivery Proof", names)
         self.assertIn("Agent Capability Routing", names)
         self.assertIn("Agent Hibernation Protocol", names)
+        self.assertIn("Transparent Token Attribution", names)
+        self.assertIn("Reversible Workspace Lifecycle", names)
         self.assertIn("Out-of-the-box Expectation Guard", names)
         self.assertIn("Release Orchestration", names)
         self.assertIn("Agent Policy Discoverability", names)

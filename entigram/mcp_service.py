@@ -1,12 +1,15 @@
 import json
 import re
+from functools import wraps
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 from entigram.broker import EntigramBroker
 from entigram.schema_compiler.parser import SchemaParser
 from entigram.governance.algebra import RelationalAlgebraGuard
+from entigram.usage import payload_character_count, record_workspace_usage
 from entigram.workspace_contract import configured_schema_paths
+from entigram.workspace_lifecycle import is_workspace_paused, paused_error
 
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,127}$")
 _CONCEPT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?$")
@@ -16,6 +19,52 @@ _ERROR_LABELS = {
     "schema": "Schema Discovery Failed",
     "impact": "Impact Analysis Failed",
 }
+
+
+def _track_mcp_usage(operation: str):
+    def decorator(function):
+        @wraps(function)
+        def wrapped(self, *args, **kwargs):
+            state = "paused" if is_workspace_paused(self.target_dir) else "active"
+            input_characters = payload_character_count(
+                {"args": args, "kwargs": kwargs}
+            )
+            result = ""
+            try:
+                if state == "paused":
+                    result = json.dumps(paused_error(), sort_keys=True)
+                else:
+                    result = function(self, *args, **kwargs)
+                return result
+            finally:
+                metadata = {"tool": operation}
+                error_code = _response_error_code(result)
+                if error_code:
+                    metadata["error_code"] = error_code
+                record_workspace_usage(
+                    self.target_dir,
+                    operation=operation,
+                    surface="mcp",
+                    input_characters=input_characters,
+                    output_characters=payload_character_count(result),
+                    lifecycle_state=state,
+                    metadata=metadata,
+                )
+
+        return wrapped
+
+    return decorator
+
+
+def _response_error_code(result: Any) -> Optional[str]:
+    if not isinstance(result, str):
+        return None
+    try:
+        payload = json.loads(result)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    error = payload.get("error") if isinstance(payload, dict) else None
+    return error.get("code") if isinstance(error, dict) else None
 
 
 class EntigramMCPService:
@@ -30,6 +79,7 @@ class EntigramMCPService:
     def __init__(self, target_dir: str = "."):
         self.target_dir = Path(target_dir).expanduser().resolve()
 
+    @_track_mcp_usage("etg_get_schemas")
     def get_schemas(self) -> str:
         try:
             schemas = []
@@ -72,6 +122,7 @@ class EntigramMCPService:
         except Exception as exc:
             return self._error("schema", "SCHEMA_DISCOVERY_FAILED", str(exc))
 
+    @_track_mcp_usage("etg_get_impact")
     def get_impact(self, file_path: str) -> str:
         try:
             broker = EntigramBroker(str(self.target_dir))
@@ -80,6 +131,7 @@ class EntigramMCPService:
         except Exception as exc:
             return self._error("impact", "IMPACT_ANALYSIS_FAILED", str(exc))
 
+    @_track_mcp_usage("etg_propose_alignment")
     def propose_alignment(self, payload: Any) -> str:
         data, error = self._coerce_json_object(payload)
         if error:
@@ -186,6 +238,7 @@ class EntigramMCPService:
             sort_keys=True,
         )
 
+    @_track_mcp_usage("etg_log_conflict")
     def log_conflict(self, payload: Any) -> str:
         data, error = self._coerce_json_object(payload)
         if error:

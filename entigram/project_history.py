@@ -29,3 +29,11 @@ def get_project_history():
             return json.load(f)
     except:
         return []
+
+
+def remove_project_from_history(path: str):
+    """Removes a project path from the local history file."""
+    normalized = str(Path(path).absolute())
+    history = [item for item in get_project_history() if item != normalized]
+    with open(HISTORY_FILE, "w") as f:
+        json.dump(history, f)
