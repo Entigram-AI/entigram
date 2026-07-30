@@ -8,6 +8,7 @@ import json
 import re
 import subprocess
 import sys
+import textwrap
 import time
 import urllib.request
 from pathlib import Path
@@ -17,6 +18,7 @@ from typing import Any
 FORMULA_SOURCE_RE = re.compile(
     r'(?m)^(  url ")[^"]+\.tar\.gz("\n  sha256 ")[0-9a-f]{64}(")$'
 )
+DEPENDENCY_LINE_RE = re.compile(r'(?m)^  depends_on "([^"]+)".*$')
 HOMEBREW_PYTHON_VERSION = "3.14"
 RESOURCE_RE = re.compile(r'^\s*resource "([^"]+)" do')
 NATIVE_DEPENDENCY_BY_RESOURCE = {
@@ -31,7 +33,8 @@ NATIVE_DEPENDENCY_BY_RESOURCE = {
     "rpds-py": "rpds-py",
     "rpds_py": "rpds-py",
 }
-DEPENDENCY_ORDER = ["cryptography", "cffi", "pycparser", "pydantic", "rpds-py"]
+DEPENDENCY_ORDER = ["cffi", "cryptography", "pycparser", "pydantic", "rpds-py"]
+NATIVE_DEPENDENCIES = frozenset(DEPENDENCY_ORDER)
 SETUPTOOLS_RESOURCE = '''resource "setuptools" do
   url "https://files.pythonhosted.org/packages/4f/db/cfac1baf10650ab4d1c111714410d2fbb77ac5a616db26775db562c8fab2/setuptools-82.0.1.tar.gz"
   sha256 "7d872682c5d01cfde07da7bccc7b65469d3dca203318515ada1de5eda35efbf9"
@@ -192,15 +195,18 @@ def filter_native_resources(
         if skip_mode and line.strip() == "end":
             skip_mode = False
 
-    cleaned_resources_text = "\n".join(
-        line for line in filtered_lines if line.strip() or line == ""
+    cleaned_resources_text = textwrap.dedent("\n".join(filtered_lines)).strip()
+    cleaned_resources_text = re.sub(
+        r"\n[ \t]*\n(?:[ \t]*\n)+",
+        "\n\n",
+        cleaned_resources_text,
     )
     ordered_deps = [dep for dep in DEPENDENCY_ORDER if dep in native_deps]
     return cleaned_resources_text, ordered_deps
 
 
-def render_dependency_block(native_deps: list[str], resources_text: str) -> str:
-    depends_lines = [f'  depends_on "{dep}"' for dep in native_deps]
+def render_formula_block(dependency_lines: list[str], resources_text: str) -> str:
+    resources_text = textwrap.dedent(resources_text).strip()
     if 'resource "setuptools" do' not in resources_text:
         resources_text = SETUPTOOLS_RESOURCE + ("\n\n" + resources_text if resources_text else "")
     indented_resources = [
@@ -208,11 +214,60 @@ def render_dependency_block(native_deps: list[str], resources_text: str) -> str:
         for line in resources_text.splitlines()
     ]
     sections = []
-    if depends_lines:
-        sections.append("\n".join(depends_lines))
+    if dependency_lines:
+        sections.append("\n".join(dependency_lines))
     if indented_resources:
         sections.append("\n".join(indented_resources))
-    return "\n" + "\n\n".join(sections) + "\n\n"
+    return "\n\n".join(sections) + "\n\n"
+
+
+def render_dependency_block(native_deps: list[str], resources_text: str) -> str:
+    dependency_lines = [f'  depends_on "{dep}"' for dep in native_deps]
+    return render_formula_block(dependency_lines, resources_text)
+
+
+def replace_formula_resources(
+    formula_text: str,
+    package_name: str,
+    resources_text: str,
+) -> str:
+    """Replace generated resources and return brew-style-compliant formula text."""
+    cleaned_resources_text, native_deps = filter_native_resources(
+        resources_text,
+        excluded_resource_names=package_resource_names(package_name),
+    )
+    install_idx = formula_text.find("  def install\n")
+    dependency_matches = list(
+        DEPENDENCY_LINE_RE.finditer(formula_text, 0, install_idx)
+    )
+    if install_idx == -1 or not dependency_matches:
+        raise RuntimeError("Could not find markers to inject resources into formula")
+
+    dependency_lines = {
+        match.group(1): match.group(0)
+        for match in dependency_matches
+        if match.group(1) not in NATIVE_DEPENDENCIES
+    }
+    expected_python = f"python@{HOMEBREW_PYTHON_VERSION}"
+    if expected_python not in dependency_lines:
+        raise RuntimeError("Could not find markers to inject resources into formula")
+
+    dependency_lines.update(
+        {dependency: f'  depends_on "{dependency}"' for dependency in native_deps}
+    )
+    ordered_dependency_lines = [
+        dependency_lines[name]
+        for name in sorted(dependency_lines, key=str.casefold)
+    ]
+    generated_block = render_formula_block(
+        ordered_dependency_lines,
+        cleaned_resources_text,
+    )
+    return (
+        formula_text[: dependency_matches[0].start()]
+        + generated_block
+        + formula_text[install_idx:]
+    )
 
 
 def update_resources(formula_path: Path, package_name: str, version: str) -> None:
@@ -226,29 +281,11 @@ def update_resources(formula_path: Path, package_name: str, version: str) -> Non
     print("Generating resources with poet...")
     result = subprocess.run([".poet-venv/bin/poet", package_name], capture_output=True, text=True, check=True)
     resources_text = result.stdout.strip()
-    cleaned_resources_text, native_deps = filter_native_resources(
+    updated_text = replace_formula_resources(
+        formula_path.read_text(),
+        package_name,
         resources_text,
-        excluded_resource_names=package_resource_names(package_name),
     )
-
-    text = formula_path.read_text()
-
-    # We want to replace everything between the Python dependency and 'def install'
-    start_marker = f'depends_on "python@{HOMEBREW_PYTHON_VERSION}"\n'
-    end_marker = '  def install\n'
-    
-    start_idx = text.find(start_marker)
-    end_idx = text.find(end_marker)
-    
-    if start_idx == -1 or end_idx == -1:
-        raise RuntimeError("Could not find markers to inject resources into formula")
-        
-    start_idx += len(start_marker)
-    
-    # Indent the resources text properly and inject Homebrew's bottled dependencies.
-    indented_resources = render_dependency_block(native_deps, cleaned_resources_text)
-    
-    updated_text = text[:start_idx] + indented_resources + text[end_idx:]
     formula_path.write_text(updated_text)
 
 def main(argv: list[str] | None = None) -> int:
