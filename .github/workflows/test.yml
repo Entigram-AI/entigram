@@ -10,7 +10,8 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  test-python:
+    name: test (${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -33,3 +34,18 @@ jobs:
 
       - name: Run test suite
         run: PYTHONPATH=. python -B -m unittest discover tests
+
+  test:
+    name: test
+    needs: test-python
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Confirm Python test matrix passed
+        if: ${{ needs.test-python.result == 'success' }}
+        run: echo "All supported Python versions passed."
+
+      - name: Fail when Python test matrix did not pass
+        if: ${{ needs.test-python.result != 'success' }}
+        run: exit 1
