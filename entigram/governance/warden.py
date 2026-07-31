@@ -163,8 +163,13 @@ class Warden:
 
         return True
 
-    def lock_fingerprint(self):
-        """Persists the current checksums into the manifest, locking the schema contracts."""
+    def lock_fingerprint(
+        self,
+        *,
+        require_existing_match: bool = False,
+        expected_fingerprint: Optional[Dict[str, Any]] = None,
+    ):
+        """Persist checksums without accepting drift observed during validation."""
         import yaml
         from datetime import datetime
         
@@ -175,13 +180,38 @@ class Warden:
         with open(self.manifest_path, "r") as f:
             manifest = yaml.safe_load(f) or {}
 
+        stored_fingerprint = manifest.get("integrity_fingerprint")
+        if expected_fingerprint is not None and fingerprint != expected_fingerprint:
+            raise RuntimeError(
+                "Warden detected a contract change while handoff validations ran"
+            )
+        if (
+            require_existing_match
+            and stored_fingerprint
+            and stored_fingerprint != fingerprint
+        ):
+            raise RuntimeError(
+                "Warden refused to replace a mismatched integrity fingerprint"
+            )
+
         manifest["integrity_fingerprint"] = fingerprint
+        manifest.pop("integrity_unlock", None)
         manifest["last_locked"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         with open(self.manifest_path, "w") as f:
             yaml.dump(manifest, f, default_flow_style=False)
         
         print(f"🔒 [WARDEN] Schema contracts locked via checksum integrity.")
+        return True
+
+    def has_pending_contract_change(self) -> bool:
+        """Return whether an explicit unlock has not yet been re-locked."""
+        if not self.manifest_path.is_file():
+            return False
+        import yaml
+
+        manifest = yaml.safe_load(self.manifest_path.read_text()) or {}
+        return isinstance(manifest.get("integrity_unlock"), dict)
 
     def unlock(self):
         """Removes the integrity fingerprint from the manifest, allowing modifications."""
@@ -193,6 +223,12 @@ class Warden:
             manifest = yaml.safe_load(f) or {}
 
         if "integrity_fingerprint" in manifest:
+            from datetime import datetime, timezone
+
+            manifest["integrity_unlock"] = {
+                "previous_fingerprint": manifest["integrity_fingerprint"],
+                "unlocked_at": datetime.now(timezone.utc).isoformat(),
+            }
             del manifest["integrity_fingerprint"]
             if "last_locked" in manifest:
                 del manifest["last_locked"]

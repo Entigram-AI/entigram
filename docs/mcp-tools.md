@@ -83,6 +83,100 @@ Schema scope is closed-world. When `.etg/entigram.yaml` contains
 `schema_paths`, only those local `.lds` files are exposed. Paths that escape the
 workspace are rejected.
 
+## `etg_get_assessment_capabilities`
+
+Returns non-executable assessment metadata discovered in valid, signed packages
+installed in the workspace. It also returns the current capability-aware
+security posture and excluded-package reasons.
+
+Input: none.
+
+Unsigned packages and arbitrary module paths are never loaded through MCP.
+Signed installed packages are also not executed: current signatures prove
+content integrity, not trusted-publisher identity, and adapters do not yet run
+in an isolated process. Their declared capabilities therefore remain missing.
+
+## `etg_assess`
+
+Requests an assessment through the governed MCP surface. Executable installed
+adapters currently fail closed with `ASSESSMENT_FAILED` until trusted-publisher
+verification and process isolation are available.
+
+Input JSON:
+
+```json
+{
+  "adapter": "virustotal-hash",
+  "subject_type": "sha256",
+  "subject": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "data": {}
+}
+```
+
+Unknown fields, malformed subjects, unknown adapters, and executable installed
+adapters are rejected. Once an isolated adapter runtime is available, results
+will report capabilities actually exercised. When workspace mode is `enforce`,
+an assessment remains blocked until all required capabilities are covered.
+
+Assessment execution and safety are separate. `ok: true` means the adapter ran
+successfully; it does not mean the subject is safe. Agents must branch on
+`decision` and `safe_to_process`. A successful response includes:
+
+```json
+{
+  "ok": true,
+  "decision": "review_required",
+  "safe_to_process": false,
+  "human_review_required": true,
+  "max_severity": "high",
+  "reason_codes": ["HIGH_FINDING"],
+  "required_capabilities_unassessed": [],
+  "recommended_action": "Keep the subject isolated and require human review before any artifact-derived output can trigger a state-changing action.",
+  "assessment": {"adapter": "virustotal-hash", "findings": [{"severity": "high"}]},
+  "security_posture": {"mode": "advisory"}
+}
+```
+
+`decision` is `allow`, `review_required`, or `blocked`. `allow` is returned only
+when the assessment has no findings and every active required capability was
+both available and exercised by that assessment. Missing advisory-mode
+capabilities, unassessed required capabilities, and findings of any severity
+produce `review_required`; invalid/enforced policy gaps and critical findings
+produce `blocked`.
+
+For explicit local package development, the CLI may load a module path:
+
+```bash
+etg assess \
+  --adapter virustotal-hash \
+  --adapter-module ./assessment_adapter.py \
+  --allow-executable-adapter \
+  --subject-type sha256 \
+  --subject <sha256> \
+  --json
+```
+
+This acknowledgement means the reviewed Python module will execute in the
+current CLI process. The MCP tool intentionally has no equivalent module-path
+input. A `review_required` CLI result exits with status 3; a blocked result exits
+with status 2, so automation cannot mistake either outcome for an allow.
+
+For CLI hash-reputation checks, prefer `--subject-file` over calculating and
+passing the digest separately. Entigram confines the path to the workspace,
+hashes it locally, and hashes it again after assessment. If the bytes change,
+the decision is `blocked` with `SUBJECT_CHANGED_DURING_ASSESSMENT`.
+
+```bash
+etg assess \
+  --adapter virustotal-hash \
+  --adapter-module ./assessment_adapter.py \
+  --allow-executable-adapter \
+  --subject-type sha256 \
+  --subject-file artifacts/inbox/vendor-invoice.png \
+  --dir . \
+  --json
+```
+
 ## `etg_propose_alignment`
 
 Validates and records a proposed semantic alignment. Proposals are not trusted

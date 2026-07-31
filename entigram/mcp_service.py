@@ -15,6 +15,7 @@ _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,127}$")
 _CONCEPT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?$")
 _ERROR_LABELS = {
     "alignment": "Invalid Schema Alignment",
+    "assessment": "Invalid Assessment",
     "conflict": "Invalid Conflict",
     "schema": "Schema Discovery Failed",
     "impact": "Impact Analysis Failed",
@@ -130,6 +131,85 @@ class EntigramMCPService:
             return json.dumps({"ok": True, "impact": impact}, indent=2, sort_keys=True)
         except Exception as exc:
             return self._error("impact", "IMPACT_ANALYSIS_FAILED", str(exc))
+
+    @_track_mcp_usage("etg_get_assessment_capabilities")
+    def get_assessment_capabilities(self) -> str:
+        try:
+            from entigram.assessment import (
+                load_installed_assessment_adapters,
+                workspace_security_posture,
+            )
+
+            installed = load_installed_assessment_adapters(self.target_dir)
+            posture = workspace_security_posture(
+                self.target_dir,
+                provided_capabilities=installed["capabilities"],
+            )
+            return json.dumps(
+                {
+                    "ok": True,
+                    "assessment_adapters": installed["adapters"],
+                    "security_capabilities": installed["capabilities"],
+                    "packages": installed["packages"],
+                    "excluded_packages": installed["excluded"],
+                    "security_posture": posture,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        except Exception as exc:
+            return self._error("assessment", "ASSESSMENT_CAPABILITY_DISCOVERY_FAILED", str(exc))
+
+    @_track_mcp_usage("etg_assess")
+    def assess(self, payload: Any) -> str:
+        data, error = self._coerce_json_object(payload)
+        if error:
+            return self._error("assessment", "INVALID_JSON", self._error_detail(error, "assessment"))
+
+        allowed = {"adapter", "subject_type", "subject", "data"}
+        error = self._reject_unknown_keys(data, allowed)
+        if error:
+            return self._error("assessment", "UNKNOWN_FIELD", self._error_detail(error, "assessment"))
+        error = self._require_keys(data, ["adapter", "subject_type", "subject"])
+        if error:
+            return self._error("assessment", "MISSING_FIELD", self._error_detail(error, "assessment"))
+        if not isinstance(data["adapter"], str) or not _IDENTIFIER_RE.fullmatch(data["adapter"]):
+            return self._error("assessment", "INVALID_ADAPTER", "adapter must be a safe identifier")
+        if "data" in data and not isinstance(data["data"], dict):
+            return self._error("assessment", "INVALID_DATA", "data must be an object")
+
+        try:
+            from entigram.assessment import (
+                AssessmentSubject,
+                assessment_decision,
+                assess_with_installed_adapter,
+                load_installed_assessment_adapters,
+                workspace_security_posture,
+            )
+
+            subject = AssessmentSubject(
+                data["subject_type"],
+                data["subject"],
+                data.get("data", {}),
+            )
+            installed = load_installed_assessment_adapters(self.target_dir)
+            result = assess_with_installed_adapter(self.target_dir, data["adapter"], subject)
+            provided = sorted(set(installed["capabilities"]) | set(result.capabilities))
+            posture = workspace_security_posture(
+                self.target_dir,
+                provided_capabilities=provided,
+            )
+            decision = assessment_decision(result, posture)
+        except (OSError, TypeError, ValueError) as exc:
+            return self._error("assessment", "ASSESSMENT_FAILED", str(exc))
+
+        response = {
+            "ok": True,
+            "assessment": result.to_dict(),
+            "security_posture": posture,
+            **decision,
+        }
+        return json.dumps(response, indent=2, sort_keys=True)
 
     @_track_mcp_usage("etg_propose_alignment")
     def propose_alignment(self, payload: Any) -> str:

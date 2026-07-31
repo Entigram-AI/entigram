@@ -162,6 +162,10 @@ def verify_package(
             expected_artifact=MANIFEST_NAME,
         )
         result.key_id = signature.get("key_id")
+        result.warnings.append(
+            "signature integrity is valid, but publisher identity is self-asserted "
+            "until the key ID is matched against a trusted publisher registry"
+        )
     except Exception as exc:
         result.ok = False
         result.errors.append(str(exc))

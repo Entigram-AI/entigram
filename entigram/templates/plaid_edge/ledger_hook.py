@@ -1,25 +1,31 @@
-import sqlite3
 import json
 
-def request_human_tiebreaker(conflict_id: str, conflicting_state: dict, rationale: str):
-    """
-    Halts agent execution and writes the conflict to the Entigram deterministic ledger.
-    """
-    # In a production environment, this path is resolved via the Entigram config
-    db_path = '../../entigram/sqlite_ledger/entigram_state.db' 
-    
-    try:
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
-        cursor.execute(
-            '''INSERT INTO human_resolutions (conflict_id, resolved_state, rationale) 
-               VALUES (?, ?, ?)''',
-            (conflict_id, json.dumps(conflicting_state), rationale)
+from entigram.mcp_service import EntigramMCPService
+
+
+def request_human_tiebreaker(
+    conflict_id: str,
+    entity_type: str,
+    conflicting_state: dict,
+    rationale: str,
+    workspace: str = ".",
+):
+    """Log a Plaid conflict through Entigram's governed MCP service."""
+    agent_id = "edge_plaid"
+    service = EntigramMCPService(workspace)
+    response = json.loads(
+        service.log_conflict(
+            json.dumps(
+                {
+                    "conflict_id": conflict_id,
+                    "entity_type": entity_type,
+                    "proposed_states": {agent_id: conflicting_state},
+                    "agent_id": agent_id,
+                }
+            )
         )
-        conn.commit()
-        print(f"[ENTIGRAM LEDGER] Conflict {conflict_id} logged. Awaiting human resolution.")
-    except Exception as e:
-        print(f"Ledger connection failed: {e}")
-    finally:
-        if conn:
-            conn.close()
+    )
+    if not response.get("ok"):
+        raise RuntimeError(f"Entigram rejected conflict {conflict_id}: {response}")
+    print(f"[ENTIGRAM LEDGER] Conflict {conflict_id} logged. Awaiting human resolution.")
+    return response

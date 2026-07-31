@@ -1,14 +1,18 @@
+import hashlib
+import json
 import os
 import re
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from ..schema_compiler.parser import SchemaParser
 
 class SentinelScanner:
     """
-    Sentinel: The Entigram Package Vulnerability Scanner (Agentic SAST).
-    Performs true AST-based static analysis on Schema models to enforce Semantic Governance,
-    while also checking for traditional PII/Heuristic leaks.
+    Sentinel package/schema policy linter.
+
+    Sentinel checks LDS structure and configured heuristics. It is not a
+    malware scanner, dependency audit, or general-purpose repository SAST.
     """
     def __init__(self, target_dir: str = "."):
         self.target_dir = Path(target_dir).expanduser().resolve()
@@ -17,7 +21,8 @@ class SentinelScanner:
         self.local_packages_dir = self.target_dir / ".etg" / "packages"
         self.global_registry_cache = Path.home() / ".etg" / "registry_cache"
         
-        # Simulated vulnerability database for standard packages
+        # Reserved advisory entries for standard packages. This local mapping is
+        # intentionally not represented as a comprehensive vulnerability feed.
         self.vulnerability_db = {
             "ContentPublishing": [],
             "AWS": []
@@ -190,12 +195,19 @@ class SentinelScanner:
             
             if is_standard:
                 pollution_pattern = re.compile(r'\b(acme|demo|my_?custom|test_?company|customer_?[a-z])\b', re.IGNORECASE)
-                match = pollution_pattern.search(schema_content)
-                if match:
+                schema_lines = schema_content.splitlines()
+                for match in pollution_pattern.finditer(schema_content):
+                     line_number = schema_content.count("\n", 0, match.start()) + 1
+                     line_start = schema_content.rfind("\n", 0, match.start()) + 1
                      vulnerabilities.append({
                          "id": "SNTNL-RULE-005",
                          "severity": "CRITICAL",
-                         "description": f"Standard Package Pollution: Customer-specific term '{match.group(1)}' found. Specific implementations must be isolated."
+                         "description": f"Standard Package Pollution: Customer-specific term '{match.group(1)}' found. Specific implementations must be isolated.",
+                         "artifact": str(schema_path.relative_to(pkg_path)),
+                         "line": line_number,
+                         "column": match.start() - line_start + 1,
+                         "match": match.group(1),
+                         "evidence": schema_lines[line_number - 1].strip(),
                      })
 
             for heuristic in self.custom_heuristics:
@@ -206,20 +218,119 @@ class SentinelScanner:
                         "description": heuristic["description"]
                     })
 
-        # 5. Check for bypasses
+        vulnerabilities = [
+            self._with_fingerprint(package_name, vulnerability)
+            for vulnerability in vulnerabilities
+        ]
+
+        # 5. Check for legacy ID-wide bypasses and occurrence-specific suppressions
         bypassed = self._get_bypassed_vulnerabilities(pkg_path)
+        suppressions = self._get_suppressions(pkg_path)
         
         active_vulns = []
+        suppressed_vulns = []
         for v in vulnerabilities:
-             if v["id"] not in bypassed:
+             if v["id"] in bypassed:
+                  continue
+
+             suppression = self._matching_suppression(v, suppressions)
+             if suppression:
+                  suppressed_vulns.append({**v, "suppression": suppression})
+             else:
                   active_vulns.append(v)
 
         return {
             "package": package_name,
             "is_standard": is_standard,
             "vulnerabilities": active_vulns,
-            "bypassed": bypassed
+            "suppressed": suppressed_vulns,
+            "bypassed": bypassed,
         }
+
+    @staticmethod
+    def _with_fingerprint(package_name: str, vulnerability: Dict[str, Any]) -> Dict[str, Any]:
+        """Attach a stable identity to one exact finding occurrence."""
+        finding = dict(vulnerability)
+        fingerprint_payload = {
+            "artifact": finding.get("artifact"),
+            "column": finding.get("column"),
+            "description": finding.get("description"),
+            "evidence": finding.get("evidence"),
+            "finding_id": finding.get("id"),
+            "line": finding.get("line"),
+            "match": finding.get("match"),
+            "package": package_name,
+        }
+        canonical = json.dumps(
+            fingerprint_payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("utf-8")
+        finding["fingerprint"] = f"sha256:{hashlib.sha256(canonical).hexdigest()}"
+        return finding
+
+    def _get_suppression_file_path(self, pkg_path: Path) -> Path:
+        return pkg_path / ".sentinel-suppressions.yaml"
+
+    def _get_suppressions(self, pkg_path: Path) -> List[Dict[str, Any]]:
+        """Load reviewed, occurrence-specific suppressions; invalid records fail closed."""
+        suppression_file = self._get_suppression_file_path(pkg_path)
+        if not suppression_file.exists():
+            return []
+
+        import yaml
+
+        try:
+            payload = yaml.safe_load(suppression_file.read_text()) or {}
+        except (OSError, yaml.YAMLError):
+            return []
+
+        if not isinstance(payload, dict) or payload.get("version") != 1:
+            return []
+
+        records = payload.get("suppressions", [])
+        if not isinstance(records, list):
+            return []
+
+        required_fields = {
+            "finding_id",
+            "fingerprint",
+            "rationale",
+            "authorized_by",
+            "authorized_at",
+        }
+        return [
+            record
+            for record in records
+            if isinstance(record, dict)
+            and required_fields.issubset(record)
+            and all(str(record[field]).strip() for field in required_fields)
+        ]
+
+    @staticmethod
+    def _suppression_is_current(suppression: Dict[str, Any]) -> bool:
+        expires_at = suppression.get("expires_at")
+        if not expires_at:
+            return True
+        try:
+            return date.fromisoformat(str(expires_at)[:10]) >= date.today()
+        except ValueError:
+            return False
+
+    def _matching_suppression(
+        self,
+        vulnerability: Dict[str, Any],
+        suppressions: List[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        for suppression in suppressions:
+            if (
+                suppression["finding_id"] == vulnerability["id"]
+                and suppression["fingerprint"] == vulnerability["fingerprint"]
+                and self._suppression_is_current(suppression)
+            ):
+                return suppression
+        return None
 
     def _get_bypass_file_path(self, pkg_path: Path) -> Path:
         return pkg_path / ".sentinel-ignore"
@@ -256,4 +367,73 @@ class SentinelScanner:
              f.write(f"{vulnerability_id}\n")
         
         print(f"✅ Sentinel: Bypass authorized for {vulnerability_id} in custom package '{package_name}'.")
+        return True
+
+    def authorize_suppression(
+        self,
+        package_name: str,
+        vulnerability_id: str,
+        fingerprint: str,
+        rationale: str,
+        authorized_by: str,
+        expires_at: Optional[str] = None,
+    ) -> bool:
+        """Record a reviewed suppression for one current finding occurrence."""
+        if not rationale.strip() or not authorized_by.strip():
+            print("❌ Sentinel Error: Suppressions require a rationale and authorizer.")
+            return False
+
+        if expires_at:
+            try:
+                date.fromisoformat(expires_at)
+            except ValueError:
+                print("❌ Sentinel Error: --expires must use YYYY-MM-DD format.")
+                return False
+
+        pkg_path = self._resolve_pkg_path(package_name)
+        if not pkg_path:
+            print("❌ Sentinel Error: Package path not found.")
+            return False
+
+        scan_result = self.scan_package(package_name)
+        current_findings = scan_result.get("vulnerabilities", []) + scan_result.get("suppressed", [])
+        matching_finding = next(
+            (
+                finding
+                for finding in current_findings
+                if finding["id"] == vulnerability_id
+                and finding.get("fingerprint") == fingerprint
+            ),
+            None,
+        )
+        if not matching_finding:
+            print("❌ Sentinel Error: Fingerprint does not identify a current package finding.")
+            return False
+
+        existing = self._get_suppressions(pkg_path)
+        if self._matching_suppression(matching_finding, existing):
+            print(f"ℹ️ Suppression already exists for {fingerprint} in {package_name}.")
+            return True
+
+        suppression = {
+            "finding_id": vulnerability_id,
+            "fingerprint": fingerprint,
+            "artifact": matching_finding.get("artifact"),
+            "line": matching_finding.get("line"),
+            "rationale": rationale.strip(),
+            "authorized_by": authorized_by.strip(),
+            "authorized_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if expires_at:
+            suppression["expires_at"] = expires_at
+
+        import yaml
+
+        suppression_file = self._get_suppression_file_path(pkg_path)
+        payload = {"version": 1, "suppressions": existing + [suppression]}
+        suppression_file.write_text(yaml.safe_dump(payload, sort_keys=False))
+        print(
+            f"✅ Sentinel: Suppressed {vulnerability_id} occurrence {fingerprint} "
+            f"in '{package_name}'."
+        )
         return True

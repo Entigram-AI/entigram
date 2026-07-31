@@ -35,7 +35,9 @@ boot.json
 # Local session and debug artifacts
 projects.json
 debug_mermaid.py
-interview_prompt.mdcross_domain_demo/
+interview_prompt.md
+cross_domain_demo/
+ci_log.txt
 
 # Private strategy and open-source preparation notes
 /private/

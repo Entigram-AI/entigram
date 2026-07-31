@@ -1,5 +1,6 @@
 import json
 import sys
+import ipaddress
 from typing import Optional
 
 from entigram.mcp_service import EntigramMCPService
@@ -41,6 +42,25 @@ def create_mcp_server(target_dir: str = ".", host: Optional[str] = None, port: O
             return _tool_error("IMPACT_ANALYSIS_FAILED", f"Failed to analyze impact - {exc}")
 
     @mcp.tool()
+    def etg_get_assessment_capabilities() -> str:
+        """Return non-executable assessment metadata and current capability advisories."""
+        try:
+            return service.get_assessment_capabilities()
+        except Exception as exc:
+            return _tool_error(
+                "ASSESSMENT_CAPABILITY_DISCOVERY_FAILED",
+                f"Failed to inspect assessment capabilities - {exc}",
+            )
+
+    @mcp.tool()
+    def etg_assess(payload: str) -> str:
+        """Request an assessment; installed executable adapters are disabled by default."""
+        try:
+            return service.assess(payload)
+        except Exception as exc:
+            return _tool_error("ASSESSMENT_FAILED", f"Assessment failed - {exc}")
+
+    @mcp.tool()
     def etg_propose_alignment(payload: str) -> str:
         """Validate and record a proposed semantic alignment."""
         try:
@@ -59,6 +79,8 @@ def create_mcp_server(target_dir: str = ".", host: Optional[str] = None, port: O
     registered_tools = {
         "etg_get_schemas",
         "etg_get_impact",
+        "etg_get_assessment_capabilities",
+        "etg_assess",
         "etg_propose_alignment",
         "etg_log_conflict",
     }
@@ -92,6 +114,15 @@ def run_mcp_server(
 ):
     if transport not in {"stdio", "sse"}:
         raise ValueError("transport must be 'stdio' or 'sse'")
+    if transport == "sse":
+        try:
+            loopback = ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            loopback = host.lower() == "localhost"
+        if not loopback:
+            raise ValueError(
+                "SSE transport is restricted to loopback until authenticated remote transport is available"
+            )
 
     try:
         server = create_mcp_server(

@@ -75,7 +75,11 @@ class TestFederatedRouter(unittest.TestCase):
             source_concept="SpendingLimit.account_id",
             target_concept="Account.id",
             confidence=1.0,
-            rationale="Test authorization"
+            rationale="Test authorization",
+            lifecycle_status="verified",
+            evidence_type="human_review",
+            verified=True,
+            verified_by="test",
         )
 
     def tearDown(self):

@@ -2,7 +2,11 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from entigram.cli_runner.runner import launch_agent, list_ollama_models
+from entigram.cli_runner.runner import (
+    execute_headless_model,
+    launch_agent,
+    list_ollama_models,
+)
 
 
 class TestCodexRunner(unittest.TestCase):
@@ -83,6 +87,23 @@ llama3.2:latest   def456          2.0 GB    1 week ago
 """
         with patch("subprocess.run", return_value=SimpleNamespace(stdout=output)):
             self.assertEqual(list_ollama_models(), ["qwen3:latest", "llama3.2:latest"])
+
+    def test_headless_antigravity_keeps_permissions_enabled_by_default(self):
+        with patch("subprocess.run", return_value=SimpleNamespace(stdout="ENTITY: Safe")) as run:
+            output = execute_headless_model("model this", engine="Antigravity")
+
+        self.assertEqual(output, "ENTITY: Safe")
+        command = run.call_args.args[0]
+        self.assertEqual(command, ["agy", "run"])
+        self.assertNotIn("--dangerously-skip-permissions", command)
+
+    def test_headless_runner_uses_selected_engine_in_read_only_mode(self):
+        with patch("subprocess.run", return_value=SimpleNamespace(stdout="ENTITY: Safe")) as run:
+            execute_headless_model("model this", engine="Codex", model="gpt-5")
+
+        command = run.call_args.args[0]
+        self.assertEqual(command[:4], ["codex", "exec", "--sandbox", "read-only"])
+        self.assertIn("gpt-5", command)
 
 
 if __name__ == "__main__":

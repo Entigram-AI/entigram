@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import sys
 import tempfile
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -143,7 +144,7 @@ class TestPanelBridgeCLI(unittest.TestCase):
         """The panel-bridge subcommand should be registered."""
         import subprocess
         result = subprocess.run(
-            [".venv/bin/python3", "-m", "entigram.cli_runner.etg_cli", "panel-bridge", "--help"],
+            [sys.executable, "-m", "entigram.cli_runner.etg_cli", "panel-bridge", "--help"],
             capture_output=True,
             text=True,
             timeout=10,

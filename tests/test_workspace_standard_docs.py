@@ -22,6 +22,8 @@ class TestWorkspaceStandardDocs(unittest.TestCase):
         self.assertIn("git ls-files", standard)
         self.assertIn("etg broker export-audit --out entigram-audit.json", standard)
         self.assertIn("workspace_schema_version", standard)
+        self.assertIn("external_artifacts", standard)
+        self.assertIn("artifact-reputation/v1", standard)
         self.assertIn("Breaking changes", standard)
 
     def test_readme_points_to_standard_and_current_defaults(self):
@@ -41,6 +43,8 @@ class TestWorkspaceStandardDocs(unittest.TestCase):
 
         self.assertIn("workspace-standard.md", mcp_docs)
         self.assertIn("error.code", mcp_docs)
+        self.assertIn("etg_get_assessment_capabilities", mcp_docs)
+        self.assertIn("etg_assess", mcp_docs)
 
     def test_workspace_standard_documents_usage_and_lifecycle(self):
         standard = (ROOT / "docs" / "workspace-standard.md").read_text()

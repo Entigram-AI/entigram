@@ -117,5 +117,29 @@ class TestHydration(unittest.TestCase):
             output = captured_output.getvalue()
             self.assertIn("--- ENTIGRAM HYDRATION SEQUENCE ---", output)
 
+    def test_hydrate_warns_only_for_declared_missing_artifact_capabilities(self):
+        manifest_path = Path(self.test_dir) / ".etg" / "entigram.yaml"
+        manifest = yaml.safe_load(manifest_path.read_text())
+        manifest["external_artifacts"] = {
+            "modalities": ["image"],
+            "trust": "untrusted",
+            "mode": "advisory",
+            "required_capabilities": ["visual-prompt-injection-screening/v1"],
+        }
+        manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=True))
+
+        from entigram.cli_runner.etg_cli import get_hydration_vector
+
+        output = json.loads(
+            get_hydration_vector(Path(self.test_dir)).split("\n", 1)[1].rsplit("\n", 1)[0]
+        )
+        summary = output["ENTIGRAM_BOOT_SUMMARY"]
+        self.assertEqual(summary["assessment_mode"], "advisory")
+        self.assertEqual(
+            summary["missing_security_capabilities"],
+            ["visual-prompt-injection-screening/v1"],
+        )
+        self.assertEqual(summary["risk_advisories"][0]["code"], "ETG-RISK-MISSING-CAPABILITY")
+
 if __name__ == "__main__":
     unittest.main()

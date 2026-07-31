@@ -1,8 +1,10 @@
 import sys
 import argparse
+import hashlib
 import os
 import json
 import importlib.util
+import getpass
 import re
 import shutil
 from pathlib import Path
@@ -11,6 +13,31 @@ from entigram.schema_compiler import compile_schema_file
 from entigram.package_builder import PackageBuilder
 from entigram.cli_runner.runner import launch_agent
 from entigram.utils import find_project_root
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as artifact:
+        for chunk in iter(lambda: artifact.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _confined_workspace_path(
+    workspace: Path,
+    value: str,
+    *,
+    must_exist: bool = False,
+) -> Path:
+    candidate = Path(value).expanduser()
+    if not candidate.is_absolute():
+        candidate = workspace / candidate
+    candidate = candidate.resolve()
+    if candidate != workspace and workspace not in candidate.parents:
+        raise ValueError("path must stay within the target workspace")
+    if must_exist and not candidate.is_file():
+        raise ValueError("path must identify a readable workspace file")
+    return candidate
 
 
 def get_package_version() -> str:
@@ -301,9 +328,14 @@ def get_default_engine():
         return "Codex"
     return "Antigravity"
 
-def load_plugins(subparsers):
-    """Loads custom CLI commands from the user's .etg/plugins directory."""
-    plugins_dir = Path(".etg/plugins")
+def load_plugins(subparsers, plugins_dir: Path = Path(".etg/plugins")):
+    """Load explicitly enabled workspace CLI plugins.
+
+    Workspace plugins are executable Python, so callers must never invoke this
+    function as part of ordinary CLI startup. The global
+    ``--enable-workspace-plugins`` option is the deliberate trust boundary.
+    """
+    plugins_dir = plugins_dir.expanduser().resolve()
     if not plugins_dir.exists():
         return
 
@@ -475,7 +507,7 @@ def _concise_hydration_payload(full_payload: dict, schema_content: str) -> dict:
     snapshot = status.get("snapshot") or boot.get("latest_delivery_snapshot") or {}
     commissioner = boot.get("commissioner") or {}
     entity_names = _schema_entity_names(schema_content)
-    return {
+    summary = {
         "ENTIGRAM_BOOT_SUMMARY": {
             "version": boot.get("version"),
             "package_version": boot.get("package_version"),
@@ -512,6 +544,15 @@ def _concise_hydration_payload(full_payload: dict, schema_content: str) -> dict:
             "timestamp": boot.get("timestamp"),
         }
     }
+    posture = boot.get("security_posture") or {}
+    summary["ENTIGRAM_BOOT_SUMMARY"].update(
+        {
+            "assessment_mode": posture.get("mode", "off"),
+            "missing_security_capabilities": posture.get("missing_capabilities", []),
+            "risk_advisories": posture.get("advisories", []),
+        }
+    )
+    return summary
 
 
 def get_hydration_vector(target_path: Path, compact: bool = False, full: bool = False) -> str:
@@ -535,7 +576,10 @@ def get_hydration_vector(target_path: Path, compact: bool = False, full: bool = 
     except RuntimeError as exc:
         return f"❌ {exc}"
     with open(manifest_path, "r") as f:
-        manifest = yaml.safe_load(f)
+        manifest = yaml.safe_load(f) or {}
+
+    from entigram.assessment import workspace_security_posture
+    security_posture = workspace_security_posture(target_path)
 
     # 2. Extract state from ledger
     alignments = []
@@ -615,6 +659,7 @@ def get_hydration_vector(target_path: Path, compact: bool = False, full: bool = 
             "improvement_proposals": improvement_proposals,
             "latest_delivery_snapshot": latest_delivery_snapshot,
             "current_delivery_status": current_delivery_status,
+            "security_posture": security_posture,
             "timestamp": datetime.now().isoformat()
         }
     }
@@ -653,7 +698,19 @@ def launch_ui(target_dir=None):
         env["ENTIGRAM_PROJECT_DIR"] = str(Path(target_dir).expanduser().resolve())
         
         # Invoke streamlit via the current python interpreter to ensure it works in venvs (like Brew)
-        subprocess.run([sys.executable, "-m", "streamlit", "run", str(ui_path)], env=env, check=True)
+        subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "streamlit",
+                "run",
+                str(ui_path),
+                "--server.address=127.0.0.1",
+                "--server.enableXsrfProtection=true",
+            ],
+            env=env,
+            check=True,
+        )
         return True
     except KeyboardInterrupt:
         print("\n👋 Dashboard stopped.")
@@ -712,10 +769,20 @@ def _main():
 
     parser = argparse.ArgumentParser(description="Entigram Headless Compiler CLI")
     parser.add_argument("--version", action="version", version=f"etg {get_package_version()}")
+    parser.add_argument(
+        "--enable-workspace-plugins",
+        action="store_true",
+        help=(
+            "Explicitly execute Python plugins from .etg/plugins for this invocation; "
+            "disabled by default because workspace plugins are untrusted code"
+        ),
+    )
     subparsers = parser.add_subparsers(dest="command", help="Commands")
 
-    # Load user plugins
-    load_plugins(subparsers)
+    # Never execute repository-provided Python merely to construct the normal
+    # parser. Plugins are available only after an explicit per-invocation opt-in.
+    if "--enable-workspace-plugins" in sys.argv[1:]:
+        load_plugins(subparsers)
 
     # init command
     init_parser = subparsers.add_parser("init", help="Initialize a workspace")
@@ -779,6 +846,30 @@ def _main():
     discover_parser.add_argument("--out", help="Output Schema file (prints to stdout if omitted)")
     discover_parser.add_argument("--metadata", action="store_true", help="Include discovery provenance as a Schema comment")
     discover_parser.add_argument("--report-json", action="store_true", help="Print a structured discovery report instead of only LDS")
+
+    # assessment command
+    assess_parser = subparsers.add_parser("assess", help="Run a package-provided read-only assessment")
+    assess_parser.add_argument("--adapter", required=True, help="Registered assessment adapter name")
+    assess_parser.add_argument("--adapter-module", help="Explicit local assessment_adapter.py module; CLI only")
+    assess_parser.add_argument(
+        "--allow-executable-adapter",
+        action="store_true",
+        help=(
+            "Acknowledge that --adapter-module executes local Python in this process; "
+            "installed package adapters remain disabled until publisher trust and isolation exist"
+        ),
+    )
+    assess_parser.add_argument("--subject-type", required=True, help="Assessment subject type, such as sha256")
+    assess_subject_group = assess_parser.add_mutually_exclusive_group(required=True)
+    assess_subject_group.add_argument("--subject", help="Assessment subject reference")
+    assess_subject_group.add_argument(
+        "--subject-file",
+        help="Workspace-local file to hash and integrity-check for a sha256 assessment",
+    )
+    assess_parser.add_argument("--input-json", help="Optional JSON object containing assessment evidence")
+    assess_parser.add_argument("--dir", default=".", help="Target Entigram workspace")
+    assess_parser.add_argument("--out", help="Write the structured assessment result to a JSON file")
+    assess_parser.add_argument("--json", action="store_true", dest="json_output", help="Print structured JSON")
 
     # merge command
     merge_parser = subparsers.add_parser("merge", help="Merge a remote schema and state ledger into the local workspace")
@@ -887,6 +978,17 @@ def _main():
     serve_parser.add_argument("--host", default="127.0.0.1", help="Host for SSE transport (default: 127.0.0.1)")
     serve_parser.add_argument("--port", type=int, default=8080, help="Port for SSE or legacy GraphQL (default: 8080)")
     serve_parser.add_argument(
+        "--auth-token-env",
+        default="ENTIGRAM_SERVER_TOKEN",
+        help="Environment variable containing the legacy GraphQL bearer token",
+    )
+    serve_parser.add_argument(
+        "--allow-origin",
+        action="append",
+        default=[],
+        help="Exact browser origin allowed to call legacy GraphQL; repeat as needed",
+    )
+    serve_parser.add_argument(
         "--legacy-graphql",
         action="store_true",
         help="Launch the previous Federated GraphQL Hub instead of MCP",
@@ -905,6 +1007,12 @@ def _main():
         help="Cloudflare/Ollama proxy URL for LLM completions (default: http://127.0.0.1:11435)",
     )
     panel_bridge_parser.add_argument("--dir", default=".", help="Target directory for ledger")
+    panel_bridge_parser.add_argument(
+        "--allow-origin",
+        action="append",
+        default=[],
+        help="Exact browser origin allowed to open the WebSocket; repeat as needed",
+    )
 
     # cloudflare-ollama-proxy command
     cloudflare_proxy_parser = subparsers.add_parser(
@@ -1029,6 +1137,7 @@ def _main():
     model_parser.add_argument("description", help="Natural language description of the domain to model")
     model_parser.add_argument("--dir", help="Target directory")
     model_parser.add_argument("--engine", help="Override CLI Engine")
+    model_parser.add_argument("--model", help="Optional engine model override")
     model_parser.add_argument("--append", action="store_true", help="Append to draft_schema.lds instead of printing only")
     model_parser.add_argument(
         "--max-repair-attempts",
@@ -1047,7 +1156,10 @@ def _main():
     cloud_subparsers = cloud_parser.add_subparsers(dest="cloud_command", help="Cloud commands")
     
     login_parser = cloud_subparsers.add_parser("login", help="Login to Entigram Cloud")
-    login_parser.add_argument("--token", required=True, help="API Token")
+    login_parser.add_argument(
+        "--token",
+        help="Deprecated: API token (visible in process arguments); prefer ENTIGRAM_TOKEN or the secure prompt",
+    )
     
     sync_cloud_parser = cloud_subparsers.add_parser("sync", help="Synchronize local ledger with Entigram Cloud")
     sync_cloud_parser.add_argument("--dir", default=".", help="Target directory")
@@ -1302,7 +1414,7 @@ def _main():
 
     handoff_parser = broker_subparsers.add_parser(
         "handoff",
-        help="Run guard, warden lock, deliver, and status without requiring Make",
+        help="Verify Warden integrity, run guard, refresh lock, deliver, and report status",
     )
     handoff_parser.add_argument(
         "--proof",
@@ -1329,6 +1441,11 @@ def _main():
         help="Role to apply to --artifact entries",
     )
     handoff_parser.add_argument("--agent", help="Agent ID to attribute evidence to")
+    handoff_parser.add_argument(
+        "--accept-contract-change",
+        action="store_true",
+        help="Explicitly authorize handoff to lock a contract changed after `warden unlock`",
+    )
     handoff_parser.add_argument("--json", action="store_true", dest="json_output", help="Print result as JSON")
 
     add_package_parser = broker_subparsers.add_parser("add-package", help="Add a package to the manifest")
@@ -1425,13 +1542,27 @@ def _main():
     negotiate_auto_parser.add_argument("--tgt_dom", required=True, help="Target Domain Name")
     negotiate_auto_parser.add_argument("--threshold", type=float, default=0.8, help="Proposal confidence threshold")
 
-    scan_parser = broker_subparsers.add_parser("scan", help="Run Sentinel package vulnerability scanner")
+    scan_parser = broker_subparsers.add_parser(
+        "scan",
+        help="Run Sentinel's limited package and schema policy checks",
+    )
     scan_parser.add_argument("--package", help="Specific package to scan (scans all if omitted)")
 
     bypass_parser = broker_subparsers.add_parser("bypass", help="Authorize a bypass for a Sentinel vulnerability (Custom Packages Only)")
     bypass_parser.add_argument("--package", required=True, help="Target package name")
     bypass_parser.add_argument("--id", required=True, help="Vulnerability ID (e.g., SNTNL-CUST-001)")
     bypass_parser.add_argument("--rationale", required=True, help="Reason for bypass")
+
+    suppress_parser = broker_subparsers.add_parser(
+        "suppress",
+        help="Suppress one exact, reviewed Sentinel finding occurrence",
+    )
+    suppress_parser.add_argument("--package", required=True, help="Target package name")
+    suppress_parser.add_argument("--id", required=True, help="Vulnerability ID")
+    suppress_parser.add_argument("--fingerprint", required=True, help="Exact finding fingerprint from broker scan")
+    suppress_parser.add_argument("--rationale", required=True, help="False-positive or accepted-risk rationale")
+    suppress_parser.add_argument("--by", required=True, help="Person authorizing the suppression")
+    suppress_parser.add_argument("--expires", help="Optional expiration date in YYYY-MM-DD format")
 
     mesh_parser = broker_subparsers.add_parser("mesh", help="Automate multi-partner ingestion and alignment")
     mesh_parser.add_argument("--data", required=True, help="Directory containing partner CSV/JSON files")
@@ -1693,6 +1824,132 @@ def _main():
             print(str(e))
             sys.exit(1)
 
+    elif args.command == "assess":
+        from entigram.assessment import (
+            AssessmentSubject,
+            assessment_decision,
+            assess_subject,
+            assess_with_installed_adapter,
+            load_assessment_adapter_module,
+            load_installed_assessment_adapters,
+            workspace_security_posture,
+        )
+        try:
+            target_dir = Path(args.dir).expanduser().resolve()
+            subject_file = None
+            subject_ref = args.subject
+            if args.subject_file:
+                if args.subject_type != "sha256":
+                    raise ValueError("--subject-file requires --subject-type sha256")
+                candidate = Path(args.subject_file).expanduser()
+                if not candidate.is_absolute():
+                    candidate = target_dir / candidate
+                subject_file = candidate.resolve()
+                if subject_file != target_dir and target_dir not in subject_file.parents:
+                    raise ValueError("--subject-file must stay within the target workspace")
+                if not subject_file.is_file():
+                    raise ValueError("--subject-file must identify a readable file")
+                subject_ref = _sha256_file(subject_file)
+            subject_data = {}
+            if args.input_json:
+                input_path = _confined_workspace_path(
+                    target_dir,
+                    args.input_json,
+                    must_exist=True,
+                )
+                if input_path.stat().st_size > 1024 * 1024:
+                    raise ValueError("--input-json exceeds the 1 MiB limit")
+                subject_data = json.loads(input_path.read_text())
+                if not isinstance(subject_data, dict):
+                    raise ValueError("--input-json must contain a JSON object")
+            subject = AssessmentSubject(args.subject_type, subject_ref, subject_data)
+            if args.adapter_module:
+                if not args.allow_executable_adapter:
+                    raise ValueError(
+                        "--adapter-module executes Python; repeat with "
+                        "--allow-executable-adapter after reviewing the module"
+                    )
+                installed = {"capabilities": []}
+                module_path = _confined_workspace_path(
+                    target_dir,
+                    args.adapter_module,
+                    must_exist=True,
+                )
+                load_assessment_adapter_module(str(module_path))
+                result = assess_subject(args.adapter, subject)
+            else:
+                installed = load_installed_assessment_adapters(target_dir)
+                result = assess_with_installed_adapter(target_dir, args.adapter, subject)
+
+            provided_capabilities = sorted(
+                set(installed["capabilities"]) | set(result.capabilities)
+            )
+            posture = workspace_security_posture(
+                target_dir,
+                provided_capabilities=provided_capabilities,
+            )
+            decision = assessment_decision(result, posture)
+            if subject_file is not None and _sha256_file(subject_file) != subject_ref:
+                decision.update(
+                    {
+                        "decision": "blocked",
+                        "safe_to_process": False,
+                        "human_review_required": True,
+                        "reason_codes": sorted(
+                            set(decision["reason_codes"]) | {"SUBJECT_CHANGED_DURING_ASSESSMENT"}
+                        ),
+                        "recommended_action": (
+                            "Do not process the subject. Its bytes changed during assessment; "
+                            "quarantine it and restart from a newly calculated digest."
+                        ),
+                    }
+                )
+            blocked = decision["decision"] == "blocked"
+            payload = {
+                "ok": True,
+                "assessment": result.to_dict(),
+                "security_posture": posture,
+                **decision,
+            }
+            rendered = json.dumps(payload, indent=2, sort_keys=True)
+            if args.out:
+                output_path = _confined_workspace_path(target_dir, args.out)
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text(rendered + "\n")
+            if args.json_output:
+                print(rendered)
+            else:
+                print(f"Assessment adapter: {result.adapter}")
+                print(f"Capabilities: {', '.join(sorted(result.capabilities))}")
+                print(f"Decision: {decision['decision'].upper()}")
+                print(f"Safe to process: {'yes' if decision['safe_to_process'] else 'no'}")
+                print(f"Maximum severity: {decision['max_severity'].upper()}")
+                print(f"Findings: {len(result.findings)}")
+                for finding in result.findings:
+                    print(f"  [{finding.severity.upper()}] {finding.code}: {finding.title}")
+                    print(f"    {finding.message}")
+                    if finding.recommendation:
+                        print(f"    Recommendation: {finding.recommendation}")
+                for advisory in posture["advisories"]:
+                    print(f"  [{advisory['severity'].upper()}] {advisory['message']}")
+                    for mitigation in advisory.get("free_mitigations", []):
+                        print(f"    Mitigation: {mitigation}")
+                if decision["required_capabilities_unassessed"]:
+                    print(
+                        "  Required capabilities not exercised by this assessment: "
+                        + ", ".join(decision["required_capabilities_unassessed"])
+                    )
+                print(f"Recommended action: {decision['recommended_action']}")
+                if args.out:
+                    print(f"Assessment result written: {args.out}")
+            if blocked:
+                sys.exit(2)
+            if decision["decision"] == "review_required":
+                sys.exit(3)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            print(f"Assessment failed: {exc}")
+            sys.exit(1)
+
     elif args.command == "merge":
         try:
             sys.exit(_run_merge_command(args))
@@ -1885,7 +2142,13 @@ def _main():
                 sys.exit(1)
 
             from entigram.server import run_server
-            run_server(port=args.port, project_dir=target_dir)
+            run_server(
+                port=args.port,
+                project_dir=target_dir,
+                host=args.host,
+                auth_token=os.environ.get(args.auth_token_env),
+                allowed_origins=args.allow_origin,
+            )
         else:
             from entigram.mcp_server import run_mcp_server
             run_mcp_server(
@@ -1908,6 +2171,7 @@ def _main():
             port=args.port,
             proxy_url=args.proxy_url,
             target_dir=target_dir,
+            allowed_origins=args.allow_origin,
         )
 
     elif args.command in {"cloudflare-ollama-proxy", "cloudflare-claude"}:
@@ -2128,7 +2392,7 @@ RELATIONSHIPS:
 
         # 3. Headless Execution (Intercepting the Payload)
         print(f"🧠 Intercepting domain payload from {engine}...")
-        from entigram.cli_runner.runner import execute_headless_agy
+        from entigram.cli_runner.runner import execute_headless_model
 
         # 4. Validation & Enforcement
         from entigram.schema_compiler.parser import SchemaParser
@@ -2143,7 +2407,12 @@ RELATIONSHIPS:
             if attempt:
                 print(f"🔁 Gate retry {attempt}/{repair_limit}: sending HaltEvent feedback to {engine}...")
 
-            payload = execute_headless_agy(prompt, target_dir=target_dir)
+            payload = execute_headless_model(
+                prompt,
+                target_dir=target_dir,
+                engine=engine,
+                model=getattr(args, "model", None),
+            )
 
             if not payload:
                 halt_event = _schema_payload_halt_event(
@@ -2205,20 +2474,33 @@ RELATIONSHIPS:
         if args.cloud_command == "login":
             creds_dir = Path.home() / ".etg"
             creds_dir.mkdir(parents=True, exist_ok=True)
-            (creds_dir / "credentials").write_text(f"token: {args.token}")
+            os.chmod(creds_dir, 0o700)
+            token = args.token or os.environ.get("ENTIGRAM_TOKEN")
+            if args.token:
+                print("⚠️  --token may be visible in shell history and process listings.")
+            if not token:
+                token = getpass.getpass("Entigram Cloud token: ").strip()
+            if not token:
+                print("❌ A non-empty Entigram Cloud token is required.")
+                sys.exit(1)
+            credentials_path = creds_dir / "credentials"
+            credentials_path.write_text(json.dumps({"token": token}) + "\n")
+            os.chmod(credentials_path, 0o600)
             print("✅ Successfully logged into Entigram Cloud.")
         elif args.cloud_command == "sync":
             from entigram.broker import EntigramBroker
             broker = EntigramBroker(args.dir)
             
-            token = "anonymous"
+            token = os.environ.get("ENTIGRAM_TOKEN")
             creds_file = Path.home() / ".etg" / "credentials"
-            if creds_file.exists():
+            if not token and creds_file.exists():
                 try:
-                    token = creds_file.read_text().split("token: ")[1].strip()
-                except: pass
+                    token = json.loads(creds_file.read_text()).get("token")
+                except (OSError, json.JSONDecodeError, AttributeError):
+                    token = None
             
-            broker.ledger.sync_with_cloud(args.endpoint, token)
+            if not broker.ledger.sync_with_cloud(args.endpoint, token or ""):
+                sys.exit(1)
 
     elif args.command == "broker":
         from entigram.broker import EntigramBroker
@@ -2589,6 +2871,10 @@ RELATIONSHIPS:
                                 continue
                             if not cmd_args:
                                 continue
+                            if cmd_args[0] in {"python", "python3"}:
+                                cmd_args = [sys.executable] + cmd_args[1:]
+                            elif cmd_args[0].split("::", 1)[0].endswith(".py"):
+                                cmd_args = [sys.executable] + cmd_args
                             proc = subprocess.run(
                                 cmd_args,
                                 capture_output=True,
@@ -2652,9 +2938,53 @@ RELATIONSHIPS:
             from entigram.governance.warden import Warden
             json_output = getattr(args, "json_output", False)
             report = {}
+            warden = Warden(args.dir)
 
             if not json_output:
-                print("Step 1/4: broker guard")
+                print("Step 1/5: warden verify")
+            warden_valid = warden.verify_integrity(emit_human=not json_output)
+            report["warden_verify"] = {
+                "ok": warden_valid,
+                "halt_event": (
+                    warden.last_halt_event.to_dict()
+                    if warden.last_halt_event is not None
+                    else None
+                ),
+            }
+            if not warden_valid:
+                if json_output:
+                    print(json.dumps(report, indent=2, sort_keys=True))
+                else:
+                    print(
+                        "Handoff refused: governed schema or ontology drifted after the "
+                        "last lock. Restore it, or explicitly run `etg warden unlock` "
+                        "before an authorized contract change."
+                    )
+                sys.exit(1)
+
+            pending_contract_change = warden.has_pending_contract_change()
+            report["contract_change"] = {
+                "pending": pending_contract_change,
+                "accepted": bool(getattr(args, "accept_contract_change", False)),
+            }
+            if pending_contract_change and not getattr(args, "accept_contract_change", False):
+                if json_output:
+                    print(json.dumps(report, indent=2, sort_keys=True))
+                else:
+                    print(
+                        "Handoff refused: `warden unlock` marked a pending contract change. "
+                        "Review the schema/ontology diff and repeat with "
+                        "--accept-contract-change to authorize the new lock."
+                    )
+                sys.exit(1)
+
+            # Pin the exact contract reviewed at the start of handoff. This is
+            # needed even after an authorized unlock, when no stored lock exists
+            # to catch a validation command that mutates the schema.
+            pre_guard_fingerprint = warden.generate_fingerprint()
+
+            if not json_output:
+                print("\nStep 2/5: broker guard")
             guard_result = broker.expectation_guard(
                 proofs=getattr(args, "proof", []),
                 blocked_checks=getattr(args, "blocked", []),
@@ -2669,17 +2999,32 @@ RELATIONSHIPS:
                 sys.exit(1)
 
             if not json_output:
-                print("\nStep 2/4: warden lock")
-                Warden(args.dir).lock_fingerprint()
-            else:
-                from contextlib import redirect_stdout
-                from io import StringIO
-                with redirect_stdout(StringIO()):
-                    Warden(args.dir).lock_fingerprint()
-            report["warden_lock"] = {"ok": True}
+                print("\nStep 3/5: warden compare-and-lock")
+            try:
+                if json_output:
+                    from contextlib import redirect_stdout
+                    from io import StringIO
+                    with redirect_stdout(StringIO()):
+                        warden.lock_fingerprint(
+                            require_existing_match=True,
+                            expected_fingerprint=pre_guard_fingerprint,
+                        )
+                else:
+                    warden.lock_fingerprint(
+                        require_existing_match=True,
+                        expected_fingerprint=pre_guard_fingerprint,
+                    )
+                report["warden_lock"] = {"ok": True}
+            except RuntimeError as exc:
+                report["warden_lock"] = {"ok": False, "error": str(exc)}
+                if json_output:
+                    print(json.dumps(report, indent=2, sort_keys=True))
+                else:
+                    print(f"Handoff refused: {exc}")
+                sys.exit(1)
 
             if not json_output:
-                print("\nStep 3/4: broker deliver")
+                print("\nStep 4/5: broker deliver")
             deliver_result = broker.commission_and_record(
                 proofs=getattr(args, "proof", []),
                 blocked_checks=getattr(args, "blocked", []),
@@ -2703,7 +3048,7 @@ RELATIONSHIPS:
                 sys.exit(1)
 
             if not json_output:
-                print("\nStep 4/4: broker status")
+                print("\nStep 5/5: broker status")
             status_result = broker.delivery_status(
                 artifact_paths=getattr(args, "artifact", []),
                 artifact_role=getattr(args, "artifact_role", "delivery_artifact"),
@@ -2819,25 +3164,74 @@ RELATIONSHIPS:
                 print("No packages found to scan.")
             else:
                 total_vulns = 0
+                total_suppressed = 0
                 for pkg, result in results.items():
                     vulns = result.get("vulnerabilities", [])
+                    suppressed = result.get("suppressed", [])
                     total_vulns += len(vulns)
+                    total_suppressed += len(suppressed)
                     if vulns:
                         pkg_type = "Standard" if result["is_standard"] else "Custom"
                         print(f"\n🛡️  Sentinel Scan: {pkg} ({pkg_type} Package)")
                         for v in vulns:
                             print(f"  [{v['severity']}] {v['id']}: {v['description']}")
+                            if v.get("artifact"):
+                                print(f"    Location: {v['artifact']}:{v.get('line', '?')}:{v.get('column', '?')}")
+                            if v.get("fingerprint"):
+                                print(f"    Fingerprint: {v['fingerprint']}")
+                    if suppressed:
+                        print(f"\n📝 Sentinel Suppressions: {pkg}")
+                        for finding in suppressed:
+                            suppression = finding["suppression"]
+                            print(f"  [SUPPRESSED] {finding['id']}: {finding['description']}")
+                            if finding.get("artifact"):
+                                print(
+                                    f"    Location: {finding['artifact']}:"
+                                    f"{finding.get('line', '?')}:{finding.get('column', '?')}"
+                                )
+                            print(f"    Rationale: {suppression['rationale']}")
+                            print(
+                                f"    Authorized by: {suppression['authorized_by']} "
+                                f"at {suppression['authorized_at']}"
+                            )
                 
                 if total_vulns == 0:
-                    print("✅ Sentinel Scan Complete: No active vulnerabilities found.")
+                    print("✅ Sentinel policy scan: no active findings in configured rules.")
+                    print(
+                        "   Coverage note: this is package/schema linting, not a repository "
+                        "malware, dependency, or general vulnerability scan."
+                    )
                 else:
-                    print(f"\n⚠️  Sentinel Scan Complete: Found {total_vulns} active vulnerabilities.")
+                    print(f"\n⚠️  Sentinel policy scan: found {total_vulns} active finding(s).")
                     print("   To bypass custom package warnings, use: broker bypass --package <pkg> --id <id> --rationale \"<reason>\"")
+                    print(
+                        "   To suppress one reviewed occurrence, use: broker suppress "
+                        "--package <pkg> --id <id> --fingerprint <sha256:...> "
+                        "--rationale \"<reason>\" --by \"<authorizer>\""
+                    )
+                if total_suppressed:
+                    print(
+                        f"   Audit note: {total_suppressed} occurrence-specific "
+                        "suppression(s) remain visible."
+                    )
         
         elif args.broker_command == "bypass":
             from entigram.governance.sentinel import SentinelScanner
             scanner = SentinelScanner(args.dir)
             if not scanner.authorize_bypass(args.package, args.id, args.rationale):
+                sys.exit(1)
+
+        elif args.broker_command == "suppress":
+            from entigram.governance.sentinel import SentinelScanner
+            scanner = SentinelScanner(args.dir)
+            if not scanner.authorize_suppression(
+                package_name=args.package,
+                vulnerability_id=args.id,
+                fingerprint=args.fingerprint,
+                rationale=args.rationale,
+                authorized_by=args.by,
+                expires_at=args.expires,
+            ):
                 sys.exit(1)
     
     elif args.command == "improve":

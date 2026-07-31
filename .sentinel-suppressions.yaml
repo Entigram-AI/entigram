@@ -1,0 +1,32 @@
+version: 1
+suppressions:
+  - finding_id: SNTNL-RULE-005
+    fingerprint: sha256:58317327436746b2186504283d1cf36b1e77ff9821e018644f0b87ded619078b
+    artifact: schema.lds
+    line: 580
+    rationale: >-
+      Reviewed project expectation title; "Demo" names the generic Immutable
+      Gate smoke demonstration and contains no customer-specific implementation.
+    authorized_by: repository-owner
+    authorized_at: "2026-07-31T13:25:32-05:00"
+    expires_at: "2027-07-31"
+  - finding_id: SNTNL-RULE-005
+    fingerprint: sha256:0567fad2e70b773f65d78b8b6b76bdc53b83642cc998f94263228330151691e3
+    artifact: schema.lds
+    line: 617
+    rationale: >-
+      Reviewed release-note expectation; "smoke demo" describes a generic
+      validation workflow and contains no customer-specific implementation.
+    authorized_by: repository-owner
+    authorized_at: "2026-07-31T13:25:32-05:00"
+    expires_at: "2027-07-31"
+  - finding_id: SNTNL-RULE-005
+    fingerprint: sha256:30b5d9780cd6a7d206d56361cf252d12b55fe0102b5f0e9f4441d7529ce74842
+    artifact: schema.lds
+    line: 632
+    rationale: >-
+      Reviewed schema history comment; "smoke demo" documents a generic
+      validation artifact and contains no customer-specific implementation.
+    authorized_by: repository-owner
+    authorized_at: "2026-07-31T13:25:32-05:00"
+    expires_at: "2027-07-31"

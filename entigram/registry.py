@@ -1,5 +1,6 @@
 import os
 import re
+import base64
 import shutil
 import subprocess
 import tarfile
@@ -103,14 +104,20 @@ class EntigramRegistry:
             print(f"Error adding registry: {e}")
             return False
 
-    def _get_auth_url(self, url: str) -> str:
-        """Injects ENTIGRAM_TOKEN into HTTPS URLs if present."""
+    def _git_environment(self, url: str) -> dict:
+        """Return transient Git authentication without modifying argv or remotes."""
+        env = os.environ.copy()
         token = os.environ.get("ENTIGRAM_TOKEN")
         if token and url.startswith("https://"):
-            # Ensure we don't double-inject if it already has credentials
-            if "@" not in url.split("://")[1]:
-                return url.replace("https://", f"https://{token}@")
-        return url
+            encoded = base64.b64encode(f"x-access-token:{token}".encode("utf-8")).decode("ascii")
+            try:
+                index = int(env.get("GIT_CONFIG_COUNT", "0"))
+            except ValueError:
+                index = 0
+            env["GIT_CONFIG_COUNT"] = str(index + 1)
+            env[f"GIT_CONFIG_KEY_{index}"] = "http.extraHeader"
+            env[f"GIT_CONFIG_VALUE_{index}"] = f"Authorization: Basic {encoded}"
+        return env
 
     def _fetch_registry(self, url: str) -> Optional[Path]:
         """Clones or pulls the latest version of the registry into the global cache."""
@@ -120,34 +127,27 @@ class EntigramRegistry:
         url_hash = hashlib.md5(url.encode()).hexdigest()
         cache_path = self.global_cache_dir / url_hash
         
-        auth_url = self._get_auth_url(url)
-        
-        # Mask the URL for logging if it contains a token
+        git_env = self._git_environment(url)
         log_url = url
-        if "@" in log_url and log_url.startswith("https://"):
-             log_url = "https://***@" + log_url.split("@", 1)[1]
-        elif "@" in auth_url and auth_url.startswith("https://"):
-             log_url = "https://***@" + auth_url.split("@", 1)[1]
              
         try:
             if cache_path.exists():
                 print(f"🔄 Updating registry cache: {log_url}")
-                # We use --quiet to keep the CLI output clean
-                # Set origin URL to auth URL before pulling, then revert
-                subprocess.run(["git", "-C", str(cache_path), "remote", "set-url", "origin", auth_url], check=True)
-                subprocess.run(["git", "-C", str(cache_path), "pull", "--quiet"], check=True)
-                # Remove token from local git config
-                subprocess.run(["git", "-C", str(cache_path), "remote", "set-url", "origin", url], check=True)
+                subprocess.run(
+                    ["git", "-C", str(cache_path), "pull", "--quiet"],
+                    check=True,
+                    env=git_env,
+                )
             else:
                 print(f"📥 Cloning registry: {log_url}")
-                subprocess.run(["git", "clone", "--quiet", auth_url, str(cache_path)], check=True)
-                # Remove token from local git config
-                subprocess.run(["git", "-C", str(cache_path), "remote", "set-url", "origin", url], check=True)
+                subprocess.run(
+                    ["git", "clone", "--quiet", url, str(cache_path)],
+                    check=True,
+                    env=git_env,
+                )
             return cache_path
         except subprocess.CalledProcessError as e:
-            # Mask error message just in case the URL is included in the exception
-            err_msg = str(e).replace(auth_url, log_url)
-            print(f"❌ Failed to fetch registry {log_url}: {err_msg}")
+            print(f"❌ Failed to fetch registry {log_url}: {e}")
             return None
 
     def _is_api_registry(self, url: str) -> bool:

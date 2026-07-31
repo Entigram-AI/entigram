@@ -147,6 +147,8 @@ class TestEntigramSelfImprovementModel(unittest.TestCase):
         self.assertIn("etg_get_schemas", mcp_docs)
         self.assertIn("etg_propose_alignment", mcp_docs)
         self.assertIn("etg_log_conflict", mcp_docs)
+        self.assertIn("etg_get_assessment_capabilities", mcp_docs)
+        self.assertIn("etg_assess", mcp_docs)
         self.assertIn("UNKNOWN_CONCEPT", mcp_docs)
         self.assertIn("export-audit", Path("README.md").read_text())
         self.assertIn("Entigram 1.6 introduces", Path("CHANGELOG.md").read_text())

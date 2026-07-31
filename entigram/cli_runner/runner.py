@@ -73,14 +73,48 @@ def _build_ollama_command(launch_option: str = None, model: str = None) -> str:
     return f"{env_prefix}ollama launch {shlex.quote(app)} --model {shlex.quote(selected_model)}"
 
 
-def execute_headless_agy(prompt: str, target_dir: str = "."):
-    print("[ENTIGRAM] Igniting headless Antigravity engine...")
+def _headless_engine_command(engine: str, model: str = None, *, yolo: bool = False):
+    """Build a one-shot command that is read-only unless yolo is explicit."""
+    normalized = (engine or "").strip().lower()
+    if normalized in {"antigravity", "agy"}:
+        command = ["agy", "run"]
+        if model:
+            command.extend(["--model", model])
+        if yolo:
+            command.append("--dangerously-skip-permissions")
+        return command
+    if normalized in {"claude", "claude code"}:
+        command = ["claude", "-p", "--permission-mode", "plan"]
+        if model:
+            command.extend(["--model", model])
+        return command
+    if normalized == "codex":
+        command = ["codex", "exec", "--sandbox", "read-only"]
+        if model:
+            command.extend(["--model", model])
+        command.append("-")
+        return command
+    if normalized == "ollama":
+        return ["ollama", "run", model or "qwen3"]
+    raise ValueError(f"Unsupported headless engine: {engine}")
+
+
+def execute_headless_model(
+    prompt: str,
+    target_dir: str = ".",
+    *,
+    engine: str = "Antigravity",
+    model: str = None,
+    yolo: bool = False,
+):
+    print(f"[ENTIGRAM] Igniting headless {engine} engine...")
     target_path = Path(target_dir).absolute()
+    command = _headless_engine_command(engine, model, yolo=yolo)
     try:
         # We pass the prompt via 'input', NOT as a command-line argument.
         # This breaks the TTY and forces a one-shot execution.
         result = subprocess.run(
-            ["agy", "run", "--dangerously-skip-permissions"],
+            command,
             input=prompt,
             capture_output=True,
             text=True,
@@ -94,10 +128,26 @@ def execute_headless_agy(prompt: str, target_dir: str = "."):
             output = output[len(prompt):].strip()
             
         return output
-    except subprocess.CalledProcessError as e:
-        print(f"[ENTIGRAM FATAL] Engine failure: {e.stderr}")
-        import sys
-        sys.exit(1)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        detail = getattr(exc, "stderr", None) or str(exc)
+        raise RuntimeError(f"Headless {engine} engine failed: {detail}") from exc
+
+
+def execute_headless_agy(
+    prompt: str,
+    target_dir: str = ".",
+    *,
+    model: str = None,
+    yolo: bool = False,
+):
+    """Backward-compatible Antigravity wrapper with safe permissions by default."""
+    return execute_headless_model(
+        prompt,
+        target_dir=target_dir,
+        engine="Antigravity",
+        model=model,
+        yolo=yolo,
+    )
 
 
 def launch_agent(
@@ -143,8 +193,14 @@ def launch_agent(
         elif engine == "Codex":
             flags.extend(["--ask-for-approval", "never"])
 
-    if headless and (engine == "Antigravity" or engine == "agy"):
-        output = execute_headless_agy(initial_prompt, target_dir=str(target_path))
+    if headless:
+        output = execute_headless_model(
+            initial_prompt,
+            target_dir=str(target_path),
+            engine=engine,
+            model=model,
+            yolo=yolo,
+        )
         print(output)
         return True, "Headless execution completed successfully."
 

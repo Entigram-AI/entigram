@@ -54,6 +54,13 @@ governed_artifact_globs:
 state_ledger: .etg/state.db
 lifecycle:
   state: active
+external_artifacts:
+  modalities: [image, pdf]
+  trust: untrusted
+  mode: advisory
+  required_capabilities:
+    - artifact-reputation/v1
+    - visual-prompt-injection-screening/v1
 status: initialized
 ```
 
@@ -70,6 +77,40 @@ non-ignored workspace files across languages. In a non-Git workspace, Entigram
 falls back to polyglot source and project-configuration defaults. Both paths
 exclude `.git`, `.etg`, virtual environments, dependency directories, caches,
 and build output.
+
+`external_artifacts` is optional and capability-aware. Its absence emits no
+artifact-security warning. When present, `modalities` declares the artifact
+types accepted by the workflow, `trust` is `trusted` or `untrusted`, and
+`required_capabilities` contains granular versioned identifiers. Modes are
+`off`, `advisory`, and explicitly enabled `enforce`; the default is `advisory`.
+
+Hydration compares declared requirements with capabilities that are safe to
+execute. Signed installed assessment packages are currently discovered but not
+executed: their signatures prove integrity, not trusted-publisher identity, and
+there is not yet an isolated adapter runtime. Their declared capabilities remain
+missing and produce advisories with free mitigations. Coverage is exact:
+`artifact-reputation/v1` does not satisfy visual prompt-injection,
+adversarial-image, or media-provenance requirements. Community and third-party
+packages may implement the same open capability contract for future isolated
+execution.
+
+Installed coverage and an assessment decision are different. Assessment
+responses use `ok` only for execution success and return a separate `decision`,
+`safe_to_process`, maximum severity, reason codes, unassessed required
+capabilities, and recommended action. Agents must not treat `ok: true`, a clean
+reputation result, or an installed capability as authorization to process an
+untrusted artifact. Only `decision: allow` permits normal processing; other
+outcomes preserve isolation and human review.
+
+For CLI SHA-256 assessments, `--subject-file` binds the assessment to a
+workspace-local artifact and detects byte changes during the assessment. Agents
+should prefer it to a separately calculated digest to reduce time-of-check and
+time-of-use ambiguity.
+
+Local adapter development is an explicit operator action. Both
+`--adapter-module` and `--allow-executable-adapter` are required, and the module
+runs in the current CLI process. MCP never accepts a module path or executes an
+installed assessment package in the current release.
 
 ## Schema Contract
 
@@ -106,6 +147,7 @@ markers. It includes:
 - authoritative schema path and entity summary
 - delivery status and Warden status
 - expectation counts
+- assessment mode, missing security capabilities, and risk advisories
 - next recommended broker commands
 
 Agents that need full state can request:
@@ -182,12 +224,21 @@ etg broker handoff
 etg broker status
 ```
 
+Intentional schema and ontology changes have an additional explicit boundary:
+
+```bash
+etg warden unlock
+# edit and review the governed contract
+etg broker handoff --accept-contract-change
+```
+
 `etg broker handoff` is the portable no-Make gate. It runs:
 
-1. `broker guard`
-2. `warden lock`
-3. `broker deliver`
-4. `broker status`
+1. Verify the existing Warden fingerprint.
+2. Run `broker guard`.
+3. Compare-and-lock the contract without replacing unexpected drift.
+4. Run `broker deliver`.
+5. Report `broker status`.
 
 The final status must report:
 

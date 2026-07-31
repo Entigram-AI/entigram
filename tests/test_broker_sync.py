@@ -28,7 +28,8 @@ class TestBrokerSync(unittest.TestCase):
         
         # Setup Aligment
         self.broker.authorize_alignment(
-            "DomainA", "DomainB", "balance", "balance", 1.0, "Testing Sync"
+            "DomainA", "DomainB", "balance", "balance", 1.0, "Testing Sync",
+            validate_schema=False,
         )
         
         # Setup initial conflicting states in SQLite DBs
@@ -75,7 +76,8 @@ class TestBrokerSync(unittest.TestCase):
 
     def test_sync_updates_only_the_conflict_alignment_and_latest_row(self):
         self.broker.authorize_alignment(
-            "DomainC", "DomainD", "balance", "balance", 1.0, "Unrelated alignment"
+            "DomainC", "DomainD", "balance", "balance", 1.0, "Unrelated alignment",
+            validate_schema=False,
         )
         self._setup_db("DomainC", "balance", 300)
         self._setup_db("DomainD", "balance", 400)

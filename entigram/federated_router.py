@@ -14,6 +14,17 @@ from .workspace_contract import authoritative_schema_paths
 
 p = inflect.engine()
 
+
+def _quote_sqlite_identifier(identifier: str) -> str:
+    """Quote an already schema/DB-whitelisted SQLite identifier."""
+    if not isinstance(identifier, str) or not re.fullmatch(
+        r"[A-Za-z_][A-Za-z0-9_]{0,127}",
+        identifier,
+    ):
+        raise ValueError("invalid SQLite identifier")
+    return f'"{identifier}"'
+
+
 class FederatedRouter:
     """
     Routes GraphQL-LD queries to the appropriate federated domain databases.
@@ -113,8 +124,9 @@ class FederatedRouter:
             return []
         db_path = self.etg_dir / "states" / f"{domain}.db"
         with closing(sqlite3.connect(db_path)) as conn:
-            cols = [c[1] for c in conn.execute(
-                f"PRAGMA table_info({self._get_table_name(entity_name)})"
+            cols = [c[0] for c in conn.execute(
+                "SELECT name FROM pragma_table_info(?)",
+                (self._get_table_name(entity_name),),
             ).fetchall()]
         self._schema_cache[entity_name] = cols
         return cols
@@ -212,7 +224,7 @@ class FederatedRouter:
                 if "already" not in err_msg and "exists" not in err_msg:
                     print(f"Warning: Failed to create CozoDB relation '{rel_name}': {e}")
 
-            cursor.execute(f"SELECT * FROM {table_name}")
+            cursor.execute(f"SELECT * FROM {_quote_sqlite_identifier(table_name)}")
             rows = [dict(r) for r in cursor.fetchall()]
             
             if not rows:
@@ -425,11 +437,12 @@ class FederatedRouter:
 
         db_path = self.etg_dir / "states" / f"{domain}.db"
         params: List[Any] = []
-        sql = f"SELECT {', '.join(query_fields)} FROM {table_name}"
+        selected_columns = ", ".join(_quote_sqlite_identifier(field) for field in query_fields)
+        sql = f"SELECT {selected_columns} FROM {_quote_sqlite_identifier(table_name)}"
         if filter_col and filter_val is not None:
             if filter_col not in valid_cols:
                 return []
-            sql += f" WHERE {filter_col} = ?"
+            sql += f" WHERE {_quote_sqlite_identifier(filter_col)} = ?"
             params.append(filter_val)
 
         # 4. Execute current level
@@ -448,7 +461,9 @@ class FederatedRouter:
             if conn:
                 conn.close()
 
-        # 5. Handle nested queries — batch fetch to avoid N+1
+        # 5. Handle nested queries. Identifier-bearing SQL remains centralized
+        # in the validated recursive path instead of duplicating dynamic batch
+        # query construction here.
         for field, nested_tokens_block in nested_queries.items():
             join_info = self._resolve_join_info(root_entity, field)
             if join_info.get('direction') == 'no_join':
@@ -467,42 +482,8 @@ class FederatedRouter:
                         res[field] = None
                     continue
 
-                child_entity = nested_tokens_block[0]
-                child_domain = self._find_domain_for_entity(child_entity)
-                # Skip batch when the child block has further nesting — recurse instead
-                has_sub_nesting = nested_tokens_block.count('{') > 0
-                if child_domain and not has_sub_nesting:
-                    child_table = self._get_table_name(child_entity)
-                    child_db = self.etg_dir / "states" / f"{child_domain}.db"
-                    child_valid_cols = set(self._get_entity_columns(child_entity))
-                    if fk_col in child_valid_cols:
-                        placeholders = ",".join("?" * len(parent_ids))
-                        child_conn = None
-                        try:
-                            child_conn = sqlite3.connect(child_db)
-                            child_conn.row_factory = sqlite3.Row
-                            rows = child_conn.execute(
-                                f"SELECT * FROM {child_table} WHERE {fk_col} IN ({placeholders})",
-                                parent_ids
-                            ).fetchall()
-                        except Exception as e:
-                            print(f"Batch join error for {field}: {e}")
-                            rows = []
-                        finally:
-                            if child_conn:
-                                child_conn.close()
-
-                        by_fk: Dict[Any, List[Dict]] = {}
-                        for row in rows:
-                            d = dict(row)
-                            by_fk.setdefault(d.get(fk_col), []).append(d)
-
-                        for res in results:
-                            children = by_fk.get(res.get(parent_key_col), [])
-                            res[field] = children[0] if children else None
-                        continue
-
-                # Fallback to single-row recursive (handles sub-nesting and missing domain)
+                # Resolve through the same schema/column-validated query path
+                # used for top-level reads.
                 for res in results:
                     nested_results = self._execute_recursive(list(nested_tokens_block), fk_col, res.get(parent_key_col))
                     res[field] = nested_results[0] if nested_results else None
