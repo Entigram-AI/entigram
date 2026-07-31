@@ -164,25 +164,25 @@ end
         )
 
     def test_filters_rust_backed_resources_to_native_dependencies(self):
-        resources = '''resource "pydantic" do
-  url "https://files.pythonhosted.org/packages/pydantic.tar.gz"
-  sha256 "pydantic"
-end
+        resources = '''  resource "pydantic" do
+    url "https://files.pythonhosted.org/packages/pydantic.tar.gz"
+    sha256 "pydantic"
+  end
 
-resource "pydantic_core" do
-  url "https://files.pythonhosted.org/packages/pydantic_core.tar.gz"
-  sha256 "core"
-end
+  resource "pydantic_core" do
+    url "https://files.pythonhosted.org/packages/pydantic_core.tar.gz"
+    sha256 "core"
+  end
 
-resource "rpds-py" do
-  url "https://files.pythonhosted.org/packages/rpds_py.tar.gz"
-  sha256 "rpds"
-end
+  resource "rpds-py" do
+    url "https://files.pythonhosted.org/packages/rpds_py.tar.gz"
+    sha256 "rpds"
+  end
 
-resource "httpx" do
-  url "https://files.pythonhosted.org/packages/httpx.tar.gz"
-  sha256 "httpx"
-end
+  resource "httpx" do
+    url "https://files.pythonhosted.org/packages/httpx.tar.gz"
+    sha256 "httpx"
+  end
 '''
 
         filtered, deps = update_homebrew_formula.filter_native_resources(resources)
@@ -192,6 +192,8 @@ end
         self.assertNotIn('resource "pydantic_core"', filtered)
         self.assertNotIn('resource "rpds-py"', filtered)
         self.assertIn('resource "httpx"', filtered)
+        self.assertTrue(filtered.startswith('resource "httpx" do'))
+        self.assertNotIn("\n\n\n", filtered)
 
     def test_filters_current_package_resource_without_native_dependency(self):
         resources = '''resource "entigram-ai" do
@@ -225,8 +227,9 @@ end
         self.assertNotIn('depends_on "cryptography"', block)
         self.assertIn('  resource "setuptools" do', block)
         self.assertIn('  resource "httpx" do', block)
+        self.assertNotIn('    resource "httpx" do', block)
 
-    def test_update_resources_replaces_resource_section_without_rust_resources(self):
+    def test_replace_formula_resources_produces_brew_style_layout(self):
         formula = '''class Etg < Formula
   include Language::Python::Virtualenv
 
@@ -236,53 +239,74 @@ end
   sha256 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   license "Apache-2.0"
 
+  depends_on "libyaml"
   depends_on "python@3.14"
 
   def install
   end
 end
 '''
-        poet_output = '''resource "entigram-ai" do
-  url "https://files.pythonhosted.org/packages/entigram_ai-1.7.3.tar.gz"
-  sha256 "self"
-end
+        poet_output = '''  resource "entigram-ai" do
+    url "https://files.pythonhosted.org/packages/entigram_ai-1.7.3.tar.gz"
+    sha256 "self"
+  end
 
-resource "pydantic_core" do
-  url "https://files.pythonhosted.org/packages/pydantic_core.tar.gz"
-  sha256 "core"
-end
+  resource "cryptography" do
+    url "https://files.pythonhosted.org/packages/cryptography.tar.gz"
+    sha256 "cryptography"
+  end
 
-resource "httpx" do
-  url "https://files.pythonhosted.org/packages/httpx.tar.gz"
-  sha256 "httpx"
-end
+  resource "cffi" do
+    url "https://files.pythonhosted.org/packages/cffi.tar.gz"
+    sha256 "cffi"
+  end
+
+  resource "pydantic_core" do
+    url "https://files.pythonhosted.org/packages/pydantic_core.tar.gz"
+    sha256 "core"
+  end
+
+  resource "httpx" do
+    url "https://files.pythonhosted.org/packages/httpx.tar.gz"
+    sha256 "httpx"
+  end
 '''
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            formula_path = Path(tmpdir) / "etg.rb"
-            formula_path.write_text(formula)
-            filtered, deps = update_homebrew_formula.filter_native_resources(
-                poet_output,
-                excluded_resource_names=update_homebrew_formula.package_resource_names("entigram-ai"),
-            )
-            start_marker = f'depends_on "python@{update_homebrew_formula.HOMEBREW_PYTHON_VERSION}"\n'
-            end_marker = '  def install\n'
-            text = formula_path.read_text()
-            start_idx = text.find(start_marker) + len(start_marker)
-            end_idx = text.find(end_marker)
-            formula_path.write_text(
-                text[:start_idx]
-                + update_homebrew_formula.render_dependency_block(deps, filtered)
-                + text[end_idx:]
-            )
-
-            updated = formula_path.read_text()
+        updated = update_homebrew_formula.replace_formula_resources(
+            formula,
+            "entigram-ai",
+            poet_output,
+        )
 
         self.assertIn('depends_on "pydantic"', updated)
         self.assertIn('resource "setuptools"', updated)
         self.assertNotIn('resource "entigram-ai"', updated)
         self.assertNotIn('resource "pydantic_core"', updated)
         self.assertIn('resource "httpx"', updated)
+        self.assertNotIn('    resource "httpx" do', updated)
+        self.assertNotIn("\n\n\n", updated)
+        self.assertEqual(
+            [
+                line.strip()
+                for line in updated.splitlines()
+                if line.startswith("  depends_on ")
+            ],
+            [
+                'depends_on "cffi"',
+                'depends_on "cryptography"',
+                'depends_on "libyaml"',
+                'depends_on "pydantic"',
+                'depends_on "python@3.14"',
+            ],
+        )
+        self.assertEqual(
+            update_homebrew_formula.replace_formula_resources(
+                updated,
+                "entigram-ai",
+                poet_output,
+            ),
+            updated,
+        )
 
 
 if __name__ == "__main__":
