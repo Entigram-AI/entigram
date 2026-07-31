@@ -60,7 +60,9 @@ class EntigramRegistry:
             else Path.home() / ".etg" / "registry_cache"
         )
         self.global_cache_dir.mkdir(parents=True, exist_ok=True)
-        self.default_registry = "git@github.com:nyabutid/entigram-standard-packages.git"
+        self.default_registry = (
+            "git@github.com:Entigram-AI/entigram-standard-packages.git"
+        )
 
     def get_registries(self) -> List[str]:
         """Returns a list of all configured registries, including the default Cloud API."""
