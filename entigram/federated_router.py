@@ -17,9 +17,12 @@ p = inflect.engine()
 
 def _quote_sqlite_identifier(identifier: str) -> str:
     """Quote an already schema/DB-whitelisted SQLite identifier."""
-    if not isinstance(identifier, str) or not identifier or "\x00" in identifier:
+    if not isinstance(identifier, str) or not re.fullmatch(
+        r"[A-Za-z_][A-Za-z0-9_]{0,127}",
+        identifier,
+    ):
         raise ValueError("invalid SQLite identifier")
-    return '"' + identifier.replace('"', '""') + '"'
+    return f'"{identifier}"'
 
 
 class FederatedRouter:
@@ -121,8 +124,9 @@ class FederatedRouter:
             return []
         db_path = self.etg_dir / "states" / f"{domain}.db"
         with closing(sqlite3.connect(db_path)) as conn:
-            cols = [c[1] for c in conn.execute(
-                f"PRAGMA table_info({self._get_table_name(entity_name)})"
+            cols = [c[0] for c in conn.execute(
+                "SELECT name FROM pragma_table_info(?)",
+                (self._get_table_name(entity_name),),
             ).fetchall()]
         self._schema_cache[entity_name] = cols
         return cols
@@ -457,7 +461,9 @@ class FederatedRouter:
             if conn:
                 conn.close()
 
-        # 5. Handle nested queries — batch fetch to avoid N+1
+        # 5. Handle nested queries. Identifier-bearing SQL remains centralized
+        # in the validated recursive path instead of duplicating dynamic batch
+        # query construction here.
         for field, nested_tokens_block in nested_queries.items():
             join_info = self._resolve_join_info(root_entity, field)
             if join_info.get('direction') == 'no_join':
@@ -476,43 +482,8 @@ class FederatedRouter:
                         res[field] = None
                     continue
 
-                child_entity = nested_tokens_block[0]
-                child_domain = self._find_domain_for_entity(child_entity)
-                # Skip batch when the child block has further nesting — recurse instead
-                has_sub_nesting = nested_tokens_block.count('{') > 0
-                if child_domain and not has_sub_nesting:
-                    child_table = self._get_table_name(child_entity)
-                    child_db = self.etg_dir / "states" / f"{child_domain}.db"
-                    child_valid_cols = set(self._get_entity_columns(child_entity))
-                    if fk_col in child_valid_cols:
-                        placeholders = ",".join("?" * len(parent_ids))
-                        child_conn = None
-                        try:
-                            child_conn = sqlite3.connect(child_db)
-                            child_conn.row_factory = sqlite3.Row
-                            rows = child_conn.execute(
-                                f"SELECT * FROM {_quote_sqlite_identifier(child_table)} "
-                                f"WHERE {_quote_sqlite_identifier(fk_col)} IN ({placeholders})",
-                                parent_ids
-                            ).fetchall()
-                        except Exception as e:
-                            print(f"Batch join error for {field}: {e}")
-                            rows = []
-                        finally:
-                            if child_conn:
-                                child_conn.close()
-
-                        by_fk: Dict[Any, List[Dict]] = {}
-                        for row in rows:
-                            d = dict(row)
-                            by_fk.setdefault(d.get(fk_col), []).append(d)
-
-                        for res in results:
-                            children = by_fk.get(res.get(parent_key_col), [])
-                            res[field] = children[0] if children else None
-                        continue
-
-                # Fallback to single-row recursive (handles sub-nesting and missing domain)
+                # Resolve through the same schema/column-validated query path
+                # used for top-level reads.
                 for res in results:
                     nested_results = self._execute_recursive(list(nested_tokens_block), fk_col, res.get(parent_key_col))
                     res[field] = nested_results[0] if nested_results else None

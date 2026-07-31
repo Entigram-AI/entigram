@@ -15,6 +15,7 @@ from entigram.cli_runner.plugin_builder import generate_plugin_boilerplate
 from entigram.cli_runner.etg_cli import main
 from entigram.cli_runner.cloudflare_ollama_proxy import main as proxy_main
 from entigram.broker import EntigramBroker
+from entigram.federated_router import _quote_sqlite_identifier
 from entigram.mcp_server import run_mcp_server
 from entigram.panel_bridge import run_panel_bridge
 from entigram.project_history import add_project_to_history, get_project_history
@@ -51,6 +52,12 @@ class TestSecurityHardening(unittest.TestCase):
         self.assertEqual(handler.auth_token, "secret")
         self.assertEqual(handler.allowed_origins, {"http://127.0.0.1:3000"})
         server_cls.return_value.server_close.assert_called_once()
+
+    def test_legacy_graphql_rejects_header_unsafe_origins(self):
+        with patch("entigram.server.http.server.ThreadingHTTPServer") as server_cls:
+            with self.assertRaisesRegex(ValueError, "exact HTTP"):
+                run_server(allowed_origins=["http://trusted.example\r\nX-Forged: yes"])
+        server_cls.assert_not_called()
 
     def test_registry_token_never_enters_git_arguments_or_remote_url(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -147,12 +154,28 @@ class TestSecurityHardening(unittest.TestCase):
 
     def test_alignment_negotiation_confines_inputs_to_workspace(self):
         with tempfile.TemporaryDirectory() as directory:
+            schema_dir = Path(directory, "schemas")
+            schema_dir.mkdir()
+            schema_path = schema_dir / "source.lds"
+            schema_path.write_text("ENTITY Test { id UUID PK }")
             broker = EntigramBroker(directory)
             try:
+                self.assertEqual(
+                    broker._confined_workspace_input(
+                        "schemas/source.lds",
+                        suffix=".lds",
+                    ),
+                    schema_path.resolve(),
+                )
                 with self.assertRaisesRegex(ValueError, "must stay within"):
                     broker.negotiate_alignments("/tmp/outside.lds", "/tmp/other.lds")
             finally:
                 broker.close()
+
+    def test_federated_sql_identifiers_use_a_strict_allowlist(self):
+        self.assertEqual(_quote_sqlite_identifier("safe_column"), '"safe_column"')
+        with self.assertRaisesRegex(ValueError, "invalid SQLite identifier"):
+            _quote_sqlite_identifier('unsafe"; DROP TABLE records; --')
 
     def test_project_history_uses_user_data_file_atomically(self):
         import entigram.project_history as history

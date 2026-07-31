@@ -69,8 +69,8 @@ class TestPhase3Orchestration(unittest.TestCase):
         # initiative_ref (Venture_Partner) vs id (Strategic_Initiative)
         # Negotiator should find this (init-ref vs id might be low score, but let's see)
         # Actually, let's use negotiate-auto logic
-        src_schema = str(self.test_dir / ".etg" / "packages" / "PartnerManagement" / "schema.lds")
-        tgt_schema = str(self.test_dir / ".etg" / "packages" / "StartupFounder" / "schema.lds")
+        src_schema = ".etg/packages/PartnerManagement/schema.lds"
+        tgt_schema = ".etg/packages/StartupFounder/schema.lds"
         
         proposals = self.broker.negotiate_alignments(src_schema, tgt_schema, threshold=0.1) # Low threshold for test
         found_init_mapping = False
@@ -80,8 +80,8 @@ class TestPhase3Orchestration(unittest.TestCase):
                 found_init_mapping = True
         
         # 2. Automated Negotiation for second hop: Venture_Partner -> Global_Supplier
-        src_schema = str(self.test_dir / ".etg" / "packages" / "SupplyChain" / "schema.lds")
-        tgt_schema = str(self.test_dir / ".etg" / "packages" / "PartnerManagement" / "schema.lds")
+        src_schema = ".etg/packages/SupplyChain/schema.lds"
+        tgt_schema = ".etg/packages/PartnerManagement/schema.lds"
         
         proposals = self.broker.negotiate_alignments(src_schema, tgt_schema, threshold=0.1)
         found_supp_mapping = False

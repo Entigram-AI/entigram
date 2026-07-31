@@ -1,8 +1,25 @@
 import http.server
 import json
+import re
 import secrets
 from pathlib import Path
 from entigram.federated_router import FederatedRouter
+
+
+_ORIGIN_RE = re.compile(
+    r"https?://[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?(?::[0-9]{1,5})?"
+)
+
+
+def _validated_origin(value):
+    """Return an origin that is safe for an HTTP header, or reject it."""
+    if not isinstance(value, str) or not _ORIGIN_RE.fullmatch(value):
+        raise ValueError("allowed origins must be exact HTTP(S) origins")
+    if ":" in value.rsplit("/", 1)[-1]:
+        port = int(value.rsplit(":", 1)[-1])
+        if port < 1 or port > 65535:
+            raise ValueError("allowed origin port must be between 1 and 65535")
+    return value
 
 class EntigramGraphQLHandler(http.server.BaseHTTPRequestHandler):
     project_dir = "."
@@ -10,13 +27,22 @@ class EntigramGraphQLHandler(http.server.BaseHTTPRequestHandler):
     allowed_origins = frozenset()
     max_body_bytes = 1024 * 1024
 
+    def _allowed_origin(self):
+        supplied = self.headers.get("Origin")
+        if not supplied:
+            return None
+        for configured in self.allowed_origins:
+            if secrets.compare_digest(supplied, configured):
+                return configured
+        return None
+
     def _send_json(self, status, payload):
         encoded = json.dumps(payload).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(encoded)))
-        origin = self.headers.get("Origin")
-        if origin and origin in self.allowed_origins:
+        origin = self._allowed_origin()
+        if origin:
             self.send_header("Access-Control-Allow-Origin", origin)
             self.send_header("Vary", "Origin")
         self.end_headers()
@@ -56,8 +82,8 @@ class EntigramGraphQLHandler(http.server.BaseHTTPRequestHandler):
                 return
 
             print(f"🌐 [ENTIGRAM HUB] Executing Federated Query...")
-            router = FederatedRouter(self.project_dir)
-            results = router.execute(query)
+            with FederatedRouter(self.project_dir) as router:
+                results = router.execute(query)
             self._send_json(200, {"data": results})
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
             self._send_json(400, {"error": "invalid_request"})
@@ -65,8 +91,8 @@ class EntigramGraphQLHandler(http.server.BaseHTTPRequestHandler):
             self._send_json(500, {"error": "internal_server_error"})
 
     def do_OPTIONS(self):
-        origin = self.headers.get("Origin")
-        if not origin or origin not in self.allowed_origins:
+        origin = self._allowed_origin()
+        if not origin:
             self._send_json(403, {"error": "origin_not_allowed"})
             return
         self.send_response(204)
@@ -93,7 +119,9 @@ def run_server(
         {
             "project_dir": str(Path(project_dir).expanduser().resolve()),
             "auth_token": auth_token,
-            "allowed_origins": frozenset(allowed_origins or []),
+            "allowed_origins": frozenset(
+                _validated_origin(origin) for origin in (allowed_origins or [])
+            ),
             "max_body_bytes": max_body_bytes,
         },
     )

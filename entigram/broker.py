@@ -6,6 +6,7 @@ import mimetypes
 import platform
 import base64
 import math
+import re
 from itertools import combinations
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
@@ -1323,14 +1324,26 @@ class EntigramBroker:
 
     def _confined_workspace_input(self, value: str, *, suffix: str) -> Path:
         """Resolve a user-selected input without permitting workspace escape."""
-        candidate = Path(value).expanduser()
-        if not candidate.is_absolute():
-            cwd_candidate = candidate.resolve()
-            if cwd_candidate == self.target_dir or self.target_dir in cwd_candidate.parents:
-                candidate = cwd_candidate
-            else:
-                candidate = self.target_dir / candidate
-        candidate = candidate.resolve()
+        if not isinstance(value, str):
+            raise ValueError(
+                "input path must stay within the workspace and use a safe relative path"
+            )
+        workspace_prefix = f"{self.target_dir}{os.sep}"
+        if value.startswith(workspace_prefix):
+            value = value[len(workspace_prefix):]
+        if not re.fullmatch(
+            r"[A-Za-z0-9_.@+-]+(?:/[A-Za-z0-9_.@+-]+)*",
+            value,
+        ):
+            raise ValueError(
+                "input path must stay within the workspace and use a safe relative path"
+            )
+        parts = value.split("/")
+        if any(part in {".", ".."} for part in parts):
+            raise ValueError(
+                "input path must stay within the workspace and use a safe relative path"
+            )
+        candidate = self.target_dir.joinpath(*parts).resolve()
         if candidate != self.target_dir and self.target_dir not in candidate.parents:
             raise ValueError("input path must stay within the Entigram workspace")
         if candidate.suffix.lower() != suffix or not candidate.is_file():
