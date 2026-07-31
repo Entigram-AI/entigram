@@ -15,6 +15,14 @@
 * harden SQLite ledger concurrency with WAL mode and busy timeouts
 * close warning-producing registry, broker, router, and hydration resources
 
+## [1.17.1](https://github.com/Entigram-AI/entigram/compare/v1.17.0...v1.17.1) (2026-07-31)
+
+
+### Bug Fixes
+
+* generate brew-style-compliant formulae ([393a54f](https://github.com/Entigram-AI/entigram/commit/393a54f4d31e8ad6424c3579df19d340ee4c911d))
+* generate brew-style-compliant formulae ([38790b6](https://github.com/Entigram-AI/entigram/commit/38790b6b669bc8e7cd409a76208cbb5b1684bfdc))
+
 ## [1.17.0](https://github.com/Entigram-AI/entigram/compare/v1.16.2...v1.17.0) (2026-07-30)
 
 
