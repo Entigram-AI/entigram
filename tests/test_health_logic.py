@@ -84,7 +84,8 @@ class TestHealthLogic(unittest.TestCase):
             source_concept="observation_value",
             target_concept="observation_value",
             confidence=1.0,
-            rationale="Direct mapping of raw value to validated value."
+            rationale="Direct mapping of raw value to validated value.",
+            validate_schema=False,
         )
         
         conflicts = broker.detect_cross_domain_conflict(

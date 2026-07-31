@@ -9,6 +9,10 @@ permissions:
   contents: write
   pull-requests: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release-please:
     runs-on: ubuntu-latest
@@ -21,7 +25,7 @@ jobs:
         with:
           # Standard release type for Python projects
           release-type: python
-          # Use a PAT so the resulting tag creation triggers the Publish workflow, fallback to default if not set
+          # Use the organization PAT when configured, otherwise the workflow token.
           token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
 
   publish:
@@ -29,8 +33,7 @@ jobs:
     if: ${{ needs.release-please.outputs.release_created }}
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      id-token: write
+      contents: read
 
     steps:
       - name: Checkout code
@@ -46,13 +49,10 @@ jobs:
       - name: Install build dependencies
         run: |
           python -m pip install --upgrade pip build
-          pip install -r requirements.txt
-
-      - name: Bootstrap Entigram
-        run: make bootstrap
+          python -m pip install -e ".[ui,panel]"
 
       - name: Run Tests
-        run: make test
+        run: PYTHONPATH=. python -B -m unittest discover tests
 
       - name: Set release version
         run: |
@@ -71,16 +71,36 @@ jobs:
         with:
           password: ${{ secrets.PYPI_API_TOKEN }}
 
-      - name: Update Homebrew Tap
-        env:
-          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
-        run: |
-          VERSION="${ENTIGRAM_RELEASE_VERSION}"
-          
-          echo "Releasing version: $VERSION"
+  homebrew:
+    needs: [release-please, publish]
+    if: ${{ needs.release-please.outputs.release_created }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
 
-          # Clone and update Homebrew tap
-          git clone https://x-access-token:${HOMEBREW_TAP_GITHUB_TOKEN}@github.com/Entigram-AI/homebrew-entigram.git
+    steps:
+      - name: Checkout Entigram release tooling
+        uses: actions/checkout@v4
+        with:
+          path: entigram
+
+      - name: Checkout Homebrew tap
+        uses: actions/checkout@v4
+        with:
+          repository: Entigram-AI/homebrew-entigram
+          token: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
+          path: homebrew-entigram
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Update Homebrew Tap
+        run: |
+          TAG_NAME="${{ needs.release-please.outputs.tag_name }}"
+          VERSION=${TAG_NAME#v}
+          echo "Releasing version: $VERSION"
           cd homebrew-entigram
           FORMULA=$(find Formula -maxdepth 1 -type f -name '*.rb' | sort | head -n 1)
           if [ -z "$FORMULA" ]; then
@@ -89,13 +109,13 @@ jobs:
             exit 1
           fi
           echo "Updating formula: $FORMULA"
-          python ../scripts/update_homebrew_formula.py --package-name entigram-ai --version "$VERSION" "$FORMULA"
+          python ../entigram/scripts/update_homebrew_formula.py --package-name entigram-ai --version "$VERSION" "$FORMULA"
           git config user.name "GitHub Actions Bot"
           git config user.email "actions@github.com"
           if git diff --quiet -- "$FORMULA"; then
             echo "Homebrew formula already up to date."
             exit 0
           fi
-          git add $FORMULA
+          git add "$FORMULA"
           git commit -m "chore: bump etg to ${VERSION}"
           git push origin main

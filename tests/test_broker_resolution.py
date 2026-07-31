@@ -48,7 +48,8 @@ class TestBrokerResolution(unittest.TestCase):
     def test_conflict_detection_and_resolution(self):
         # 1. Setup Alignment
         self.broker.authorize_alignment(
-            "DomainA", "DomainB", "val_x", "val_y", 1.0, "Testing alignment"
+            "DomainA", "DomainB", "val_x", "val_y", 1.0, "Testing alignment",
+            validate_schema=False,
         )
         
         # 2. Setup States (Contradictory) in SQLite
@@ -93,8 +94,8 @@ class TestBrokerResolution(unittest.TestCase):
         with open(self.etg_dir / "entigram.yaml", "w") as f:
             f.write("packages:\n  - DomainA\n  - DomainB\n")
             
-        self.broker.authorize_alignment("DomainA", "DomainB", "v1", "v1", 1.0, "Align 1")
-        self.broker.authorize_alignment("DomainA", "DomainB", "v2", "v2", 1.0, "Align 2")
+        self.broker.authorize_alignment("DomainA", "DomainB", "v1", "v1", 1.0, "Align 1", validate_schema=False)
+        self.broker.authorize_alignment("DomainA", "DomainB", "v2", "v2", 1.0, "Align 2", validate_schema=False)
         
         self._setup_db("DomainA", {"v1": 10, "v2": 20})
         self._setup_db("DomainB", {"v1": 11, "v2": 21})
@@ -104,7 +105,7 @@ class TestBrokerResolution(unittest.TestCase):
         
     def test_asymmetric_alignment(self):
         # Alignment only from A to B
-        self.broker.authorize_alignment("DomainA", "DomainB", "v1", "v1", 1.0, "A->B")
+        self.broker.authorize_alignment("DomainA", "DomainB", "v1", "v1", 1.0, "A->B", validate_schema=False)
         
         self._setup_db("DomainA", {"v1": 100})
         self._setup_db("DomainB", {"v1": 200})

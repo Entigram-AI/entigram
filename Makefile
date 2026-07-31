@@ -34,7 +34,7 @@ bootstrap: ## Bootstraps the Entigram Compiler dependencies and internal SQLite 
 	@$(PIP) install -e .[ui]
 	@echo "Initializing internal SQLite state ledger..."
 	@mkdir -p .etg
-	@$(PYTHON) -c "import sys; from pathlib import Path; sys.path.append(str(Path.cwd())); from entigram.sqlite_ledger.manager import LedgerManager; LedgerManager('.etg/entigram_state.db')"
+	@$(PYTHON) -c "import sys; from pathlib import Path; sys.path.append(str(Path.cwd())); from entigram.sqlite_ledger.manager import LedgerManager; LedgerManager('.etg/state.db')"
 	@echo "Bootstrap complete. Entigram is ready."
 
 start: ## Launches the lightweight local web interface
@@ -70,7 +70,7 @@ reset: ## Factory reset: Removes the Entigram engine venv and internal DB
 reset: clean
 	@echo "Resetting Entigram engine..."
 	@rm -rf $(VENV_DIR)
-	@rm -f .etg/entigram_state.db
+	@rm -f .etg/state.db
 
 handoff: ## Runs the immutable governance pre-handoff gate sequence
 	@echo "Anchoring delivery state..."

@@ -177,6 +177,10 @@ ENTITY: Ghost {
                 target_concept="Parent.name",
                 confidence=0.95,
                 rationale="Verified parent mapping.",
+                lifecycle_status="verified",
+                evidence_type="human_review",
+                verified=True,
+                verified_by="test",
             )
         finally:
             ledger.close()

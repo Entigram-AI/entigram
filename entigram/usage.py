@@ -26,6 +26,16 @@ MCP_TOOL_DECLARATIONS = (
         "description": "Analyze the localized context and impact graph for a file.",
     },
     {
+        "name": "etg_get_assessment_capabilities",
+        "input": {},
+        "description": "Return signed installed assessment capabilities and workspace advisories.",
+    },
+    {
+        "name": "etg_assess",
+        "input": {"payload": "json-string"},
+        "description": "Run a strict read-only assessment from a signed installed package.",
+    },
+    {
         "name": "etg_propose_alignment",
         "input": {"payload": "json-string"},
         "description": "Validate and record a proposed semantic alignment.",

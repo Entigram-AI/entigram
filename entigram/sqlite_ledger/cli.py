@@ -5,7 +5,7 @@ from .manager import LedgerManager
 
 def main():
     parser = argparse.ArgumentParser(description="Entigram Decision Ledger CLI")
-    parser.add_argument("--db", default="entigram/sqlite_ledger/entigram_state.db", help="Path to the SQLite ledger DB")
+    parser.add_argument("--db", default=".etg/state.db", help="Path to the SQLite ledger DB")
     
     subparsers = parser.add_subparsers(dest="command")
     

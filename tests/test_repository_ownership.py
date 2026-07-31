@@ -15,11 +15,8 @@ class RepositoryOwnershipTests(unittest.TestCase):
             "entigram/registry.py": (
                 "git@github.com:Entigram-AI/entigram-standard-packages.git",
             ),
-            ".github/workflows/release.yml": (
-                "github.com/Entigram-AI/homebrew-entigram.git",
-            ),
             ".github/workflows/release-please.yml": (
-                "github.com/Entigram-AI/homebrew-entigram.git",
+                "repository: Entigram-AI/homebrew-entigram",
             ),
         }
 
@@ -29,6 +26,10 @@ class RepositoryOwnershipTests(unittest.TestCase):
                 self.assertNotIn("github.com/nyabutid/entigram", contents)
                 for reference in references:
                     self.assertIn(reference, contents)
+
+    def test_release_has_one_authoritative_publish_workflow(self):
+        self.assertTrue((ROOT / ".github/workflows/release-please.yml").is_file())
+        self.assertFalse((ROOT / ".github/workflows/release.yml").exists())
 
 
 if __name__ == "__main__":

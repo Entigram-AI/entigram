@@ -1,6 +1,6 @@
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -13,6 +13,8 @@ class PackageSuggestion:
     description: str
     adapters: List[str]
     source_kinds: List[str]
+    assessment_adapters: List[str] = field(default_factory=list)
+    security_capabilities: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -75,6 +77,8 @@ def suggest_packages(catalog: Dict[str, Any], query: str, limit: int = 5) -> Lis
                 description=package.get("description", ""),
                 adapters=list(package.get("adapters", [])),
                 source_kinds=list(package.get("source_kinds", [])),
+                assessment_adapters=list(package.get("assessment_adapters", [])),
+                security_capabilities=list(package.get("security_capabilities", [])),
             )
         )
     suggestions.sort(key=lambda suggestion: (-suggestion.score, suggestion.name))
@@ -86,11 +90,15 @@ def format_package_suggestions(suggestions: Iterable[PackageSuggestion]) -> str:
     for suggestion in suggestions:
         adapter_text = ", ".join(suggestion.adapters) if suggestion.adapters else "none"
         source_text = ", ".join(suggestion.source_kinds) if suggestion.source_kinds else "unspecified"
+        assessment_text = ", ".join(suggestion.assessment_adapters) if suggestion.assessment_adapters else "none"
+        capability_text = ", ".join(suggestion.security_capabilities) if suggestion.security_capabilities else "none"
         lines.append(f"{suggestion.name} ({suggestion.score:.3f})")
         lines.append(f"  {suggestion.title}")
         lines.append(f"  {suggestion.description}")
         lines.append(f"  adapters: {adapter_text}")
         lines.append(f"  sources: {source_text}")
+        lines.append(f"  assessment adapters: {assessment_text}")
+        lines.append(f"  security capabilities: {capability_text}")
     return "\n".join(lines)
 
 
@@ -104,6 +112,8 @@ def _score_package(package: Dict[str, Any], terms: List[str]) -> float:
         (" ".join(package.get("tags", [])), 2.5),
         (" ".join(package.get("source_kinds", [])), 3.0),
         (" ".join(package.get("adapters", [])), 3.0),
+        (" ".join(package.get("assessment_adapters", [])), 3.0),
+        (" ".join(package.get("security_capabilities", [])), 3.0),
     ]
     score = 0.0
     for text, weight in weighted_fields:
@@ -133,6 +143,62 @@ def _validate_package_entry(package: Dict[str, Any], name: str) -> List[PackageC
     if "adapter_module" in package:
         if not isinstance(package["adapter_module"], str) or not package["adapter_module"]:
             issues.append(PackageCatalogIssue(name, "adapter_module", "must be a non-empty string"))
+
+    if "assessment_module" in package:
+        if not isinstance(package["assessment_module"], str) or not package["assessment_module"]:
+            issues.append(PackageCatalogIssue(name, "assessment_module", "must be a non-empty string"))
+        elif (
+            Path(package["assessment_module"]).is_absolute()
+            or ".." in Path(package["assessment_module"]).parts
+            or not package["assessment_module"].endswith(".py")
+        ):
+            issues.append(
+                PackageCatalogIssue(
+                    name,
+                    "assessment_module",
+                    "must be a safe relative Python module path",
+                )
+            )
+        for field in ["assessment_adapters", "security_capabilities"]:
+            value = package.get(field)
+            if not isinstance(value, list) or not value or not all(
+                isinstance(item, str) and item for item in value
+            ):
+                issues.append(PackageCatalogIssue(name, field, "must be a non-empty list of strings"))
+        adapters = package.get("assessment_adapters")
+        if isinstance(adapters, list) and any(
+            not isinstance(item, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,127}", item)
+            for item in adapters
+        ):
+            issues.append(
+                PackageCatalogIssue(
+                    name,
+                    "assessment_adapters",
+                    "values must be safe adapter identifiers",
+                )
+            )
+        capabilities = package.get("security_capabilities")
+        if isinstance(capabilities, list):
+            invalid = [
+                item for item in capabilities
+                if not isinstance(item, str) or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,127}/v[1-9][0-9]*", item)
+            ]
+            if invalid:
+                issues.append(
+                    PackageCatalogIssue(
+                        name,
+                        "security_capabilities",
+                        "values must use the form capability-name/v1",
+                    )
+                )
+    elif "assessment_adapters" in package or "security_capabilities" in package:
+        issues.append(
+            PackageCatalogIssue(
+                name,
+                "assessment_module",
+                "is required when assessment metadata is declared",
+            )
+        )
 
     # tags are always required; source_kinds and adapters only when the package declares an adapter.
     tags_value = package.get("tags")

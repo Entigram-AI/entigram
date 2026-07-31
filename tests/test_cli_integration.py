@@ -64,6 +64,8 @@ class TestCLIIntegration(unittest.TestCase):
             policy = Path(".etg/agent_policy.md")
             self.assertTrue(policy.exists())
             self.assertIn("Run `hydrate`", policy.read_text())
+            self.assertIn("External Artifact Safety", policy.read_text())
+            self.assertIn("`decision` and `safe_to_process`", policy.read_text())
             agent_files = [
                 Path("AGENTS.md"),
                 Path("CLAUDE.md"),
@@ -81,6 +83,25 @@ class TestCLIIntegration(unittest.TestCase):
         pyproject = (Path(__file__).parent.parent / "pyproject.toml").read_text()
         version = re.search(r'version = "(.*?)"', pyproject).group(1)
         self.assertIn(f"etg {version}", output)
+
+    def test_workspace_plugins_are_disabled_without_explicit_opt_in(self):
+        plugins_dir = Path(".etg/plugins")
+        plugins_dir.mkdir(parents=True)
+        (plugins_dir / "probe.py").write_text(
+            "from pathlib import Path\n"
+            "Path('plugin-executed.txt').write_text('executed')\n"
+            "def register_command(subparsers):\n"
+            "    subparsers.add_parser('probe')\n"
+        )
+
+        success, _ = self.run_cli(["--version"])
+
+        self.assertTrue(success)
+        self.assertFalse(Path("plugin-executed.txt").exists())
+
+        success, _ = self.run_cli(["--enable-workspace-plugins", "--version"])
+        self.assertTrue(success)
+        self.assertEqual(Path("plugin-executed.txt").read_text(), "executed")
 
     def test_hydrate_executable_alias_runs_hydrate_command(self):
         self.run_cli(['init', '--dir', '.', '--force'])
@@ -146,9 +167,112 @@ class TestCLIIntegration(unittest.TestCase):
         success, output = self.run_cli(['broker', 'handoff'])
 
         self.assertTrue(success)
-        self.assertIn("Step 1/4: broker guard", output)
-        self.assertIn("Step 4/4: broker status", output)
+        self.assertIn("Step 1/5: warden verify", output)
+        self.assertIn("Step 2/5: broker guard", output)
+        self.assertIn("Step 5/5: broker status", output)
         self.assertIn("Delivery status: current", output)
+
+    def test_broker_handoff_refuses_to_reanchor_schema_drift(self):
+        self.run_cli(['init', '--dir', '.', '--force'])
+        self.run_cli(['warden', 'lock'])
+        with Path("schema.lds").open("a") as schema:
+            schema.write("\nENTITY: Unauthorized\nATTRIBUTES:\n  - id (String)\n")
+
+        success, output = self.run_cli(['broker', 'handoff'])
+
+        self.assertFalse(success)
+        self.assertIn("Handoff refused", output)
+        success, _ = self.run_cli(['warden', 'check'])
+        self.assertFalse(success)
+
+    def test_broker_handoff_refuses_schema_change_during_guard(self):
+        from entigram.broker import EntigramBroker
+
+        self.run_cli(['init', '--dir', '.', '--force'])
+        self.run_cli(['warden', 'lock'])
+        original_guard = EntigramBroker.expectation_guard
+
+        def mutating_guard(broker, *args, **kwargs):
+            result = original_guard(broker, *args, **kwargs)
+            with Path("schema.lds").open("a") as schema:
+                schema.write("\n/* changed during validation */\n")
+            return result
+
+        with patch.object(EntigramBroker, "expectation_guard", new=mutating_guard):
+            success, output = self.run_cli(['broker', 'handoff'])
+
+        self.assertFalse(success)
+        self.assertIn("contract change while handoff validations ran", output)
+        success, _ = self.run_cli(['warden', 'check'])
+        self.assertFalse(success)
+
+    def test_broker_deliver_refuses_schema_drift(self):
+        self.run_cli(['init', '--dir', '.', '--force'])
+        self.run_cli(['warden', 'lock'])
+        with Path("schema.lds").open("a") as schema:
+            schema.write("\n/* unauthorized drift */\n")
+
+        success, output = self.run_cli(['broker', 'deliver'])
+
+        self.assertFalse(success)
+        self.assertIn("Handoff gate: FAILED", output)
+
+    def test_unlocked_contract_change_requires_explicit_handoff_acceptance(self):
+        self.run_cli(['init', '--dir', '.', '--force'])
+        self.run_cli(['warden', 'lock'])
+        self.run_cli(['warden', 'unlock'])
+        with Path("schema.lds").open("a") as schema:
+            schema.write("\n/* authorized contract change */\n")
+
+        success, output = self.run_cli(['broker', 'handoff'])
+        self.assertFalse(success)
+        self.assertIn("--accept-contract-change", output)
+
+        success, output = self.run_cli([
+            'broker',
+            'handoff',
+            '--accept-contract-change',
+        ])
+        self.assertTrue(success)
+        self.assertIn("Delivery status: current", output)
+
+    def test_unlocked_contract_change_cannot_drift_during_accepted_handoff(self):
+        from entigram.broker import EntigramBroker
+
+        self.run_cli(['init', '--dir', '.', '--force'])
+        self.run_cli(['warden', 'lock'])
+        self.run_cli(['warden', 'unlock'])
+        with Path("schema.lds").open("a") as schema:
+            schema.write("\n/* reviewed contract change */\n")
+        original_guard = EntigramBroker.expectation_guard
+
+        def mutating_guard(broker, *args, **kwargs):
+            result = original_guard(broker, *args, **kwargs)
+            with Path("schema.lds").open("a") as schema:
+                schema.write("\n/* changed during validation */\n")
+            return result
+
+        with patch.object(EntigramBroker, "expectation_guard", new=mutating_guard):
+            success, output = self.run_cli([
+                'broker',
+                'handoff',
+                '--accept-contract-change',
+            ])
+
+        self.assertFalse(success)
+        self.assertIn("contract change while handoff validations ran", output)
+
+    def test_broker_deliver_refuses_pending_unlocked_contract_change(self):
+        self.run_cli(['init', '--dir', '.', '--force'])
+        self.run_cli(['warden', 'lock'])
+        self.run_cli(['warden', 'unlock'])
+        with Path("schema.lds").open("a") as schema:
+            schema.write("\n/* reviewed contract change */\n")
+
+        success, output = self.run_cli(['broker', 'deliver'])
+
+        self.assertFalse(success)
+        self.assertIn("Handoff gate: FAILED", output)
 
     def test_config_command(self):
         # First initialize

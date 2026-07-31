@@ -12,6 +12,7 @@ Usage::
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import logging
 from pathlib import Path
@@ -46,10 +47,11 @@ async def _stream_from_proxy(
         "stream": True,
     }
 
-    async with aiohttp.ClientSession() as session:
+    timeout = aiohttp.ClientTimeout(total=120)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.post(url, json=payload) as resp:
             if resp.status != 200:
-                body = await resp.text()
+                body = (await resp.text())[:2000]
                 yield f"[proxy error {resp.status}] {body}"
                 return
             async for line in resp.content:
@@ -95,6 +97,13 @@ async def _handle_connection(
                 }))
                 continue
 
+            if not isinstance(msg, dict):
+                await ws.send(json.dumps({
+                    "type": "error",
+                    "message": "Message must be a JSON object",
+                }))
+                continue
+
             msg_type = msg.get("type")
 
             if msg_type == "ping":
@@ -114,10 +123,16 @@ async def _handle_connection(
             model = msg.get("model", "")
             panel_id = msg.get("panel_id", "")
 
-            if not prompt:
+            if not isinstance(prompt, str) or not prompt:
                 await ws.send(json.dumps({
                     "type": "error",
                     "message": "Empty prompt",
+                }))
+                continue
+            if len(prompt) > 100_000 or not isinstance(context, str) or len(context) > 100_000:
+                await ws.send(json.dumps({
+                    "type": "error",
+                    "message": "Prompt or context exceeds 100000 characters",
                 }))
                 continue
 
@@ -171,8 +186,17 @@ def run_panel_bridge(
     port: int = 9090,
     proxy_url: str = "http://127.0.0.1:11435",
     target_dir: str = ".",
+    allowed_origins: Optional[list[str]] = None,
 ) -> None:
     """Starts the WebSocket panel bridge server."""
+    try:
+        loopback = ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        loopback = host.lower() == "localhost"
+    if not loopback:
+        raise ValueError(
+            "panel bridge is restricted to loopback until authenticated remote transport is available"
+        )
     try:
         import websockets
     except ImportError:
@@ -209,8 +233,17 @@ def run_panel_bridge(
         print(f"🔌 Panel bridge listening on ws://{host}:{port}")
         print(f"   Proxy: {proxy_url}")
         print(f"   Ledger: {'enabled' if ledger else 'disabled'}")
+        print(f"   Browser origins: {', '.join(allowed_origins or []) or 'none (native clients only)'}")
         print("   Waiting for Influence Lab connections...")
-        async with websockets.serve(handler, host, port):
+        async with websockets.serve(
+            handler,
+            host,
+            port,
+            origins=[None, *(allowed_origins or [])],
+            max_size=1024 * 1024,
+            max_queue=16,
+            ping_timeout=20,
+        ):
             await asyncio.Future()  # run forever
 
     try:

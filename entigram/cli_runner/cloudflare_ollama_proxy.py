@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import os
 import subprocess
@@ -1843,6 +1844,14 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     load_env_file(Path(args.env_file))
     try:
+        try:
+            loopback = ipaddress.ip_address(args.host).is_loopback
+        except ValueError:
+            loopback = args.host.lower() == "localhost"
+        if not loopback:
+            raise CloudflareProxyError(
+                "proxy binding is restricted to loopback because the local API has no remote authentication"
+            )
         validate_positive_arg("--timeout-seconds", args.timeout_seconds)
         validate_positive_arg("--retry-attempts", args.retry_attempts)
         validate_nonnegative_arg("--retry-sleep-seconds", args.retry_sleep_seconds)

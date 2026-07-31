@@ -89,9 +89,9 @@ cli_engine: Antigravity
 
         # 5. Negotiate Alignment
         broker = EntigramBroker(str(self.test_dir))
-        broker.authorize_alignment("Salesforce", "SupplyChain", "SF_Product", "Product", 0.95, "Fuzzy match on 'Product'")
-        broker.authorize_alignment("Salesforce", "SupplyChain", "SF_Product.product_code", "Product.sku", 0.95, "Domain knowledge: Product Code == SKU")
-        broker.authorize_alignment("Salesforce", "SupplyChain", "SF_OpportunityLineItem.quantity", "Inventory_Item.quantity", 0.85, "Quantity mapping")
+        broker.authorize_alignment("Salesforce", "SupplyChain", "SF_Product", "Product", 0.95, "Fuzzy match on 'Product'", validate_schema=False)
+        broker.authorize_alignment("Salesforce", "SupplyChain", "SF_Product.product_code", "Product.sku", 0.95, "Domain knowledge: Product Code == SKU", validate_schema=False)
+        broker.authorize_alignment("Salesforce", "SupplyChain", "SF_OpportunityLineItem.quantity", "Inventory_Item.quantity", 0.85, "Quantity mapping", validate_schema=False)
 
         self.strategist = InventoryStrategist(str(self.test_dir))
 

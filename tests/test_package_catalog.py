@@ -70,6 +70,74 @@ class TestPackageCatalog(unittest.TestCase):
         self.assertIn("provenance", fields)
         self.assertIn("certification", fields)
 
+    def test_validate_package_catalog_accepts_assessment_metadata(self):
+        package = package_entry(
+            "@entigram/artifact-risk",
+            "Artifact Risk",
+            "Artifact reputation assessment",
+            ["security", "reputation"],
+            [],
+            [],
+        )
+        package.pop("adapter_module")
+        package.pop("source_kinds")
+        package.pop("adapters")
+        package.update(
+            {
+                "assessment_module": "@entigram/artifact-risk/assessment_adapter.py",
+                "assessment_adapters": ["virustotal-hash"],
+                "security_capabilities": ["artifact-reputation/v1"],
+            }
+        )
+
+        self.assertEqual(validate_package_catalog({"packages": [package]}), [])
+
+    def test_assessment_metadata_requires_versioned_capabilities(self):
+        package = package_entry(
+            "@entigram/artifact-risk",
+            "Artifact Risk",
+            "Artifact reputation assessment",
+            ["security", "reputation"],
+            [],
+            [],
+        )
+        package.pop("adapter_module")
+        package.pop("source_kinds")
+        package.pop("adapters")
+        package.update(
+            {
+                "assessment_module": "assessment_adapter.py",
+                "assessment_adapters": ["virustotal-hash"],
+                "security_capabilities": ["artifact-reputation"],
+            }
+        )
+
+        fields = {issue.field for issue in validate_package_catalog({"packages": [package]})}
+        self.assertIn("security_capabilities", fields)
+
+    def test_assessment_metadata_rejects_unsafe_module_path(self):
+        package = package_entry(
+            "@entigram/artifact-risk",
+            "Artifact Risk",
+            "Artifact reputation assessment",
+            ["security", "reputation"],
+            [],
+            [],
+        )
+        package.pop("adapter_module")
+        package.pop("source_kinds")
+        package.pop("adapters")
+        package.update(
+            {
+                "assessment_module": "../unsafe.py",
+                "assessment_adapters": ["virustotal-hash"],
+                "security_capabilities": ["artifact-reputation/v1"],
+            }
+        )
+
+        fields = {issue.field for issue in validate_package_catalog({"packages": [package]})}
+        self.assertIn("assessment_module", fields)
+
 
 def package_entry(name, title, description, tags, source_kinds, adapters):
     return {

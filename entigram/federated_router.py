@@ -14,6 +14,14 @@ from .workspace_contract import authoritative_schema_paths
 
 p = inflect.engine()
 
+
+def _quote_sqlite_identifier(identifier: str) -> str:
+    """Quote an already schema/DB-whitelisted SQLite identifier."""
+    if not isinstance(identifier, str) or not identifier or "\x00" in identifier:
+        raise ValueError("invalid SQLite identifier")
+    return '"' + identifier.replace('"', '""') + '"'
+
+
 class FederatedRouter:
     """
     Routes GraphQL-LD queries to the appropriate federated domain databases.
@@ -212,7 +220,7 @@ class FederatedRouter:
                 if "already" not in err_msg and "exists" not in err_msg:
                     print(f"Warning: Failed to create CozoDB relation '{rel_name}': {e}")
 
-            cursor.execute(f"SELECT * FROM {table_name}")
+            cursor.execute(f"SELECT * FROM {_quote_sqlite_identifier(table_name)}")
             rows = [dict(r) for r in cursor.fetchall()]
             
             if not rows:
@@ -425,11 +433,12 @@ class FederatedRouter:
 
         db_path = self.etg_dir / "states" / f"{domain}.db"
         params: List[Any] = []
-        sql = f"SELECT {', '.join(query_fields)} FROM {table_name}"
+        selected_columns = ", ".join(_quote_sqlite_identifier(field) for field in query_fields)
+        sql = f"SELECT {selected_columns} FROM {_quote_sqlite_identifier(table_name)}"
         if filter_col and filter_val is not None:
             if filter_col not in valid_cols:
                 return []
-            sql += f" WHERE {filter_col} = ?"
+            sql += f" WHERE {_quote_sqlite_identifier(filter_col)} = ?"
             params.append(filter_val)
 
         # 4. Execute current level
@@ -482,7 +491,8 @@ class FederatedRouter:
                             child_conn = sqlite3.connect(child_db)
                             child_conn.row_factory = sqlite3.Row
                             rows = child_conn.execute(
-                                f"SELECT * FROM {child_table} WHERE {fk_col} IN ({placeholders})",
+                                f"SELECT * FROM {_quote_sqlite_identifier(child_table)} "
+                                f"WHERE {_quote_sqlite_identifier(fk_col)} IN ({placeholders})",
                                 parent_ids
                             ).fetchall()
                         except Exception as e:

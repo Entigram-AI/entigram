@@ -10,13 +10,13 @@ It provides the infrastructure to build **constrained autonomy**, ensuring that 
 
 ## 🎯 The Entigram Thesis
 
-Enterprise agent adoption fails when agents lack trustworthy domain context and enforceable schema boundaries. Entigram addresses this by sitting between your agents and your enterprise state.
+Enterprise agent adoption fails when agents lack trustworthy domain context and enforceable schema boundaries. Entigram provides governed interfaces between participating agents and enterprise state.
 
-> **Defensible Grounding:** Entigram prevents unsupported concepts and unverified mappings from entering operational agent workflows.
+> **Defensible Grounding:** Entigram's governed CLI and MCP interfaces reject unsupported concepts and unverified mappings before they enter participating operational workflows.
 
 ## 🛠️ Key Capabilities
 
-- **Domain Boundaries (Schema):** Force agents to operate against explicit Entigram Schemas rather than vague natural-language context.
+- **Domain Boundaries (Schema):** Give agents explicit Entigram Schemas instead of relying on vague natural-language context.
 - **Closed-World Reasoning:** Automatically reject or quarantine unknown entities, attributes, and relationships.
 - **Verified Semantic Alignments:** Enable cross-domain data federation using approved mappings instead of fuzzy LLM guesses.
 - **Deterministic Conflict Handling:** Transform contradictory agent states into auditable ledger entries for human or policy-driven resolution.
@@ -31,6 +31,11 @@ Enterprise agent adoption fails when agents lack trustworthy domain context and 
 1. **Model** the entities, attributes, and relationships agents are allowed to know.
 2. **Gate** every proposed alignment, conflict, and state transition through MCP/CLI tools.
 3. **Audit** accepted work with ledger evidence, delivery snapshots, and tamper-evident bundles.
+
+Entigram is not a universal agent sandbox. Its guarantees apply when operations
+flow through the governed CLI/MCP surfaces; direct filesystem, database, shell,
+and network access must still be controlled by the host platform. See the
+[architecture and trust boundaries](spec/ENTIGRAM_ARCHITECTURE.md).
 
 ## 🚀 Quickstart
 

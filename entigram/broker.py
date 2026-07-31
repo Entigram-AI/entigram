@@ -607,6 +607,7 @@ class EntigramBroker:
 
         # Compute trust score even on failure so caller can see the gap
         warden_ok = self.warden.verify_integrity()
+        pending_contract_change = self.warden.has_pending_contract_change()
         warden_status = "intact" if warden_ok else "tampered"
         schema_hash = None
         schema_path = self.target_dir / "schema.lds"
@@ -616,6 +617,23 @@ class EntigramBroker:
         checklist["trust_score"] = self._compute_trust_score(
             checklist, warden_ok, schema_hash, proofs
         )
+
+        if not warden_ok or pending_contract_change:
+            checklist["valid"] = False
+            if pending_contract_change:
+                checklist["warden_error"] = {
+                    "message": (
+                        "an unlocked contract change is pending; use broker handoff "
+                        "--accept-contract-change after reviewing the contract diff"
+                    )
+                }
+            else:
+                checklist["warden_error"] = (
+                    self.warden.last_halt_event.to_dict()
+                    if self.warden.last_halt_event is not None
+                    else {"message": "schema integrity check failed"}
+                )
+            return checklist
 
         if checklist["valid"]:
             artifact_ids, missing_artifacts = self._record_delivery_artifacts(
@@ -906,7 +924,7 @@ class EntigramBroker:
         verified_by: str = "EntigramBroker",
         evidence_type: str = "human_review",
         source_artifact: Optional[str] = None,
-        validate_schema: bool = False,
+        validate_schema: bool = True,
     ):
         """
         Authorizes a semantic alignment between two isolated domains.
@@ -933,6 +951,8 @@ class EntigramBroker:
             rationale,
             evidence_type=evidence_type,
             source_artifact=source_artifact,
+            lifecycle_status="verified",
+            verified=True,
             verified_by=verified_by,
             human_review_confidence=confidence,
         )
@@ -1212,7 +1232,13 @@ class EntigramBroker:
             )]
             matches = [
                 table for table in tables
-                if concept in {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+                if concept in {
+                    row[0]
+                    for row in conn.execute(
+                        "SELECT name FROM pragma_table_info(?)",
+                        (table,),
+                    )
+                }
             ]
             return f"{matches[0]}.{concept}" if len(matches) == 1 else None
         finally:
@@ -1223,10 +1249,12 @@ class EntigramBroker:
         Automatically proposes alignments between two Schema files.
         """
         from .governance.negotiator import AlignmentNegotiator
-        
-        with open(source_schema_path, 'r') as f:
+
+        source_path = self._confined_workspace_input(source_schema_path, suffix=".lds")
+        target_path = self._confined_workspace_input(target_schema_path, suffix=".lds")
+        with open(source_path, 'r') as f:
             source_schema = f.read()
-        with open(target_schema_path, 'r') as f:
+        with open(target_path, 'r') as f:
             target_schema = f.read()
             
         negotiator = AlignmentNegotiator(threshold=threshold, ledger_path=str(self.ledger_path))
@@ -1264,7 +1292,8 @@ class EntigramBroker:
         """
         from .governance.alignment import AlignmentProtocol
         
-        with open(xml_file_path, 'r') as f:
+        xml_path = self._confined_workspace_input(xml_file_path, suffix=".xml")
+        with open(xml_path, 'r') as f:
             content = f.read()
             
         protocol = AlignmentProtocol("", "")
@@ -1291,6 +1320,22 @@ class EntigramBroker:
             ):
                 count += 1
         return count
+
+    def _confined_workspace_input(self, value: str, *, suffix: str) -> Path:
+        """Resolve a user-selected input without permitting workspace escape."""
+        candidate = Path(value).expanduser()
+        if not candidate.is_absolute():
+            cwd_candidate = candidate.resolve()
+            if cwd_candidate == self.target_dir or self.target_dir in cwd_candidate.parents:
+                candidate = cwd_candidate
+            else:
+                candidate = self.target_dir / candidate
+        candidate = candidate.resolve()
+        if candidate != self.target_dir and self.target_dir not in candidate.parents:
+            raise ValueError("input path must stay within the Entigram workspace")
+        if candidate.suffix.lower() != suffix or not candidate.is_file():
+            raise ValueError(f"input must be an existing {suffix} file")
+        return candidate
 
     def sense_all(self) -> List[Dict[str, Any]]:
         """

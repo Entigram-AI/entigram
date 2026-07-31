@@ -6,7 +6,6 @@ from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
 from .paths import CANONICAL_LEDGER_NAME, LEGACY_LEDGER_NAME
 from entigram.governance.grounding import (
-    EVIDENCE_HUMAN_REVIEW,
     LIFECYCLE_PROPOSED,
     LIFECYCLE_VERIFIED,
 )
@@ -58,6 +57,7 @@ class LedgerManager:
 
     def _configure_connection(self, conn):
         conn.execute(f"PRAGMA busy_timeout={DEFAULT_BUSY_TIMEOUT_MS};")
+        conn.execute("PRAGMA foreign_keys=ON;")
         if self.db_path != ":memory:":
             mode = conn.execute("PRAGMA journal_mode=WAL;").fetchone()
             if not mode or str(mode[0]).lower() != "wal":
@@ -118,11 +118,11 @@ class LedgerManager:
                     relation TEXT DEFAULT 'skos:exactMatch',
                     confidence REAL,
                     rationale TEXT,
-                    status TEXT DEFAULT 'approved',
-                    lifecycle_status TEXT DEFAULT 'verified',
+                    status TEXT DEFAULT 'pending',
+                    lifecycle_status TEXT DEFAULT 'proposed',
                     evidence_type TEXT,
                     source_artifact TEXT,
-                    verified INTEGER DEFAULT 1,
+                    verified INTEGER DEFAULT 0,
                     verified_by TEXT,
                     verified_at DATETIME,
                     semantic_confidence REAL,
@@ -135,10 +135,10 @@ class LedgerManager:
                 )
             ''')
             self._ensure_columns(conn, "semantic_alignments", {
-                "lifecycle_status": "TEXT DEFAULT 'verified'",
+                "lifecycle_status": "TEXT DEFAULT 'proposed'",
                 "evidence_type": "TEXT",
                 "source_artifact": "TEXT",
-                "verified": "INTEGER DEFAULT 1",
+                "verified": "INTEGER DEFAULT 0",
                 "verified_by": "TEXT",
                 "verified_at": "DATETIME",
                 "semantic_confidence": "REAL",
@@ -542,11 +542,11 @@ class LedgerManager:
         rationale: str,
         *,
         relation: str = "skos:exactMatch",
-        lifecycle_status: str = LIFECYCLE_VERIFIED,
-        evidence_type: str = EVIDENCE_HUMAN_REVIEW,
+        lifecycle_status: str = LIFECYCLE_PROPOSED,
+        evidence_type: str = "unreviewed",
         source_artifact: Optional[str] = None,
-        verified: bool = True,
-        verified_by: Optional[str] = "EntigramBroker",
+        verified: bool = False,
+        verified_by: Optional[str] = None,
         semantic_confidence: Optional[float] = None,
         schema_confidence: Optional[float] = None,
         data_confidence: Optional[float] = None,
@@ -1619,21 +1619,15 @@ class LedgerManager:
 
     def sync_with_cloud(self, endpoint: str, token: str) -> bool:
         """
-        Synchronizes the local decision ledger with the Entigram Managed Cloud.
-        This enables collaborative tie-breaking across distributed teams.
+        Refuse cloud synchronization until the managed protocol is implemented.
+
+        Previous versions printed a successful upload without performing any
+        network operation, which could cause operators to mistake local data for
+        a cloud backup.
         """
-        import json
-        print(f"☁️  [ENTIGRAM CLOUD] Synchronizing ledger with {endpoint}...")
-        
-        # 1. Gather local state
         resolutions = self.get_all_resolutions()
         conflicts = self.get_pending_conflicts()
-        
-        # 2. Simulate managed synchronization logic
-        # In a production environment, this would involve mutual authentication,
-        # delta calculation, and bidirectional state merging.
-        print(f"✅ [ENTIGRAM CLOUD] Sync complete. Local state matches Cloud.")
-        print(f"   - {len(resolutions)} human resolutions synchronized.")
-        print(f"   - {len(conflicts)} pending conflicts uploaded for review.")
-        
-        return True
+        print("❌ [ENTIGRAM CLOUD] Sync is not implemented; no data was uploaded.")
+        print(f"   Endpoint requested: {endpoint}")
+        print(f"   Local-only state: {len(resolutions)} resolution(s), {len(conflicts)} conflict(s).")
+        return False
