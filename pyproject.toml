@@ -7,7 +7,7 @@ name = "entigram-ai"
 version = "1.17.0"
 description = "Schema-first semantic governance layer for enterprise agents"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 authors = [
     { name = "Entigram Authors" }
 ]
