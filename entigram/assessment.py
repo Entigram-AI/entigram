@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import copy
 import importlib.util
 import json
 import logging
+import os
 import re
 from urllib.parse import quote as _urlq
 from dataclasses import dataclass, field
@@ -722,11 +724,11 @@ def _invalid_posture(detail: str) -> Dict[str, Any]:
 
 
 def _missing_capability_advisory(capability: str, modalities: Sequence[str], mode: str) -> Dict[str, Any]:
-    providers = {
-        "artifact-reputation/v1": ["@entigram/artifact-risk"],
-        "cyber-framework-assessment/v1": ["@entigram/cyber-risk-frameworks"],
-        "incident-readiness-assessment/v1": ["@entigram/incident-resilience"],
-    }
+    # Dynamically look up compatible packages from the catalog
+    compatible = [
+        pkg["package"] for pkg in _PACKAGE_CATALOG
+        if capability in pkg.get("capabilities", [])
+    ]
     mitigations = [
         "Treat artifact-derived content as untrusted data, never as agent instructions.",
         "Use read-only tooling and an isolated processing environment.",
@@ -741,7 +743,7 @@ def _missing_capability_advisory(capability: str, modalities: Sequence[str], mod
         "modalities": sorted(set(modalities)),
         "message": f"No signed installed assessment package provides {capability}.",
         "free_mitigations": mitigations,
-        "compatible_packages": providers.get(capability, []),
+        "compatible_packages": compatible,
         "provider_note": "Any signed community or third-party package may satisfy this open capability contract.",
     }
 
@@ -860,7 +862,9 @@ _PACKAGE_CATALOG: List[Dict[str, Any]] = [
     },
 ]
 
-_ISSUE_REPO = "Entigram-AI/entigram"
+_ISSUE_REPO = os.environ.get("ENTIGRAM_ISSUE_REPO", "Entigram-AI/entigram")
+
+_MAX_ISSUE_URL_LENGTH = 4096
 
 
 _PACKAGE_NAME_RE = re.compile(r"^@[a-z][a-z0-9-]*/[a-z][a-z0-9-]*$")
@@ -881,7 +885,7 @@ def build_assessment_catalog(
     relevant = []
     other = []
     for pkg in _PACKAGE_CATALOG:
-        entry = dict(pkg)
+        entry = copy.deepcopy(pkg)
         matched_techs = [t for t in pkg["technologies"] if t in detected_techs]
         entry["relevant_to_workspace"] = bool(matched_techs)
         entry["matched_technologies"] = matched_techs
@@ -908,7 +912,7 @@ def _build_package_issue_url(
     """Build a GitHub issue creation URL pre-filled with package request details."""
     pkg = catalog_entry["package"]
     status = catalog_entry.get("status", "unknown")
-    status_label = "coming_soon" if status == "coming_soon" else "published"
+    status_label = status.replace("_", " ").title()
 
     title = f"Package Request: {pkg}"
 
@@ -962,12 +966,19 @@ def _build_package_issue_url(
     if status == "coming_soon":
         labels += ",coming-soon"
 
-    return (
+    url = (
         f"https://github.com/{_ISSUE_REPO}/issues/new"
         f"?title={_urlq(title)}"
         f"&body={_urlq(body)}"
         f"&labels={_urlq(labels)}"
     )
+
+    # Cap URL length to stay within browser/GitHub limits
+    if len(url) > _MAX_ISSUE_URL_LENGTH and detected_technologies:
+        # Retry without workspace detection context to shorten
+        return _build_package_issue_url(catalog_entry, detected_technologies=None)
+
+    return url
 
 
 def record_package_access_request(
@@ -1024,7 +1035,7 @@ def record_package_access_request(
     request_dir.mkdir(parents=True, exist_ok=True)
     safe_name = package_name.replace("@", "").replace("/", "_")
     request_file = request_dir / f"{safe_name}.json"
-    request_file.write_text(json.dumps(request_record, indent=2) + "\n")
+    request_file.write_text(json.dumps(request_record, indent=2) + "\n", encoding="utf-8")
 
     # Append to the demand ledger (tracks all requests over time for telemetry)
     demand_file = request_dir / "demand_ledger.jsonl"
@@ -1034,7 +1045,13 @@ def record_package_access_request(
         "status": status,
         "requested_at": now,
     }
-    with open(demand_file, "a") as f:
-        f.write(json.dumps(demand_entry, sort_keys=True) + "\n")
+    try:
+        with open(demand_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(demand_entry, sort_keys=True) + "\n")
+    except OSError:
+        logging.getLogger(__name__).warning(
+            "Failed to append to demand ledger at %s", demand_file,
+            exc_info=True,
+        )
 
     return request_record
