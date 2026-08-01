@@ -574,6 +574,85 @@ class TestTechnologyDetection(unittest.TestCase):
         self.assertNotIn("ETG-RISK-UNCONFIGURED-TECHNOLOGY", codes)
 
 
+class TestAssessmentCatalog(unittest.TestCase):
+    """Tests for the assessment package catalog and request-access flow."""
+
+    def test_catalog_returns_all_packages(self):
+        from entigram.assessment import get_assessment_catalog
+
+        catalog = get_assessment_catalog()
+        self.assertGreater(len(catalog), 0)
+        packages = [p["package"] for p in catalog]
+        self.assertIn("@entigram/api-security", packages)
+        self.assertIn("@entigram/data-privacy", packages)
+        for pkg in catalog:
+            self.assertIn("capabilities", pkg)
+            self.assertIn("frameworks", pkg)
+            self.assertIn("tier", pkg)
+            self.assertIn("access_url", pkg)
+            self.assertTrue(pkg["access_url"].startswith("https://"))
+
+    def test_workspace_aware_catalog_recommends_relevant_packages(self):
+        from entigram.assessment import build_assessment_catalog
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "package.json").write_text("{}")
+            (root / "Dockerfile").write_text("FROM node:20\n")
+            catalog = build_assessment_catalog(root)
+            recommended_names = [p["package"] for p in catalog["recommended_packages"]]
+            self.assertIn("@entigram/web-security", recommended_names)
+            self.assertIn("@entigram/container-security", recommended_names)
+            for pkg in catalog["recommended_packages"]:
+                self.assertTrue(pkg["relevant_to_workspace"])
+                self.assertGreater(len(pkg["matched_technologies"]), 0)
+
+    def test_workspace_aware_catalog_with_no_signals(self):
+        from entigram.assessment import build_assessment_catalog
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            catalog = build_assessment_catalog(root)
+            self.assertEqual(catalog["recommended_packages"], [])
+            self.assertGreater(len(catalog["other_packages"]), 0)
+
+    def test_request_access_records_to_file(self):
+        from entigram.assessment import record_package_access_request
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / ".etg").mkdir()
+            record = record_package_access_request(root, "@entigram/api-security")
+            self.assertEqual(record["package"], "@entigram/api-security")
+            self.assertEqual(record["tier"], "standard")
+            self.assertIn("requested_at", record)
+            self.assertTrue(record["access_url"].startswith("https://"))
+            request_file = root / ".etg" / "access_requests" / "entigram_api-security.json"
+            self.assertTrue(request_file.is_file())
+            import json
+            persisted = json.loads(request_file.read_text())
+            self.assertEqual(persisted["package"], "@entigram/api-security")
+
+    def test_request_access_rejects_unknown_package(self):
+        from entigram.assessment import record_package_access_request
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / ".etg").mkdir()
+            with self.assertRaises(ValueError) as ctx:
+                record_package_access_request(root, "@entigram/does-not-exist")
+            self.assertIn("Unknown package", str(ctx.exception))
+
+    def test_request_access_rejects_invalid_package_name(self):
+        from entigram.assessment import record_package_access_request
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / ".etg").mkdir()
+            with self.assertRaises(ValueError) as ctx:
+                record_package_access_request(root, "bad-name")
+            self.assertIn("Invalid package name", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()
-

@@ -719,3 +719,165 @@ def _validate_capabilities(value: Any, field_name: str, *, allow_empty: bool = F
         raise AssessmentConfigurationError(
             f"{field_name} values must use the form capability-name/v1"
         )
+
+
+# ---------------------------------------------------------------------------
+# Assessment package catalog
+# ---------------------------------------------------------------------------
+
+_PACKAGE_CATALOG: List[Dict[str, Any]] = [
+    {
+        "package": "@entigram/web-security",
+        "description": "OWASP-aligned web application security assessments",
+        "capabilities": ["xss-screening/v1", "csp-validation/v1", "dom-injection-detection/v1"],
+        "frameworks": ["OWASP Top 10", "OWASP ASVS", "SANS/CWE Top 25"],
+        "technologies": ["web-frontend"],
+        "tier": "standard",
+        "access_url": "https://entigram.ai/packages/web-security",
+    },
+    {
+        "package": "@entigram/api-security",
+        "description": "API security assessments for backend services",
+        "capabilities": ["injection-detection/v1", "auth-misconfiguration/v1", "ssrf-detection/v1"],
+        "frameworks": ["OWASP API Security Top 10", "OWASP Top 10", "NIST 800-53"],
+        "technologies": ["web-api"],
+        "tier": "standard",
+        "access_url": "https://entigram.ai/packages/api-security",
+    },
+    {
+        "package": "@entigram/dependency-audit",
+        "description": "Software composition analysis and supply chain risk",
+        "capabilities": ["dependency-vulnerability/v1", "license-compliance/v1", "malicious-package-detection/v1"],
+        "frameworks": ["SLSA", "NIST SSDF (800-218)", "OpenSSF Scorecard"],
+        "technologies": ["web-api", "web-frontend", "supply-chain"],
+        "tier": "standard",
+        "access_url": "https://entigram.ai/packages/dependency-audit",
+    },
+    {
+        "package": "@entigram/container-security",
+        "description": "Container image and orchestration security assessments",
+        "capabilities": ["image-vulnerability/v1", "dockerfile-lint/v1", "k8s-policy-check/v1"],
+        "frameworks": ["CIS Docker Benchmark", "NIST 800-190", "SLSA"],
+        "technologies": ["container"],
+        "tier": "standard",
+        "access_url": "https://entigram.ai/packages/container-security",
+    },
+    {
+        "package": "@entigram/iac-security",
+        "description": "Infrastructure-as-code policy and drift assessments",
+        "capabilities": ["iac-misconfiguration/v1", "drift-detection/v1", "iam-audit/v1"],
+        "frameworks": ["CIS Cloud Benchmarks", "NIST 800-53", "SOC 2"],
+        "technologies": ["infrastructure-as-code"],
+        "tier": "standard",
+        "access_url": "https://entigram.ai/packages/iac-security",
+    },
+    {
+        "package": "@entigram/mobile-security",
+        "description": "Mobile application security verification",
+        "capabilities": ["mobile-storage-audit/v1", "certificate-pinning-check/v1", "binary-protection/v1"],
+        "frameworks": ["OWASP MASVS", "OWASP Mobile Top 10", "NIST 800-163"],
+        "technologies": ["mobile-app"],
+        "tier": "standard",
+        "access_url": "https://entigram.ai/packages/mobile-security",
+    },
+    {
+        "package": "@entigram/data-privacy",
+        "description": "PII detection, encryption audit, and data governance",
+        "capabilities": ["pii-detection/v1", "encryption-audit/v1", "retention-policy-check/v1"],
+        "frameworks": ["PCI DSS v4.0", "SOC 2", "GDPR Art. 32"],
+        "technologies": ["data-processing"],
+        "tier": "professional",
+        "access_url": "https://entigram.ai/packages/data-privacy",
+    },
+    {
+        "package": "@entigram/artifact-risk",
+        "description": "Artifact reputation and provenance verification",
+        "capabilities": ["artifact-reputation/v1", "provenance-verification/v1"],
+        "frameworks": ["SLSA", "NIST SSDF (800-218)"],
+        "technologies": ["supply-chain"],
+        "tier": "standard",
+        "access_url": "https://entigram.ai/packages/artifact-risk",
+    },
+]
+
+_PACKAGE_NAME_RE = re.compile(r"^@[a-z][a-z0-9-]*/[a-z][a-z0-9-]*$")
+
+
+def get_assessment_catalog() -> List[Dict[str, Any]]:
+    """Return the full catalog of available assessment packages."""
+    return list(_PACKAGE_CATALOG)
+
+
+def build_assessment_catalog(
+    root: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Build a workspace-aware catalog showing relevant packages for detected technologies."""
+    detected = detect_workspace_technologies(root) if root is not None else []
+    detected_techs = [t["technology"] for t in detected]
+
+    relevant = []
+    other = []
+    for pkg in _PACKAGE_CATALOG:
+        entry = dict(pkg)
+        matched_techs = [t for t in pkg["technologies"] if t in detected_techs]
+        entry["relevant_to_workspace"] = bool(matched_techs)
+        entry["matched_technologies"] = matched_techs
+        if matched_techs:
+            relevant.append(entry)
+        else:
+            other.append(entry)
+
+    return {
+        "detected_technologies": detected,
+        "recommended_packages": relevant,
+        "other_packages": other,
+        "total_packages": len(_PACKAGE_CATALOG),
+        "request_access_command": "etg assess --request-access <package-name>",
+        "access_portal": "https://entigram.ai/packages",
+    }
+
+
+def record_package_access_request(
+    root: Path,
+    package_name: str,
+) -> Dict[str, Any]:
+    """Record a package access request in the workspace ledger and return the access details."""
+    if not _PACKAGE_NAME_RE.fullmatch(package_name):
+        raise ValueError(
+            f"Invalid package name: {package_name!r}. "
+            f"Package names must match @scope/name (e.g. @entigram/api-security)"
+        )
+
+    catalog_entry = None
+    for pkg in _PACKAGE_CATALOG:
+        if pkg["package"] == package_name:
+            catalog_entry = pkg
+            break
+
+    if catalog_entry is None:
+        available = [p["package"] for p in _PACKAGE_CATALOG]
+        raise ValueError(
+            f"Unknown package: {package_name}. "
+            f"Available packages: {', '.join(available)}"
+        )
+
+    import datetime
+    request_record = {
+        "package": package_name,
+        "description": catalog_entry["description"],
+        "tier": catalog_entry["tier"],
+        "capabilities": catalog_entry["capabilities"],
+        "frameworks": catalog_entry["frameworks"],
+        "access_url": catalog_entry["access_url"],
+        "requested_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "workspace": str(root),
+    }
+
+    # Persist the request in the workspace ledger
+    request_dir = root / ".etg" / "access_requests"
+    request_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = package_name.replace("@", "").replace("/", "_")
+    request_file = request_dir / f"{safe_name}.json"
+    request_file.write_text(json.dumps(request_record, indent=2) + "\n")
+
+    return request_record

@@ -816,8 +816,11 @@ def _main():
     discover_parser.add_argument("--report-json", action="store_true", help="Print a structured discovery report instead of only LDS")
 
     # assessment command
-    assess_parser = subparsers.add_parser("assess", help="Run a package-provided read-only assessment")
-    assess_parser.add_argument("--adapter", required=True, help="Registered assessment adapter name")
+    assess_parser = subparsers.add_parser(
+        "assess",
+        help="Run assessments, view the security catalog, or request access to assessment packages",
+    )
+    assess_parser.add_argument("--adapter", help="Registered assessment adapter name")
     assess_parser.add_argument("--adapter-module", help="Explicit local assessment_adapter.py module; CLI only")
     assess_parser.add_argument(
         "--allow-executable-adapter",
@@ -827,8 +830,8 @@ def _main():
             "installed package adapters remain disabled until publisher trust and isolation exist"
         ),
     )
-    assess_parser.add_argument("--subject-type", required=True, help="Assessment subject type, such as sha256")
-    assess_subject_group = assess_parser.add_mutually_exclusive_group(required=True)
+    assess_parser.add_argument("--subject-type", help="Assessment subject type, such as sha256")
+    assess_subject_group = assess_parser.add_mutually_exclusive_group()
     assess_subject_group.add_argument("--subject", help="Assessment subject reference")
     assess_subject_group.add_argument(
         "--subject-file",
@@ -838,6 +841,16 @@ def _main():
     assess_parser.add_argument("--dir", default=".", help="Target Entigram workspace")
     assess_parser.add_argument("--out", help="Write the structured assessment result to a JSON file")
     assess_parser.add_argument("--json", action="store_true", dest="json_output", help="Print structured JSON")
+    assess_parser.add_argument(
+        "--catalog",
+        action="store_true",
+        help="List available assessment packages and detected workspace technologies",
+    )
+    assess_parser.add_argument(
+        "--request-access",
+        metavar="PACKAGE",
+        help="Request access to an assessment package (e.g. @entigram/api-security)",
+    )
 
     # merge command
     merge_parser = subparsers.add_parser("merge", help="Merge a remote schema and state ledger into the local workspace")
@@ -1795,12 +1808,77 @@ def _main():
             assessment_decision,
             assess_subject,
             assess_with_installed_adapter,
+            build_assessment_catalog,
             load_assessment_adapter_module,
             load_installed_assessment_adapters,
+            record_package_access_request,
             workspace_security_posture,
         )
         try:
             target_dir = Path(args.dir).expanduser().resolve()
+
+            # --- catalog mode ---
+            if args.catalog or (not args.adapter and not args.request_access):
+                catalog = build_assessment_catalog(target_dir)
+                if args.json_output:
+                    print(json.dumps(catalog, indent=2, sort_keys=True))
+                else:
+                    detected = catalog["detected_technologies"]
+                    if detected:
+                        print("🔍 Detected Technologies:")
+                        for tech in detected:
+                            print(f"  • {tech['label']} (matched: {', '.join(tech['matched_signals'])})")
+                            print(f"    Frameworks: {', '.join(tech['frameworks'])}")
+                        print()
+
+                    recommended = catalog["recommended_packages"]
+                    if recommended:
+                        print("📦 Recommended Assessment Packages:")
+                        for pkg in recommended:
+                            tier_label = f" [{pkg['tier'].upper()}]" if pkg["tier"] != "standard" else ""
+                            print(f"  {pkg['package']}{tier_label}")
+                            print(f"    {pkg['description']}")
+                            print(f"    Capabilities: {', '.join(pkg['capabilities'])}")
+                            print(f"    Frameworks: {', '.join(pkg['frameworks'])}")
+                            print(f"    → Request access: etg assess --request-access {pkg['package']}")
+                            print()
+                    else:
+                        print("✅ No workspace-specific packages recommended.")
+                        print()
+
+                    other = catalog["other_packages"]
+                    if other:
+                        print(f"📋 Other Available Packages ({len(other)}):")
+                        for pkg in other:
+                            tier_label = f" [{pkg['tier'].upper()}]" if pkg["tier"] != "standard" else ""
+                            print(f"  {pkg['package']}{tier_label} — {pkg['description']}")
+                        print()
+
+                    print(f"🌐 Full catalog: {catalog['access_portal']}")
+                    print(f"   Request access: etg assess --request-access <package-name>")
+                return
+
+            # --- request-access mode ---
+            if args.request_access:
+                record = record_package_access_request(target_dir, args.request_access)
+                if args.json_output:
+                    print(json.dumps(record, indent=2, sort_keys=True))
+                else:
+                    print(f"✅ Access request recorded for {record['package']}")
+                    print(f"   Description: {record['description']}")
+                    print(f"   Tier: {record['tier'].upper()}")
+                    print(f"   Capabilities: {', '.join(record['capabilities'])}")
+                    print(f"   Frameworks: {', '.join(record['frameworks'])}")
+                    print()
+                    print(f"   🌐 Complete your request: {record['access_url']}")
+                    print(f"   📁 Request saved: .etg/access_requests/")
+                return
+
+            # --- run assessment mode (requires --adapter) ---
+            if not args.subject_type or not (args.subject or args.subject_file):
+                print("Assessment run requires --adapter, --subject-type, and --subject or --subject-file.")
+                print("Run 'etg assess' without flags to see available packages.")
+                sys.exit(1)
             subject_file = None
             subject_ref = args.subject
             if args.subject_file:
@@ -1913,6 +1991,7 @@ def _main():
                 sys.exit(3)
         except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
             print(f"Assessment failed: {exc}")
+
             sys.exit(1)
 
     elif args.command == "merge":
