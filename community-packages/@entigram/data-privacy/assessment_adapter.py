@@ -36,6 +36,19 @@ PII_NAME_PATTERNS = {
 
 SAFE_IDENTIFIER = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$")
 
+TOP_LEVEL_FIELDS = {"assets", "controls", "custom_rules", "profile_key"}
+ASSET_FIELDS = {"name", "owner", "system_ref", "fields"}
+FIELD_FIELDS = {
+    "name", "data_type", "classification", "pii_category",
+    "encrypted_at_rest", "encryption_evidence_ref", "retention_days",
+    "retention_policy_ref", "retention_evidence_ref", "evidence_refs",
+}
+CONTROL_FIELDS = {"control_type", "scope", "status", "evidence_ref"}
+RULE_FIELDS = {
+    "id", "field_pattern", "require_classification", "require_encryption",
+    "require_retention",
+}
+
 
 class DataPrivacyAssessmentAdapter(AssessmentAdapter):
     """Review metadata and evidence without accessing data values."""
@@ -53,10 +66,14 @@ class DataPrivacyAssessmentAdapter(AssessmentAdapter):
                 "data-privacy-assessment requires subject_type data-privacy-profile"
             )
         data = subject.data
-        allowed = {"assets", "controls", "custom_rules", "profile_key"}
-        unknown = sorted(set(data) - allowed)
+        unknown = sorted(set(data) - TOP_LEVEL_FIELDS)
         if unknown:
-            raise ValueError("data privacy data contains unknown fields: " + ", ".join(unknown))
+            raise ValueError(
+                "data privacy data contains unknown fields: "
+                + ", ".join(unknown)
+                + "; allowed fields: "
+                + ", ".join(sorted(TOP_LEVEL_FIELDS))
+            )
 
         assets = data.get("assets", [])
         controls = data.get("controls", [])
@@ -178,28 +195,32 @@ class DataPrivacyAssessmentAdapter(AssessmentAdapter):
 
     def _validate_asset(self, asset):
         self._require_object(asset, "asset")
-        allowed = {"name", "owner", "system_ref", "fields"}
-        unknown = sorted(set(asset) - allowed)
+        unknown = sorted(set(asset) - ASSET_FIELDS)
         if unknown:
-            raise ValueError("asset contains unknown fields: " + ", ".join(unknown))
+            raise ValueError(
+                "asset contains unknown fields: "
+                + ", ".join(unknown)
+                + "; allowed fields: "
+                + ", ".join(sorted(ASSET_FIELDS))
+            )
         self._require_text(asset.get("name"), "asset.name")
         self._validate_optional_text(asset.get("owner"), "asset.owner")
         self._validate_optional_text(asset.get("system_ref"), "asset.system_ref")
         fields = asset.get("fields", [])
         if not isinstance(fields, list):
-            raise ValueError("asset.fields must be a list")
+            raise ValueError("asset.fields must be a list of field objects")
         return [self._validate_field(field, asset["name"]) for field in fields]
 
     def _validate_field(self, field, asset_name):
         self._require_object(field, "field")
-        allowed = {
-            "name", "data_type", "classification", "pii_category",
-            "encrypted_at_rest", "encryption_evidence_ref", "retention_days",
-            "retention_policy_ref", "retention_evidence_ref", "evidence_refs",
-        }
-        unknown = sorted(set(field) - allowed)
+        unknown = sorted(set(field) - FIELD_FIELDS)
         if unknown:
-            raise ValueError("field contains unknown fields: " + ", ".join(unknown))
+            raise ValueError(
+                "field contains unknown fields: "
+                + ", ".join(unknown)
+                + "; allowed fields: "
+                + ", ".join(sorted(FIELD_FIELDS))
+            )
         normalized = dict(field)
         self._require_text(field.get("name"), "field.name")
         normalized["name"] = f"{asset_name}.{field['name']}"
@@ -223,10 +244,14 @@ class DataPrivacyAssessmentAdapter(AssessmentAdapter):
 
     def _validate_control(self, control):
         self._require_object(control, "control")
-        allowed = {"control_type", "scope", "status", "evidence_ref"}
-        unknown = sorted(set(control) - allowed)
+        unknown = sorted(set(control) - CONTROL_FIELDS)
         if unknown:
-            raise ValueError("control contains unknown fields: " + ", ".join(unknown))
+            raise ValueError(
+                "control contains unknown fields: "
+                + ", ".join(unknown)
+                + "; allowed fields: "
+                + ", ".join(sorted(CONTROL_FIELDS))
+            )
         for key in ("control_type", "scope", "status"):
             self._require_text(control.get(key), f"control.{key}")
         self._validate_optional_reference(control.get("evidence_ref"), "control.evidence_ref")
@@ -234,10 +259,14 @@ class DataPrivacyAssessmentAdapter(AssessmentAdapter):
 
     def _validate_rule(self, rule):
         self._require_object(rule, "custom rule")
-        allowed = {"id", "field_pattern", "require_classification", "require_encryption", "require_retention"}
-        unknown = sorted(set(rule) - allowed)
+        unknown = sorted(set(rule) - RULE_FIELDS)
         if unknown:
-            raise ValueError("custom rule contains unknown fields: " + ", ".join(unknown))
+            raise ValueError(
+                "custom rule contains unknown fields: "
+                + ", ".join(unknown)
+                + "; allowed fields: "
+                + ", ".join(sorted(RULE_FIELDS))
+            )
         self._require_text(rule.get("id"), "custom_rule.id")
         if not SAFE_IDENTIFIER.fullmatch(rule["id"]):
             raise ValueError("custom_rule.id is not a safe identifier")
@@ -336,7 +365,9 @@ class DataPrivacyAssessmentAdapter(AssessmentAdapter):
 
     def _validate_collection(self, value, field, limit):
         if not isinstance(value, list):
-            raise ValueError(f"{field} must be a list")
+            raise ValueError(
+                f"{field} must be a list of objects; see the package example input"
+            )
         if len(value) > limit:
             raise ValueError(f"{field} exceeds {limit} entries")
 

@@ -51,6 +51,24 @@ class TestPackageSigning(unittest.TestCase):
         manifest = create_package_manifest(str(self.package_dir), {"name": "@entigram/demo"})
         self.assertNotIn("package.tar.gz", {item["path"] for item in manifest["files"]})
 
+    def test_v1_manifest_retains_archive_compatibility(self):
+        (self.package_dir / "package.tar.gz").write_bytes(b"legacy archive")
+        manifest = create_package_manifest(
+            str(self.package_dir),
+            {"name": "@entigram/demo"},
+            manifest_version=1,
+        )
+        self.assertIn("package.tar.gz", {item["path"] for item in manifest["files"]})
+
+    def test_manifest_ignores_macos_resource_forks(self):
+        (self.package_dir / "._schema.lds").write_bytes(b"resource fork")
+        (self.package_dir / "__MACOSX").mkdir()
+        (self.package_dir / "__MACOSX" / "._schema.lds").write_bytes(b"resource fork")
+        manifest = create_package_manifest(str(self.package_dir), {"name": "@entigram/demo"})
+        paths = {item["path"] for item in manifest["files"]}
+        self.assertNotIn("._schema.lds", paths)
+        self.assertNotIn("__MACOSX/._schema.lds", paths)
+
     def test_package_signature_verifies_and_detects_tampering(self):
         manifest = create_package_manifest(str(self.package_dir), {"name": "@entigram/demo"})
         write_package_manifest(str(self.package_dir), manifest)

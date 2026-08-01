@@ -1,8 +1,8 @@
 {
-  "key_id": "a1099d192721cfad013e0ff109fb671a2cb0dd1ceb2c7e63dfdd9295b0dca975",
-  "manifest_sha256": "897bb0a7d14539e6fec57ad4f0fab06130461b1373c097d4d7d12dd895753832",
-  "public_key": "Yb0kvcdOXGx2ef017tAv7YrCJhnY9VNc44pU81OILo8=",
-  "signature": "XN7u1upUKWWotNj5oXlVEEHfD0oj2+STOWzr/IZtqhFP8uwwiftHg1QqvzQDGNHay9FJ9l0CdGWsPrnno2pgAA==",
+  "key_id": "4279a20cc66ed9d60a58fa876387002948e6f106c5b4e2c6537cba5f0db0655a",
+  "manifest_sha256": "dc429a012a390dcb52a56d57142c650278bb21e761f49412a2bf7c6bc7b3452f",
+  "public_key": "hHAMHIZwqZxij3BAhhCW+L5rynMsfyesj/JOYAhcpt0=",
+  "signature": "NI8X0PUPtLlG3FZubfm/Z4AfFTNzg6JZngGJ3AWtjEcS0yuvQNgKn/31QDk/Y2AsoyXsqNDqXQMp4P+790NpBQ==",
   "signature_type": "ed25519",
   "signature_version": 1,
   "signed_artifact": "package.manifest.json"

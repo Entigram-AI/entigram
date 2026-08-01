@@ -246,7 +246,17 @@ def _should_skip(path: Path, root: Path, manifest_version: int) -> bool:
     rel = path.relative_to(root).as_posix()
     if any(part in {".git", "__pycache__"} for part in rel_parts):
         return True
-    if rel in {MANIFEST_NAME, SIGNATURE_NAME, "package.tar.gz"}:
+    # Finder resource-fork metadata is not package payload. macOS can add
+    # AppleDouble entries during archive transport after the manifest was
+    # generated, so ignore them consistently during verification.
+    if any(part == "__MACOSX" or part.startswith("._") for part in rel_parts):
+        return True
+    if rel in {MANIFEST_NAME, SIGNATURE_NAME}:
+        return True
+    # Manifest v1 included the generated archive and remains supported for
+    # existing standard packages. Manifest v2 deliberately excludes it so a
+    # package cannot hash an archive that is built from the package itself.
+    if rel == "package.tar.gz" and manifest_version >= 2:
         return True
     if rel.endswith(".pyc") or rel.endswith(".pyo") or rel.endswith(".DS_Store"):
         return True

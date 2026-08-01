@@ -34,3 +34,46 @@ etg assess \
 ```
 
 The input contains metadata about data assets and fields, not data values.
+
+Use this minimal input shape as a starting point. `assets`, `controls`, and
+`custom_rules` are lists; asset metadata does not include an `asset_type` key.
+
+```json
+{
+  "profile_key": "workspace-profile",
+  "assets": [
+    {
+      "name": "customer_records",
+      "owner": "data-team",
+      "system_ref": "inventory://customer_records",
+      "fields": [
+        {
+          "name": "email",
+          "data_type": "string",
+          "classification": "personal",
+          "pii_category": "contact",
+          "encrypted_at_rest": true,
+          "encryption_evidence_ref": "evidence://kms/customer_records",
+          "retention_days": 365,
+          "retention_policy_ref": "policy://customer_records",
+          "retention_evidence_ref": "evidence://retention/customer_records",
+          "evidence_refs": ["evidence://inventory/customer_records"]
+        }
+      ]
+    }
+  ],
+  "controls": [
+    {
+      "control_type": "encryption_at_rest",
+      "scope": "customer_records",
+      "status": "implemented",
+      "evidence_ref": "evidence://kms/customer_records"
+    }
+  ],
+  "custom_rules": []
+}
+```
+
+The adapter is offline and metadata-only. A successful run may still return
+`decision: review_required` when findings need a human decision; `ok: true`
+means the assessment executed successfully.

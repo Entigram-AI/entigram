@@ -108,6 +108,18 @@ class TestSafeTarExtract(unittest.TestCase):
             self.assertTrue((Path(tmp) / "pkg" / "file.txt").exists())
             self.assertTrue((Path(tmp) / "pkg" / ".etg" / "entigram.yaml").exists())
 
+    def test_safe_extract_ignores_macos_resource_forks(self):
+        tar = self._make_tar([
+            ("pkg/file.txt", b"hello"),
+            ("pkg/._file.txt", b"resource fork"),
+            ("pkg/__MACOSX/._file.txt", b"resource fork"),
+        ])
+        with tempfile.TemporaryDirectory() as tmp:
+            _safe_extract(tar, Path(tmp))
+            self.assertTrue((Path(tmp) / "pkg" / "file.txt").exists())
+            self.assertFalse((Path(tmp) / "pkg" / "._file.txt").exists())
+            self.assertFalse((Path(tmp) / "pkg" / "__MACOSX").exists())
+
     def test_package_manifest_registers_installed_schema(self):
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp)
