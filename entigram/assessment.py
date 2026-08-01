@@ -6,6 +6,7 @@ import importlib.util
 import json
 import logging
 import re
+from urllib.parse import quote as _urlq
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Type
@@ -792,7 +793,7 @@ _PACKAGE_CATALOG: List[Dict[str, Any]] = [
         "frameworks": ["OWASP Top 10", "OWASP ASVS", "SANS/CWE Top 25"],
         "technologies": ["web-frontend"],
         "tier": "standard",
-        "access_url": "mailto:developer@entigram.com?subject=Access%20Request%3A%20%40entigram%2Fweb-security",
+        "status": "published",
     },
     {
         "package": "@entigram/api-security",
@@ -801,7 +802,7 @@ _PACKAGE_CATALOG: List[Dict[str, Any]] = [
         "frameworks": ["OWASP API Security Top 10", "OWASP Top 10", "NIST 800-53"],
         "technologies": ["web-api"],
         "tier": "standard",
-        "access_url": "mailto:developer@entigram.com?subject=Access%20Request%3A%20%40entigram%2Fapi-security",
+        "status": "published",
     },
     {
         "package": "@entigram/dependency-audit",
@@ -810,7 +811,7 @@ _PACKAGE_CATALOG: List[Dict[str, Any]] = [
         "frameworks": ["SLSA", "NIST SSDF (800-218)", "OpenSSF Scorecard"],
         "technologies": ["web-api", "web-frontend", "supply-chain"],
         "tier": "standard",
-        "access_url": "mailto:developer@entigram.com?subject=Access%20Request%3A%20%40entigram%2Fdependency-audit",
+        "status": "published",
     },
     {
         "package": "@entigram/container-security",
@@ -819,7 +820,7 @@ _PACKAGE_CATALOG: List[Dict[str, Any]] = [
         "frameworks": ["CIS Docker Benchmark", "NIST 800-190", "SLSA"],
         "technologies": ["container"],
         "tier": "standard",
-        "access_url": "mailto:developer@entigram.com?subject=Access%20Request%3A%20%40entigram%2Fcontainer-security",
+        "status": "published",
     },
     {
         "package": "@entigram/iac-security",
@@ -828,7 +829,7 @@ _PACKAGE_CATALOG: List[Dict[str, Any]] = [
         "frameworks": ["CIS Cloud Benchmarks", "NIST 800-53", "SOC 2"],
         "technologies": ["infrastructure-as-code"],
         "tier": "standard",
-        "access_url": "mailto:developer@entigram.com?subject=Access%20Request%3A%20%40entigram%2Fiac-security",
+        "status": "published",
     },
     {
         "package": "@entigram/mobile-security",
@@ -837,7 +838,7 @@ _PACKAGE_CATALOG: List[Dict[str, Any]] = [
         "frameworks": ["OWASP MASVS", "OWASP Mobile Top 10", "NIST 800-163"],
         "technologies": ["mobile-app"],
         "tier": "standard",
-        "access_url": "mailto:developer@entigram.com?subject=Access%20Request%3A%20%40entigram%2Fmobile-security",
+        "status": "published",
     },
     {
         "package": "@entigram/data-privacy",
@@ -846,7 +847,7 @@ _PACKAGE_CATALOG: List[Dict[str, Any]] = [
         "frameworks": ["PCI DSS v4.0", "SOC 2", "GDPR Art. 32"],
         "technologies": ["data-processing"],
         "tier": "professional",
-        "access_url": "mailto:developer@entigram.com?subject=Access%20Request%3A%20%40entigram%2Fdata-privacy",
+        "status": "coming_soon",
     },
     {
         "package": "@entigram/artifact-risk",
@@ -855,9 +856,11 @@ _PACKAGE_CATALOG: List[Dict[str, Any]] = [
         "frameworks": ["SLSA", "NIST SSDF (800-218)"],
         "technologies": ["supply-chain"],
         "tier": "standard",
-        "access_url": "mailto:developer@entigram.com?subject=Access%20Request%3A%20%40entigram%2Fartifact-risk",
+        "status": "published",
     },
 ]
+
+_ISSUE_REPO = "Entigram-AI/entigram"
 
 
 _PACKAGE_NAME_RE = re.compile(r"^@[a-z][a-z0-9-]*/[a-z][a-z0-9-]*$")
@@ -897,6 +900,76 @@ def build_assessment_catalog(
     }
 
 
+def _build_package_issue_url(
+    catalog_entry: Dict[str, Any],
+    *,
+    detected_technologies: Optional[List[Dict[str, Any]]] = None,
+) -> str:
+    """Build a GitHub issue creation URL pre-filled with package request details."""
+    pkg = catalog_entry["package"]
+    status = catalog_entry.get("status", "unknown")
+    status_label = "coming_soon" if status == "coming_soon" else "published"
+
+    title = f"Package Request: {pkg}"
+
+    body_parts = [
+        f"## Package Access Request\n",
+        f"**Package:** `{pkg}`",
+        f"**Description:** {catalog_entry['description']}",
+        f"**Tier:** {catalog_entry['tier'].upper()}",
+        f"**Registry Status:** {status_label.replace('_', ' ').title()}",
+        "",
+        "### Capabilities Requested",
+    ]
+    for cap in catalog_entry["capabilities"]:
+        body_parts.append(f"- `{cap}`")
+
+    body_parts.extend(["", "### Compliance Frameworks"])
+    for fw in catalog_entry["frameworks"]:
+        body_parts.append(f"- {fw}")
+
+    body_parts.extend(["", "### Target Technologies"])
+    for tech in catalog_entry["technologies"]:
+        body_parts.append(f"- `{tech}`")
+
+    if detected_technologies:
+        body_parts.extend(["", "### Workspace Detection Context"])
+        for det in detected_technologies:
+            signals = ", ".join(det.get("matched_signals", []))
+            body_parts.append(f"- **{det['label']}** (signals: {signals})")
+
+    body_parts.extend([
+        "",
+        "### Deployment Requirements",
+        "<!-- Describe any specific deployment constraints, compliance requirements, "
+        "or integration needs that would help the package development team. -->",
+        "",
+        "- [ ] Needs offline/air-gapped support",
+        "- [ ] Requires CI/CD pipeline integration",
+        "- [ ] Must support custom policy rules",
+        "- [ ] Requires SBOM generation",
+        "",
+        "### Additional Context",
+        "<!-- Add any other context about your use case, environment, "
+        "or specific assessment scenarios you need covered. -->",
+        "",
+        "---",
+        "*This issue was generated by `etg assess --request-access`.*",
+    ])
+
+    body = "\n".join(body_parts)
+    labels = "package-request"
+    if status == "coming_soon":
+        labels += ",coming-soon"
+
+    return (
+        f"https://github.com/{_ISSUE_REPO}/issues/new"
+        f"?title={_urlq(title)}"
+        f"&body={_urlq(body)}"
+        f"&labels={_urlq(labels)}"
+    )
+
+
 def record_package_access_request(
     root: Path,
     package_name: str,
@@ -921,15 +994,28 @@ def record_package_access_request(
             f"Available packages: {', '.join(available)}"
         )
 
+    # Detect workspace technologies for richer issue context
+    detected = detect_workspace_technologies(root) if root.is_dir() else []
+    relevant_techs = [
+        t for t in detected
+        if t["technology"] in catalog_entry["technologies"]
+    ]
+
     import datetime
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    status = catalog_entry.get("status", "unknown")
+    issue_url = _build_package_issue_url(
+        catalog_entry, detected_technologies=relevant_techs,
+    )
     request_record = {
         "package": package_name,
         "description": catalog_entry["description"],
         "tier": catalog_entry["tier"],
+        "status": status,
         "capabilities": catalog_entry["capabilities"],
         "frameworks": catalog_entry["frameworks"],
-        "access_url": catalog_entry["access_url"],
-        "requested_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "issue_url": issue_url,
+        "requested_at": now,
         "workspace": str(root),
     }
 
@@ -939,5 +1025,16 @@ def record_package_access_request(
     safe_name = package_name.replace("@", "").replace("/", "_")
     request_file = request_dir / f"{safe_name}.json"
     request_file.write_text(json.dumps(request_record, indent=2) + "\n")
+
+    # Append to the demand ledger (tracks all requests over time for telemetry)
+    demand_file = request_dir / "demand_ledger.jsonl"
+    demand_entry = {
+        "package": package_name,
+        "tier": catalog_entry["tier"],
+        "status": status,
+        "requested_at": now,
+    }
+    with open(demand_file, "a") as f:
+        f.write(json.dumps(demand_entry, sort_keys=True) + "\n")
 
     return request_record

@@ -644,8 +644,8 @@ class TestAssessmentCatalog(unittest.TestCase):
             self.assertIn("capabilities", pkg)
             self.assertIn("frameworks", pkg)
             self.assertIn("tier", pkg)
-            self.assertIn("access_url", pkg)
-            self.assertTrue(pkg["access_url"].startswith("mailto:"))
+            self.assertIn("status", pkg)
+            self.assertIn(pkg["status"], ("published", "coming_soon", "preview"))
 
     def test_workspace_aware_catalog_recommends_relevant_packages(self):
         from entigram.assessment import build_assessment_catalog
@@ -680,13 +680,62 @@ class TestAssessmentCatalog(unittest.TestCase):
             record = record_package_access_request(root, "@entigram/api-security")
             self.assertEqual(record["package"], "@entigram/api-security")
             self.assertEqual(record["tier"], "standard")
+            self.assertEqual(record["status"], "published")
             self.assertIn("requested_at", record)
-            self.assertTrue(record["access_url"].startswith("mailto:"))
+            self.assertIn("issue_url", record)
+            self.assertTrue(record["issue_url"].startswith("https://github.com/Entigram-AI/entigram/issues/new"))
             request_file = root / ".etg" / "access_requests" / "entigram_api-security.json"
             self.assertTrue(request_file.is_file())
             import json
             persisted = json.loads(request_file.read_text())
             self.assertEqual(persisted["package"], "@entigram/api-security")
+            self.assertEqual(persisted["status"], "published")
+            # Verify demand ledger was appended
+            demand_file = root / ".etg" / "access_requests" / "demand_ledger.jsonl"
+            self.assertTrue(demand_file.is_file())
+            lines = demand_file.read_text().strip().split("\n")
+            self.assertEqual(len(lines), 1)
+            entry = json.loads(lines[0])
+            self.assertEqual(entry["package"], "@entigram/api-security")
+            self.assertEqual(entry["status"], "published")
+
+    def test_request_access_coming_soon_package(self):
+        from entigram.assessment import record_package_access_request
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / ".etg").mkdir()
+            record = record_package_access_request(root, "@entigram/data-privacy")
+            self.assertEqual(record["package"], "@entigram/data-privacy")
+            self.assertEqual(record["tier"], "professional")
+            self.assertEqual(record["status"], "coming_soon")
+            # Demand is still tracked even for unpublished packages
+            import json
+            demand_file = root / ".etg" / "access_requests" / "demand_ledger.jsonl"
+            self.assertTrue(demand_file.is_file())
+            entry = json.loads(demand_file.read_text().strip())
+            self.assertEqual(entry["package"], "@entigram/data-privacy")
+            self.assertEqual(entry["status"], "coming_soon")
+
+    def test_demand_ledger_appends_multiple_requests(self):
+        from entigram.assessment import record_package_access_request
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / ".etg").mkdir()
+            record_package_access_request(root, "@entigram/api-security")
+            record_package_access_request(root, "@entigram/web-security")
+            record_package_access_request(root, "@entigram/data-privacy")
+            import json
+            demand_file = root / ".etg" / "access_requests" / "demand_ledger.jsonl"
+            lines = demand_file.read_text().strip().split("\n")
+            self.assertEqual(len(lines), 3)
+            packages = [json.loads(line)["package"] for line in lines]
+            self.assertEqual(packages, [
+                "@entigram/api-security",
+                "@entigram/web-security",
+                "@entigram/data-privacy",
+            ])
 
     def test_request_access_rejects_unknown_package(self):
         from entigram.assessment import record_package_access_request
@@ -707,6 +756,7 @@ class TestAssessmentCatalog(unittest.TestCase):
             with self.assertRaises(ValueError) as ctx:
                 record_package_access_request(root, "bad-name")
             self.assertIn("Invalid package name", str(ctx.exception))
+
 
 
 if __name__ == "__main__":

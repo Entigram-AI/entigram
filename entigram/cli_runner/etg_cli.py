@@ -1837,11 +1837,20 @@ def _main():
                         print("📦 Recommended Assessment Packages:")
                         for pkg in recommended:
                             tier_label = f" [{pkg['tier'].upper()}]" if pkg["tier"] != "standard" else ""
-                            print(f"  {pkg['package']}{tier_label}")
+                            status = pkg.get("status", "unknown")
+                            status_label = ""
+                            if status == "coming_soon":
+                                status_label = " ⏳ COMING SOON"
+                            elif status == "preview":
+                                status_label = " 🧪 PREVIEW"
+                            print(f"  {pkg['package']}{tier_label}{status_label}")
                             print(f"    {pkg['description']}")
                             print(f"    Capabilities: {', '.join(pkg['capabilities'])}")
                             print(f"    Frameworks: {', '.join(pkg['frameworks'])}")
-                            print(f"    → Request access: etg assess --request-access {pkg['package']}")
+                            if status == "coming_soon":
+                                print(f"    → Register interest: etg assess --request-access {pkg['package']}")
+                            else:
+                                print(f"    → Request access: etg assess --request-access {pkg['package']}")
                             print()
                     else:
                         print("✅ No workspace-specific packages recommended.")
@@ -1852,7 +1861,9 @@ def _main():
                         print(f"📋 Other Available Packages ({len(other)}):")
                         for pkg in other:
                             tier_label = f" [{pkg['tier'].upper()}]" if pkg["tier"] != "standard" else ""
-                            print(f"  {pkg['package']}{tier_label} — {pkg['description']}")
+                            status = pkg.get("status", "unknown")
+                            status_label = " ⏳ COMING SOON" if status == "coming_soon" else ""
+                            print(f"  {pkg['package']}{tier_label}{status_label} — {pkg['description']}")
                         print()
 
                     print(f"🌐 Full catalog: etg assess --catalog")
@@ -1866,14 +1877,22 @@ def _main():
                 if args.json_output:
                     print(json.dumps(record, indent=2, sort_keys=True))
                 else:
-                    print(f"✅ Access request recorded for {record['package']}")
+                    status = record.get("status", "unknown")
+                    if status == "coming_soon":
+                        print(f"⏳ {record['package']} is not yet published — your interest has been recorded")
+                    else:
+                        print(f"✅ Access request recorded for {record['package']}")
                     print(f"   Description: {record['description']}")
                     print(f"   Tier: {record['tier'].upper()}")
+                    print(f"   Status: {status.replace('_', ' ').title()}")
                     print(f"   Capabilities: {', '.join(record['capabilities'])}")
                     print(f"   Frameworks: {', '.join(record['frameworks'])}")
                     print()
-                    print(f"   📧 Email developer@entigram.com to complete your request")
+                    print(f"   🔗 Submit your request (creates a GitHub issue):")
+                    print(f"   {record['issue_url']}")
+                    print()
                     print(f"   📁 Request saved: .etg/access_requests/")
+                    print(f"   📊 Demand tracked: .etg/access_requests/demand_ledger.jsonl")
                 return
 
             # --- run assessment mode (requires --adapter) ---
