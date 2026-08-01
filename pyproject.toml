@@ -55,7 +55,6 @@ packages = [
     "entigram.ontology_compiler", 
     "entigram.sensing", 
     "entigram.sqlite_ledger", 
-    "entigram.ui", 
     "entigram.templates"
 ]
 
@@ -66,5 +65,4 @@ entigram = [
     "templates/**/*.md",
     "templates/**/*.py",
     "templates/**/.gitignore",
-    "ui/media/*.svg",
 ]
