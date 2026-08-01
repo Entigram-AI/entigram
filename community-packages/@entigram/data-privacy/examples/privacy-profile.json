@@ -1,0 +1,33 @@
+{
+  "profile_key": "workspace-profile",
+  "assets": [
+    {
+      "name": "customer_records",
+      "owner": "data-team",
+      "system_ref": "inventory://customer_records",
+      "fields": [
+        {
+          "name": "email",
+          "data_type": "string",
+          "classification": "personal",
+          "pii_category": "contact",
+          "encrypted_at_rest": true,
+          "encryption_evidence_ref": "evidence://kms/customer_records",
+          "retention_days": 365,
+          "retention_policy_ref": "policy://customer_records",
+          "retention_evidence_ref": "evidence://retention/customer_records",
+          "evidence_refs": ["evidence://inventory/customer_records"]
+        }
+      ]
+    }
+  ],
+  "controls": [
+    {
+      "control_type": "encryption_at_rest",
+      "scope": "customer_records",
+      "status": "implemented",
+      "evidence_ref": "evidence://kms/customer_records"
+    }
+  ],
+  "custom_rules": []
+}

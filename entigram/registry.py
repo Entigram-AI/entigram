@@ -16,6 +16,13 @@ _PACKAGE_NAME_RE = re.compile(r"^(?:@[A-Za-z0-9_.-]+/)?[A-Za-z0-9_.-]+$")
 _STANDARD_REGISTRY = "https://api.entigram.ai/v1/registry"
 
 
+def _is_macos_metadata(path: str) -> bool:
+    return any(
+        part == "__MACOSX" or part.startswith("._")
+        for part in Path(path).parts
+    )
+
+
 def _safe_extract(tar: tarfile.TarFile, extract_dir: Path) -> None:
     """Extract ``tar`` into ``extract_dir`` while blocking path traversal.
 
@@ -26,7 +33,10 @@ def _safe_extract(tar: tarfile.TarFile, extract_dir: Path) -> None:
     schema/mapping files.
     """
     extract_base = extract_dir.resolve()
+    members = []
     for member in tar.getmembers():
+        if _is_macos_metadata(member.name):
+            continue
         member_path = (extract_base / member.name).resolve()
         if member_path != extract_base and extract_base not in member_path.parents:
             raise RuntimeError(
@@ -36,14 +46,15 @@ def _safe_extract(tar: tarfile.TarFile, extract_dir: Path) -> None:
             raise RuntimeError(
                 f"Refusing to extract link from package tarball: {member.name}"
             )
+        members.append(member)
     try:
         # Prefer the stdlib ``data`` filter (Python 3.12+, backported to
         # 3.11.4+/3.10.13+/3.9.18+); it also strips unsafe metadata.
-        tar.extractall(path=extract_dir, filter="data")
+        tar.extractall(path=extract_dir, members=members, filter="data")
     except TypeError:
         # Older runtimes lack the ``filter`` argument; the member validation
         # above is the guard on those versions.
-        tar.extractall(path=extract_dir)
+        tar.extractall(path=extract_dir, members=members)
 
 
 class EntigramRegistry:
@@ -239,6 +250,7 @@ class EntigramRegistry:
         local_packages_dir.mkdir(parents=True, exist_ok=True)
         
         target_pkg_path = local_packages_dir / package_name
+        verification_failures = []
             
         for reg_url in registries:
             if self._is_api_registry(reg_url):
@@ -262,19 +274,18 @@ class EntigramRegistry:
                 if has_provenance:
                     verification = verify_package(str(source_pkg_path))
                     if not verification.ok:
-                        print(
-                            f"❌ Refusing unverified package '{package_name}': "
-                            + "; ".join(verification.errors)
+                        verification_failures.append(
+                            f"{reg_url}: " + "; ".join(verification.errors)
                         )
                         continue
                     accepted_names = {package_name}
                     if "/" not in package_name:
                         accepted_names.add(f"@entigram/{package_name}")
                     if verification.package not in accepted_names:
-                        print(
-                            f"❌ Refusing package identity mismatch: requested "
+                        verification_failures.append(
+                            f"{reg_url}: package identity mismatch; requested "
                             f"'{package_name}', signed manifest declares "
-                            f"'{verification.package}'."
+                            f"'{verification.package}'"
                         )
                         continue
 
@@ -302,7 +313,16 @@ class EntigramRegistry:
                 print(f"✅ Package '{package_name}' successfully locked to v{pkg_version}.")
                 return True
         
-        print(f"❌ Package '{package_name}' not found in any registered repositories.")
+        if verification_failures:
+            print(f"❌ Package '{package_name}' was found but failed verification:")
+            for failure in verification_failures:
+                print(f"   - {failure}")
+            print(
+                "   Republish the package from a clean archive without macOS "
+                "resource-fork files (._* or __MACOSX), then retry."
+            )
+        else:
+            print(f"❌ Package '{package_name}' not found in any registered repositories.")
         return False
         
     def check_for_updates(self) -> dict:

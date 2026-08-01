@@ -2,8 +2,8 @@
   "files": [
     {
       "path": "SKILL.md",
-      "sha256": "d582c3c681c67fb1ce2d8f308c7c1303c0f6fe0659677830b70ec855ae6b74ee",
-      "size_bytes": 1183
+      "sha256": "05171c4a52b6a2cc5e84307f2bf42b52a1711899d285c37373b9640b7247d85d",
+      "size_bytes": 2490
     },
     {
       "path": "SOURCES.md",
@@ -17,8 +17,13 @@
     },
     {
       "path": "assessment_adapter.py",
-      "sha256": "f41b9a71c565eb99ddf4a11665f02754d07b0df1ecb5840ac23ca52b13bd2781",
-      "size_bytes": 17705
+      "sha256": "120e9be835f53d32fcac71110166016823d63a3997c4ae5daf1e1125576cb21c",
+      "size_bytes": 18474
+    },
+    {
+      "path": "examples/privacy-profile.json",
+      "sha256": "f4bebbad4c2f9874ee87687a8c5eb5bee6d7b45e684455adf1c29d3f0b5b7ce9",
+      "size_bytes": 941
     },
     {
       "path": "interview_prompt.md",
@@ -92,5 +97,5 @@
     "title": "Data Privacy"
   },
   "package": "@entigram/data-privacy",
-  "sha256": "8b0255430c7de6bbe689e921107f16d668d511d5d2084a96287f663a528131e5"
+  "sha256": "b304cc7840e933e79fa5270a88327194c47ca1b13b1cd1c354d224f2a8c6a65e"
 }
