@@ -246,7 +246,7 @@ def _should_skip(path: Path, root: Path, manifest_version: int) -> bool:
     rel = path.relative_to(root).as_posix()
     if any(part in {".git", "__pycache__"} for part in rel_parts):
         return True
-    if rel in {MANIFEST_NAME, SIGNATURE_NAME}:
+    if rel in {MANIFEST_NAME, SIGNATURE_NAME, "package.tar.gz"}:
         return True
     if rel.endswith(".pyc") or rel.endswith(".pyo") or rel.endswith(".DS_Store"):
         return True

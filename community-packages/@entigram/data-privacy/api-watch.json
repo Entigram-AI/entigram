@@ -1,0 +1,18 @@
+{
+  "package": "@entigram/data-privacy",
+  "cadence": "quarterly",
+  "sources": [
+    {
+      "id": "nist-privacy-framework",
+      "url": "https://www.nist.gov/privacy-framework",
+      "contains": "Privacy Framework",
+      "labels": ["package:data-privacy", "upstream:nist"]
+    },
+    {
+      "id": "gdpr-article-32",
+      "url": "https://eur-lex.europa.eu/eli/reg/2016/679/art_32/oj",
+      "contains": "Article 32",
+      "labels": ["package:data-privacy", "upstream:eu"]
+    }
+  ]
+}

@@ -46,6 +46,11 @@ class TestPackageSigning(unittest.TestCase):
         self.assertEqual(paths, {".etg/entigram.yaml", "schema.lds", "source_adapter.py"})
         self.assertEqual(manifest["package"], "@entigram/demo")
 
+    def test_manifest_ignores_generated_package_archive(self):
+        (self.package_dir / "package.tar.gz").write_bytes(b"generated archive")
+        manifest = create_package_manifest(str(self.package_dir), {"name": "@entigram/demo"})
+        self.assertNotIn("package.tar.gz", {item["path"] for item in manifest["files"]})
+
     def test_package_signature_verifies_and_detects_tampering(self):
         manifest = create_package_manifest(str(self.package_dir), {"name": "@entigram/demo"})
         write_package_manifest(str(self.package_dir), manifest)

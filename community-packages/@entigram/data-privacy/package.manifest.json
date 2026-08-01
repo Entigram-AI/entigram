@@ -1,0 +1,96 @@
+{
+  "files": [
+    {
+      "path": "SKILL.md",
+      "sha256": "d582c3c681c67fb1ce2d8f308c7c1303c0f6fe0659677830b70ec855ae6b74ee",
+      "size_bytes": 1183
+    },
+    {
+      "path": "SOURCES.md",
+      "sha256": "2fb3c2f6af5ab5294d97194106405669ab7339d4ec341385ea3bec0ebdc6521e",
+      "size_bytes": 501
+    },
+    {
+      "path": "api-watch.json",
+      "sha256": "f024192f8296ebec634177d9a36776a904dadd8b129dbf9be19861aa22a2079c",
+      "size_bytes": 491
+    },
+    {
+      "path": "assessment_adapter.py",
+      "sha256": "f41b9a71c565eb99ddf4a11665f02754d07b0df1ecb5840ac23ca52b13bd2781",
+      "size_bytes": 17705
+    },
+    {
+      "path": "interview_prompt.md",
+      "sha256": "1b3fb20455f1879331aeca2df0f2a9f7e367e3c55ec55b21ece9871bfad1d96a",
+      "size_bytes": 358
+    },
+    {
+      "path": "schema.lds",
+      "sha256": "3e8d02e06ce350c89c92601d7357417a436662d3f5bfd5edc3ed4c7075e51f5a",
+      "size_bytes": 1212
+    },
+    {
+      "path": "schema.ttl",
+      "sha256": "0010a1902896d5510cfe7da910a8e9503b3759e75e8b658a23cc91fc36663811",
+      "size_bytes": 8166
+    },
+    {
+      "path": "test_package.py",
+      "sha256": "37485731ab915d39874af29d138fcdb1b21f0c1d5d5e5673d1148e56466e4b65",
+      "size_bytes": 3933
+    }
+  ],
+  "manifest_version": 2,
+  "metadata": {
+    "assessment_adapters": [
+      "data-privacy-assessment"
+    ],
+    "assessment_module": "@entigram/data-privacy/assessment_adapter.py",
+    "certification": {
+      "compatibility": "entigram>=1.18",
+      "status": "community",
+      "test_evidence": [
+        "offline-metadata-only-tests",
+        "heuristic-pii-tests",
+        "encryption-evidence-tests",
+        "retention-policy-tests",
+        "custom-rule-tests",
+        "catalog-audit"
+      ],
+      "trademark_use": "nominative"
+    },
+    "description": "Offline metadata-only assessment for likely personal data, encryption controls, retention policies, and custom privacy rules.",
+    "license": {
+      "notice_required": true,
+      "spdx": "Apache-2.0"
+    },
+    "name": "@entigram/data-privacy",
+    "provenance": {
+      "package_path": "community-packages/@entigram/data-privacy",
+      "release_channel": "community",
+      "signed": true,
+      "source_repository": "https://github.com/Entigram-AI/entigram"
+    },
+    "publisher": {
+      "name": "Entigram",
+      "namespace": "@entigram"
+    },
+    "security_capabilities": [
+      "pii-detection/v1",
+      "encryption-audit/v1",
+      "retention-policy-check/v1"
+    ],
+    "tags": [
+      "privacy",
+      "pii",
+      "encryption",
+      "retention",
+      "data-governance",
+      "offline"
+    ],
+    "title": "Data Privacy"
+  },
+  "package": "@entigram/data-privacy",
+  "sha256": "8b0255430c7de6bbe689e921107f16d668d511d5d2084a96287f663a528131e5"
+}

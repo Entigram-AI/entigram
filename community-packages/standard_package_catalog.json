@@ -1,0 +1,55 @@
+{
+  "catalog_version": 1,
+  "description": "Machine-readable catalog of Entigram community packages maintained in the core repository.",
+  "packages": [
+    {
+      "name": "@entigram/data-privacy",
+      "title": "Data Privacy",
+      "description": "Offline metadata-only assessment for likely personal data, encryption controls, retention policies, and custom privacy rules.",
+      "tags": [
+        "privacy",
+        "pii",
+        "encryption",
+        "retention",
+        "data-governance",
+        "offline"
+      ],
+      "assessment_module": "@entigram/data-privacy/assessment_adapter.py",
+      "assessment_adapters": [
+        "data-privacy-assessment"
+      ],
+      "security_capabilities": [
+        "pii-detection/v1",
+        "encryption-audit/v1",
+        "retention-policy-check/v1"
+      ],
+      "license": {
+        "spdx": "Apache-2.0",
+        "notice_required": true
+      },
+      "publisher": {
+        "name": "Entigram",
+        "namespace": "@entigram"
+      },
+      "provenance": {
+        "source_repository": "https://github.com/Entigram-AI/entigram",
+        "package_path": "community-packages/@entigram/data-privacy",
+        "release_channel": "community",
+        "signed": true
+      },
+      "certification": {
+        "status": "community",
+        "compatibility": "entigram>=1.18",
+        "test_evidence": [
+          "offline-metadata-only-tests",
+          "heuristic-pii-tests",
+          "encryption-evidence-tests",
+          "retention-policy-tests",
+          "custom-rule-tests",
+          "catalog-audit"
+        ],
+        "trademark_use": "nominative"
+      }
+    }
+  ]
+}

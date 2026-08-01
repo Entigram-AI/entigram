@@ -3,6 +3,7 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import yaml
 
@@ -10,6 +11,58 @@ from entigram.registry import EntigramRegistry, _safe_extract
 
 
 class TestSafeTarExtract(unittest.TestCase):
+    def test_standard_worker_registry_is_available_without_cloud_token(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict("os.environ", {}, clear=True):
+                registry = EntigramRegistry(tmp)
+                self.assertEqual(
+                    registry.get_registries(),
+                    ["https://api.entigram.ai/v1/registry"],
+                )
+
+    def test_standard_worker_registry_is_used_with_cloud_token(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict("os.environ", {"ENTIGRAM_TOKEN": "test-token"}, clear=True):
+                registry = EntigramRegistry(tmp)
+                self.assertEqual(
+                    registry.get_registries(),
+                    ["https://api.entigram.ai/v1/registry"],
+                )
+
+    def test_configured_standard_registry_is_not_duplicated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            etg_dir = target / ".etg"
+            etg_dir.mkdir()
+            (etg_dir / "entigram.yaml").write_text(
+                "registries:\n  - https://api.entigram.ai/v1/registry\n"
+            )
+            with patch.dict("os.environ", {}, clear=True):
+                registry = EntigramRegistry(tmp)
+                self.assertEqual(registry.get_registries(), ["https://api.entigram.ai/v1/registry"])
+
+    def test_install_without_token_uses_public_worker_registry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict("os.environ", {}, clear=True):
+                registry = EntigramRegistry(tmp)
+                with (
+                    patch.object(registry, "_fetch_api_package", return_value=None) as fetch_api,
+                ):
+                    self.assertFalse(registry.install_package("@entigram/data-privacy"))
+                fetch_api.assert_called_once_with(
+                    "https://api.entigram.ai/v1/registry", "@entigram/data-privacy"
+                )
+
+    def test_custom_git_registry_can_store_packages_under_community_packages(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = EntigramRegistry(tmp)
+            package = Path(tmp) / "registry" / "community-packages" / "@example" / "demo"
+            package.mkdir(parents=True)
+            self.assertEqual(
+                registry._find_package_path(Path(tmp) / "registry", "@example/demo"),
+                package,
+            )
+
     def _make_tar(self, members):
         buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w:gz") as tar:

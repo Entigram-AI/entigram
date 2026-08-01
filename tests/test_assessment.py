@@ -699,7 +699,7 @@ class TestAssessmentCatalog(unittest.TestCase):
             self.assertEqual(entry["package"], "@entigram/api-security")
             self.assertEqual(entry["status"], "published")
 
-    def test_request_access_coming_soon_package(self):
+    def test_request_access_published_data_privacy_package(self):
         from entigram.assessment import record_package_access_request
 
         with tempfile.TemporaryDirectory() as d:
@@ -707,15 +707,15 @@ class TestAssessmentCatalog(unittest.TestCase):
             (root / ".etg").mkdir()
             record = record_package_access_request(root, "@entigram/data-privacy")
             self.assertEqual(record["package"], "@entigram/data-privacy")
-            self.assertEqual(record["tier"], "professional")
-            self.assertEqual(record["status"], "coming_soon")
-            # Demand is still tracked even for unpublished packages
+            self.assertEqual(record["tier"], "standard")
+            self.assertEqual(record["status"], "published")
+            # Requests remain explicit and locally auditable for published packages.
             import json
             demand_file = root / ".etg" / "access_requests" / "demand_ledger.jsonl"
             self.assertTrue(demand_file.is_file())
             entry = json.loads(demand_file.read_text().strip())
             self.assertEqual(entry["package"], "@entigram/data-privacy")
-            self.assertEqual(entry["status"], "coming_soon")
+            self.assertEqual(entry["status"], "published")
 
     def test_demand_ledger_appends_multiple_requests(self):
         from entigram.assessment import record_package_access_request
@@ -791,7 +791,7 @@ class TestBuildPackageIssueUrl(unittest.TestCase):
         from urllib.parse import urlparse, parse_qs, unquote
 
         entry = {
-            "package": "@entigram/data-privacy",
+            "package": "@entigram/future-privacy",
             "description": "PII detection",
             "tier": "professional",
             "status": "coming_soon",
@@ -875,4 +875,3 @@ class TestBuildPackageIssueUrl(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
