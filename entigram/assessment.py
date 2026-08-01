@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -680,7 +681,11 @@ def _load_assessment_suppressions(root: Path) -> Dict[str, Dict[str, Any]]:
                 continue  # suppressions require a rationale
             result[tech_id] = entry
         return result
-    except Exception:
+    except Exception:  # noqa: BLE001 — defensive; log and degrade
+        logging.getLogger(__name__).debug(
+            "Failed to load assessment suppressions from %s", suppressions_path,
+            exc_info=True,
+        )
         return {}
 
 
