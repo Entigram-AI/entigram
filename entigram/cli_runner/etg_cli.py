@@ -673,51 +673,6 @@ def get_hydration_vector(target_path: Path, compact: bool = False, full: bool = 
     output += f"\n--- SEQUENCE COMPLETE ---"
     return output
 
-def launch_ui(target_dir=None):
-    """Launches the Streamlit UI dashboard."""
-    import subprocess
-    if importlib.util.find_spec("streamlit") is None:
-        print("❌ Streamlit is not installed in this environment.")
-        print("The CLI/MCP runtime is headless by default.")
-        print("For pipx installs: pipx install 'entigram-ai[ui]'")
-        print("For an existing pipx install: pipx inject entigram-ai streamlit")
-        print("For Homebrew installs, run the MCP/CLI normally or install the UI with pipx.")
-        return False
-
-    ui_path = Path(__file__).parent.parent / "ui" / "app.py"
-    print(f"🚀 Launching Entigram Visual Dashboard...")
-    try:
-        # Pass the directory to the UI via environment variable
-        env = os.environ.copy()
-        
-        # Resolve target directory (search upwards if not provided)
-        if not target_dir:
-            root = find_project_root(os.getcwd())
-            target_dir = str(root) if root else os.getcwd()
-        
-        env["ENTIGRAM_PROJECT_DIR"] = str(Path(target_dir).expanduser().resolve())
-        
-        # Invoke streamlit via the current python interpreter to ensure it works in venvs (like Brew)
-        subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "streamlit",
-                "run",
-                str(ui_path),
-                "--server.address=127.0.0.1",
-                "--server.enableXsrfProtection=true",
-            ],
-            env=env,
-            check=True,
-        )
-        return True
-    except KeyboardInterrupt:
-        print("\n👋 Dashboard stopped.")
-        return True
-    except Exception as e:
-        print(f"❌ Failed to launch dashboard: {e}")
-        return False
 
 
 def _paused_command_allowed(args) -> bool:
@@ -1104,9 +1059,6 @@ def _main():
         help="Maximum characters to keep for each tool result when compaction is enabled",
     )
 
-    # ui command
-    ui_parser = subparsers.add_parser("ui", help="Launch the Entigram Visual Dashboard")
-    ui_parser.add_argument("--dir", default=".", help="Target directory")
 
     # agent command
     agent_launch_parser = subparsers.add_parser("agent", help="Start agent boot, show instructions, or launch your configured AI agent")
@@ -2228,9 +2180,6 @@ def _main():
         else:
             print(vector)
 
-    elif args.command == "ui":
-        if not launch_ui(args.dir):
-            sys.exit(1)
 
     elif args.command == "agent-instructions":
         print(_agent_instructions_text())
@@ -3359,7 +3308,6 @@ def _track_cli_operation(operation: str, argv) -> bool:
         "panel-bridge",
         "cloudflare-ollama-proxy",
         "cloudflare-claude",
-        "ui",
         "interview",
         "model",
     }:

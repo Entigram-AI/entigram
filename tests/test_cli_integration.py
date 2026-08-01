@@ -605,21 +605,6 @@ ATTRIBUTES:
         self.assertTrue(success, output)
         self.assertIn("Catalog verification passed", output)
 
-    @patch('entigram.cli_runner.etg_cli.launch_ui')
-    def test_no_command_prints_help_without_launching_ui(self, mock_launch_ui):
-        success, output = self.run_cli([])
-        self.assertTrue(success)
-        self.assertIn("Entigram Headless Compiler CLI", output)
-        mock_launch_ui.assert_not_called()
-
-    @patch('entigram.cli_runner.etg_cli.importlib.util.find_spec', return_value=None)
-    def test_ui_command_reports_missing_streamlit(self, _mock_find_spec):
-        success, output = self.run_cli(['ui'])
-        self.assertFalse(success)
-        self.assertIn("Streamlit is not installed", output)
-        self.assertIn("headless by default", output)
-        self.assertIn("pipx install 'entigram-ai[ui]'", output)
-        self.assertIn("pipx inject entigram-ai streamlit", output)
 
 if __name__ == "__main__":
     unittest.main()
