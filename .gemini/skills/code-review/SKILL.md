@@ -1,219 +1,177 @@
 ---
-name: github-pr-review
+name: entigram-review
 description: >
-  Review a GitHub PR and create a pending (draft) review using multi-agent analysis.
-  Launches 7 specialized agents in parallel (SOLID, Security, Performance, Error Handling,
-  Boundaries, Model Integrity, Ontology Consistency) with P0-P3 severity scoring.
-  The draft review is only visible to you until submitted from the GitHub UI.
+  Multi-agent workspace code review for Entigram projects. Launches 7 specialized
+  agents in parallel (SOLID, Security, Performance, Error Handling, Boundaries,
+  Model Integrity, Ontology Consistency) with P0-P3 severity scoring. Produces a
+  local findings report — does NOT post to GitHub. Users who need PR-based reviews
+  can use external tools (e.g. moltenbits/claude-review, aidankinzett/claude-git-pr-skill).
 ---
 
-# GitHub PR Review
+# Entigram Multi-Agent Code Review
 
 ## Overview
 
-Review a GitHub pull request and create a **pending (draft) review** using `gh api`.
-The draft review is only visible to the authenticated user until they submit it from
-the GitHub UI, where they can edit comments and choose the event type.
+A **local workspace review** tool that launches 7 specialized agents in parallel to
+analyze code quality, security, performance, error handling, boundary conditions,
+schema integrity, and ontology consistency.
 
-**Multi-Agent Review:** Launch 7 specialized agents in parallel for comprehensive PR
-analysis with consistent P0-P3 severity labeling.
+This skill produces a **local findings report** only. It does NOT interact with git,
+GitHub, or any external service. Users who need PR-based reviews should use dedicated
+PR review tools.
 
-## Prerequisites
+## When to Use
 
-**Check gh CLI is installed before starting:**
-
-```bash
-gh --version
-```
-
-If not installed, stop and tell the user:
-```
-The GitHub CLI (gh) is required. Install: brew install gh && gh auth login
-```
-
-## PR Resolution
-
-1. If a PR number is provided — use it directly.
-2. If no PR number — resolve from the current branch:
-   ```bash
-   gh pr view --json number --jq '.number'
-   ```
+- "Review this code" / "review the workspace"
+- "Run a code review" / "check for issues"
+- Before opening a PR (pre-flight check)
+- After making significant changes to assessment, schema, or ontology files
+- As part of `etg assess` quality gates
 
 ## The 7 Specialized Agents
 
-| Agent | Focus Area | Examples |
-|-------|-----------|----------|
-| **solid-reviewer** | SOLID Principles + Architecture | SRP violations, god classes, OCP violations |
-| **security-reviewer** | Security Vulnerabilities | SQL injection, XSS, IDOR, hardcoded secrets, CWE refs |
-| **performance-reviewer** | Performance Issues | N+1 queries, O(n²) algorithms, unbounded alloc |
-| **error-handling-reviewer** | Error Handling | Swallowed exceptions, missing boundaries, bare excepts |
-| **boundary-reviewer** | Boundary Conditions | Null deref, empty arrays, off-by-one, TOCTOU |
-| **model-reviewer** | Schema & Model Integrity | LDS schema changes, entity relationships, migration safety |
-| **ontology-reviewer** | Ontology Consistency | TTL/RDF changes, namespace integrity, class hierarchy |
-
-### Model Reviewer (Entigram-specific)
-
-This agent reviews changes to schema and model files:
-- **Files to watch:** `*.lds`, `schema.lds`, `entigram/schema_compiler/**`, migration files
-- **Checks:**
-  - Entity definitions follow LDS naming conventions (PascalCase entities, snake_case fields)
-  - Relationship cardinality is explicit and valid
-  - Required fields have defaults or are non-nullable
-  - Schema changes are backward-compatible (no dropped required fields without migration)
-  - Foreign key references point to existing entities
-  - Enum values are not removed (only appended) unless a migration exists
-  - The schema compiler (`entigram/schema_compiler/`) can still parse the changed schema
-  - Graph builder relationships match declared entity edges
-  - No orphaned entities (defined but never referenced)
-
-### Ontology Reviewer (Entigram-specific)
-
-This agent reviews changes to ontology and taxonomy files:
-- **Files to watch:** `*.ttl`, `*.rdf`, `*.owl`, `entigram/ontology_compiler/**`
-- **Checks:**
-  - TTL syntax is valid (proper prefix declarations, semicolons, periods)
-  - Namespace URIs are consistent and don't conflict
-  - Class hierarchy (`rdfs:subClassOf`) forms a valid DAG (no cycles)
-  - Property domains and ranges reference defined classes
-  - `owl:equivalentClass` and `owl:sameAs` are used correctly
-  - Ontology compiler (`entigram/ontology_compiler/`) can still process changes
-  - No dangling references (properties referencing undefined classes)
-  - Labels and comments are present for new classes/properties
-  - Deprecation annotations are used instead of deletion
+| Agent | Focus Area | Reference Checklist |
+|-------|-----------|---------------------|
+| **solid-reviewer** | SOLID Principles + Architecture | [solid-reviewer.md](references/solid-reviewer.md) |
+| **security-reviewer** | Security Vulnerabilities (CWE-mapped) | [security-reviewer.md](references/security-reviewer.md) |
+| **performance-reviewer** | Performance Issues | [performance-reviewer.md](references/performance-reviewer.md) |
+| **error-handling-reviewer** | Error Handling | [error-handling-reviewer.md](references/error-handling-reviewer.md) |
+| **boundary-reviewer** | Boundary Conditions | [boundary-reviewer.md](references/boundary-reviewer.md) |
+| **model-reviewer** | LDS Schema & Model Integrity | [model-reviewer.md](references/model-reviewer.md) |
+| **ontology-reviewer** | TTL/RDF/OWL Ontology Consistency | [ontology-reviewer.md](references/ontology-reviewer.md) |
 
 ## Severity Levels
 
 All agents use a consistent **P0-P3 severity system**:
 
-| Level | Name | Action | Confidence |
-|-------|------|--------|------------|
-| **P0** | Critical | Must fix, blocks merge | 90-100% |
-| **P1** | High | Should fix before merge | 80-100% |
-| **P2** | Medium | Fix or create follow-up | 80-100% |
-| **P3** | Low | Optional improvement | 80-100% |
+| Level | Name | Meaning | Confidence |
+|-------|------|---------|------------|
+| **P0** | Critical | Must fix — crashes, data loss, security flaw | 90-100% |
+| **P1** | High | Should fix — bugs, uncaught errors, bad architecture | 80-100% |
+| **P2** | Medium | Fix or track — code smells, coupling, missing guards | 80-100% |
+| **P3** | Low | Optional — style, naming, minor improvements | 80-100% |
 
-**Confidence threshold: 80+.** Findings below 80% confidence are suppressed.
-
-## Suggested Event Type
-
-```
-if (any P0 or P1 findings) → REQUEST_CHANGES
-else if (any P2 findings)  → COMMENT
-else if (any P3 findings)  → APPROVE with notes
-else                       → APPROVE (clean PR)
-```
-
-The `event` field is **never** included in the JSON payload. The review is always
-created as PENDING. The suggested event type is shown in the `.md` summary only.
+**Confidence threshold: 80+.** Suppress findings below 80% confidence.
 
 ## Workflow
 
-**REQUIRED STEPS (do not skip any):**
+### 1. Determine scope
 
-### 1. Get PR details
-
-```bash
-# Metadata
-gh pr view <PR_NUMBER> --json title,body,author,baseRefName,headRefName,commits
-
-# Latest commit SHA
-COMMIT_SHA=$(gh pr view <PR_NUMBER> --json commits --jq '.commits[-1].oid')
-
-# Full diff
-gh pr diff <PR_NUMBER>
-
-# Changed files list
-gh pr diff <PR_NUMBER> --stat
-```
+Ask the user or infer what to review:
+- **Specific files:** Review only the named files
+- **A directory:** Review all source files under the directory
+- **Changed files:** If the user says "review my changes", use `git diff --name-only` to scope
+- **Full workspace:** Review all key source files
 
 ### 2. Launch 7 agents in parallel
 
-Each agent receives the diff and changed file list. Each produces structured findings:
+Use `invoke_subagent` with the `research` type to launch all 7 agents concurrently.
+Each agent receives:
+- The list of files to review
+- Instructions to read the files directly (NOT from a diff)
+- The agent's specific reference checklist
+- Instructions to output findings in the structured format below
+
+### 3. Agent output format
+
+Each agent must produce findings in this format:
 
 ```markdown
 ## [Agent Name] Review
 
 ### Critical (P0) - Must Fix
-- **[File:Line]** Issue description
-  - Confidence: 95
-  - Fix: [Suggestion]
+- **[file.py:42]** Issue description
+  - Confidence: 95%
+  - Fix: Suggested remediation
 
 ### High (P1) - Should Fix
 ...
+
+### Medium (P2) - Fix or Follow-up
+...
+
+### Low (P3) - Optional
+...
 ```
 
-Use `invoke_subagent` to launch all 7 agents concurrently with the `research` type.
-Each agent's prompt should include:
-- The full diff
-- The list of changed files
-- The agent's specific checklist (from references below)
-- Instructions to output findings in the structured format above
+If no findings at a level, the agent should say "None found."
 
-### 3. Consolidate findings
+### 4. Consolidate findings
 
-Merge all agent outputs:
-- Group by severity (P0 → P1 → P2 → P3)
-- Maintain agent attribution for each finding
+After all agents report back:
+- Group findings by severity (P0 → P1 → P2 → P3)
+- Maintain agent attribution: `(agent-name, severity, confidence%)`
 - Deduplicate equivalent findings across agents
 - Filter out findings below 80% confidence
 
-### 4. Write output files
+### 5. Write local report
 
-Write two files:
-- `/tmp/pr-review-<PR_NUMBER>.json` — API payload (no `event` field)
-- `/tmp/pr-review-<PR_NUMBER>.md` — human-readable summary
+Write the consolidated report to an artifact file (`review.md`). Format:
 
-### 5. Post the pending review
+```markdown
+# Entigram Code Review
 
-**⚠️ CRITICAL: Use JSON payload with `--input`, NOT `-f` array syntax.**
+## Summary
+| Severity | Count | Source Agents |
+|----------|-------|---------------|
+| P0 Critical | N | agent-names |
+| P1 High | N | agent-names |
+| P2 Medium | N | agent-names |
+| P3 Low | N | agent-names |
+| Clean | — | agent-names |
 
-The `-f` flag breaks markdown rendering in code suggestions. Always use:
+## 🔴 Critical (P0)
+### From [Agent]
+- **file:line** — description (agent, P0, confidence%)
 
-```bash
-# Write JSON payload (no "event" field = PENDING review)
-cat > /tmp/pr-review-<PR_NUMBER>.json <<'EOF'
-{
-  "commit_id": "<COMMIT_SHA>",
-  "body": "Multi-agent review: 7 specialized reviewers analyzed this PR.",
-  "comments": [
-    {
-      "path": "src/file.py",
-      "line": 42,
-      "body": "**[P1 · security-reviewer · 95%]** Potential injection\n\n```suggestion\ncursor.execute(\"SELECT * FROM t WHERE id = ?\", (uid,))\n```"
-    }
-  ]
-}
-EOF
+## 🟠 High (P1)
+...
 
-# Post as pending review
-gh api repos/{owner}/{repo}/pulls/<PR_NUMBER>/reviews --input /tmp/pr-review-<PR_NUMBER>.json
+## 🟡 Medium (P2)
+...
+
+## 🟢 Low (P3)
+...
+
+## Clean Agents
+| Agent | Result |
+|-------|--------|
+| agent | ✅ No issues. Summary. |
 ```
 
-### Why JSON over -f syntax
+### 6. Present to user
 
-| Aspect | `-f` Array Syntax | JSON `--input` |
-|--------|-------------------|----------------|
-| Markdown rendering | ❌ Breaks backticks/newlines | ✅ Works correctly |
-| Type handling | ❌ Numbers become strings | ✅ Types preserved |
-| Multiple comments | ❌ Fragile mixed flags | ✅ Reliable |
-| Reusable | ❌ Must recreate | ✅ Save and re-post |
+Show the user the findings summary and link to the full report artifact.
+Do NOT post anything to GitHub or any external service.
 
-## Agent Attribution Format
+## Entigram-Specific Agents
 
-Every comment includes attribution:
+### Model Reviewer
+Activated when the review scope includes any of:
+- `*.lds` files (schema definitions)
+- `entigram/schema_compiler/**`
+- Migration files
+- Python code that reads/writes/parses schemas
 
-```
-**[P1 · security-reviewer · 95%]** Description of the issue
-```
+Checks LDS naming conventions, entity relationships, migration safety,
+backward compatibility, and schema compiler integrity.
 
-This tells the reviewer:
-- **Severity** (P0-P3)
-- **Which agent** found it
-- **Confidence** percentage
+### Ontology Reviewer
+Activated when the review scope includes any of:
+- `*.ttl`, `*.rdf`, `*.owl` files
+- `entigram/ontology_compiler/**`
+- Python code that reads/writes/parses ontologies
 
-## Offline Mode
+Checks TTL syntax, namespace integrity, class hierarchy (DAG validation),
+property domains/ranges, and deprecation annotations.
 
-If the user requests offline mode or you want to let them review first:
-- Write the JSON and MD files but do NOT post
-- Tell the user where the files are
-- They can review and post later
+## What This Skill Does NOT Do
+
+- ❌ Does NOT post reviews to GitHub
+- ❌ Does NOT create pending reviews or PR comments
+- ❌ Does NOT require `gh` CLI or any git tooling
+- ❌ Does NOT send data to external services
+
+Users who need PR-based reviews should use dedicated tools:
+- [moltenbits/claude-review](https://github.com/moltenbits/claude-review) — multi-agent PR reviews
+- [aidankinzett/claude-git-pr-skill](https://github.com/aidankinzett/claude-git-pr-skill) — single-agent PR reviews

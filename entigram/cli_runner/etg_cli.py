@@ -1804,6 +1804,7 @@ def _main():
 
     elif args.command == "assess":
         from entigram.assessment import (
+            AssessmentConfigurationError,
             AssessmentSubject,
             assessment_decision,
             assess_subject,
@@ -1994,7 +1995,8 @@ def _main():
                 sys.exit(2)
             if decision["decision"] == "review_required":
                 sys.exit(3)
-        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        except (OSError, ValueError, TypeError, json.JSONDecodeError,
+                AssessmentConfigurationError) as exc:
             print(f"Assessment failed: {exc}")
 
             sys.exit(1)

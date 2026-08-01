@@ -388,7 +388,7 @@ def workspace_security_posture(
             capabilities = sorted(set(provided_capabilities))
             _validate_capabilities(capabilities, "provided capabilities", allow_empty=True)
         return compute_security_posture(manifest, capabilities, root=root)
-    except AssessmentConfigurationError as exc:
+    except (AssessmentConfigurationError, yaml.YAMLError, OSError, UnicodeDecodeError) as exc:
         return _invalid_posture(str(exc))
 
 
@@ -624,10 +624,15 @@ def _technology_advisories(
         mitigations = [
             f"Configure external_artifacts in .etg/entigram.yaml to enable "
             f"assessment-driven security posture for {tech['label'].lower()} workloads.",
-            f"Review {tech['frameworks'][0]} guidelines for your technology stack.",
+        ]
+        if tech.get("frameworks"):
+            mitigations.append(
+                f"Review {tech['frameworks'][0]} guidelines for your technology stack."
+            )
+        mitigations.extend([
             "Run dependency and vulnerability scanning as part of your CI pipeline.",
             f"Develop a custom assessment adapter: etg assess --adapter-module <path> --allow-executable-adapter",
-        ]
+        ])
         if packages:
             mitigations.append(
                 f"Install assessment packages for automated checks: "
@@ -646,8 +651,9 @@ def _technology_advisories(
             "matched_signals": tech["matched_signals"],
             "message": (
                 f"Workspace contains {tech['label'].lower()} artifacts but no "
-                f"security assessment configuration. Relevant frameworks: "
-                f"{', '.join(tech['frameworks'])}."
+                f"security assessment configuration."
+                + (f" Relevant frameworks: {', '.join(tech['frameworks'])}."
+                   if tech.get('frameworks') else "")
             ),
             "recommended_checks": tech["recommended_checks"],
             "free_mitigations": mitigations,
@@ -681,10 +687,10 @@ def _load_assessment_suppressions(root: Path) -> Dict[str, Dict[str, Any]]:
                 continue  # suppressions require a rationale
             result[tech_id] = entry
         return result
-    except Exception:  # noqa: BLE001 — defensive; log and degrade
-        logging.getLogger(__name__).debug(
-            "Failed to load assessment suppressions from %s", suppressions_path,
-            exc_info=True,
+    except (OSError, yaml.YAMLError) as exc:  # noqa: BLE001
+        logging.getLogger(__name__).warning(
+            "Failed to load assessment suppressions from %s: %s",
+            suppressions_path, exc,
         )
         return {}
 
@@ -896,7 +902,7 @@ def record_package_access_request(
     package_name: str,
 ) -> Dict[str, Any]:
     """Record a package access request in the workspace ledger and return the access details."""
-    if not _PACKAGE_NAME_RE.fullmatch(package_name):
+    if not package_name or not isinstance(package_name, str) or not _PACKAGE_NAME_RE.fullmatch(package_name):
         raise ValueError(
             f"Invalid package name: {package_name!r}. "
             f"Package names must match @scope/name (e.g. @entigram/api-security)"
