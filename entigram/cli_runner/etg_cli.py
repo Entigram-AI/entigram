@@ -820,8 +820,14 @@ def _main():
         "assess",
         help="Run assessments, view the security catalog, or request access to assessment packages",
     )
-    assess_parser.add_argument("--adapter", help="Registered assessment adapter name")
-    assess_parser.add_argument("--adapter-module", help="Explicit local assessment_adapter.py module; CLI only")
+    assess_parser.add_argument(
+        "--adapter",
+        help="Registered assessment adapter name (required with --adapter-module)",
+    )
+    assess_parser.add_argument(
+        "--adapter-module",
+        help="Explicit local assessment_adapter.py module; CLI only",
+    )
     assess_parser.add_argument(
         "--allow-executable-adapter",
         action="store_true",
@@ -837,7 +843,10 @@ def _main():
         "--subject-file",
         help="Workspace-local file to hash and integrity-check for a sha256 assessment",
     )
-    assess_parser.add_argument("--input-json", help="Optional JSON object containing assessment evidence")
+    assess_parser.add_argument(
+        "--input-json",
+        help="Workspace-local path to a JSON evidence object; see the package SKILL.md example",
+    )
     assess_parser.add_argument("--dir", default=".", help="Target Entigram workspace")
     assess_parser.add_argument("--out", help="Write the structured assessment result to a JSON file")
     assess_parser.add_argument("--json", action="store_true", dest="json_output", help="Print structured JSON")
@@ -1817,6 +1826,12 @@ def _main():
         )
         try:
             target_dir = Path(args.dir).expanduser().resolve()
+
+            if args.adapter_module and not args.adapter:
+                raise ValueError(
+                    "--adapter is required with --adapter-module. Use --catalog to "
+                    "list packages, or provide --adapter <name> to run an assessment."
+                )
 
             # --- catalog mode ---
             if args.catalog or (not args.adapter and not args.request_access):
