@@ -844,12 +844,12 @@ _PACKAGE_CATALOG: List[Dict[str, Any]] = [
     },
     {
         "package": "@entigram/data-privacy",
-        "description": "PII detection, encryption audit, and data governance",
+        "description": "Offline metadata-only assessment for likely personal data, encryption controls, retention policies, and custom privacy rules",
         "capabilities": ["pii-detection/v1", "encryption-audit/v1", "retention-policy-check/v1"],
         "frameworks": ["PCI DSS v4.0", "SOC 2", "GDPR Art. 32"],
         "technologies": ["data-processing"],
-        "tier": "professional",
-        "status": "coming_soon",
+        "tier": "standard",
+        "status": "published",
     },
     {
         "package": "@entigram/artifact-risk",

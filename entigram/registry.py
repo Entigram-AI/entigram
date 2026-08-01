@@ -13,6 +13,7 @@ from .package_signing import MANIFEST_NAME, SIGNATURE_NAME, verify_package
 
 
 _PACKAGE_NAME_RE = re.compile(r"^(?:@[A-Za-z0-9_.-]+/)?[A-Za-z0-9_.-]+$")
+_STANDARD_REGISTRY = "https://api.entigram.ai/v1/registry"
 
 
 def _safe_extract(tar: tarfile.TarFile, extract_dir: Path) -> None:
@@ -61,24 +62,29 @@ class EntigramRegistry:
             else Path.home() / ".etg" / "registry_cache"
         )
         self.global_cache_dir.mkdir(parents=True, exist_ok=True)
-        self.default_registry = (
-            "git@github.com:Entigram-AI/entigram-standard-packages.git"
-        )
+        # The Worker is the stable package endpoint.  It serves public
+        # community artifacts without credentials and can route premium
+        # artifacts through the authenticated Cloud path.
+        self.default_registry = _STANDARD_REGISTRY
 
     def get_registries(self) -> List[str]:
-        """Returns a list of all configured registries, including the default Cloud API."""
-        # Primary: managed Entigram registry.
-        regs = ["https://api.entigram.ai/v1/registry"]
-        
-        # Secondary: Community Git Registry
-        if self.default_registry not in regs:
-            regs.append(self.default_registry)
-            
+        """Return registries available for the current authentication state.
+
+        The standard Worker registry is always available. It serves community
+        packages without credentials and accepts ``ENTIGRAM_TOKEN`` when a
+        premium package requires authenticated delivery. Additional public or
+        private Git registries can be added to the workspace manifest.
+        """
+        token = os.environ.get("ENTIGRAM_TOKEN")
+        regs = [self.default_registry]
+
         if self.manifest_path.exists():
             try:
                 with open(self.manifest_path, 'r') as f:
                     manifest = yaml.safe_load(f) or {}
                 for r in manifest.get('registries', []):
+                    if self._is_api_registry(r) and not token:
+                        continue
                     if r not in regs:
                         regs.append(r)
             except Exception as e:
@@ -154,6 +160,19 @@ class EntigramRegistry:
         """Heuristic to check if the registry is a Entigram API endpoint vs a Git repo."""
         return url.startswith("http") and not url.endswith(".git") and "api.entigram.ai" in url
 
+    def _find_package_path(self, registry_path: Path, package_name: str) -> Optional[Path]:
+        """Find a package at the registry root or in a conventional source tree."""
+        candidates = [package_name]
+        if "/" not in package_name:
+            candidates.append(f"@entigram/{package_name}")
+
+        for root in (registry_path, registry_path / "community-packages"):
+            for candidate in candidates:
+                package_path = root / candidate
+                if package_path.is_dir():
+                    return package_path
+        return None
+
     def _fetch_api_package(self, api_url: str, package_name: str) -> Optional[Path]:
         """
         Fetches a package tarball from the Entigram Cloud API registry and
@@ -170,23 +189,16 @@ class EntigramRegistry:
         # Managed delivery path for signed semantic mapping packages.
         print(f"🌐 [ENTIGRAM CLOUD] Resolving '{package_name}' via API: {api_url}")
         
-        token = os.environ.get("ENTIGRAM_TOKEN")
-        if not token:
-            print("❌ ENTIGRAM_TOKEN is not set for Cloud API. Set it to download premium packages.")
-            return None
-
         package_url = f"{api_url}/packages/{package_name}"
         
         try:
             import urllib.request
             
-            req = urllib.request.Request(
-                package_url, 
-                headers={
-                    "Authorization": token,
-                    "User-Agent": "Entigram-CLI/1.0"
-                }
-            )
+            headers = {"User-Agent": "Entigram-CLI/1.0"}
+            token = os.environ.get("ENTIGRAM_TOKEN")
+            if token:
+                headers["Authorization"] = token
+            req = urllib.request.Request(package_url, headers=headers)
             with urllib.request.urlopen(req) as response:
                 if response.status == 200:
                     cache_path.mkdir(parents=True, exist_ok=True)
@@ -237,13 +249,9 @@ class EntigramRegistry:
             if not cache_path:
                 continue
                 
-            source_pkg_path = cache_path / package_name
-            
-            # Legacy fallback: if package_name doesn't have a namespace, check @entigram/
-            if not source_pkg_path.exists() and "/" not in package_name:
-                source_pkg_path = cache_path / "@entigram" / package_name
+            source_pkg_path = self._find_package_path(cache_path, package_name)
 
-            if source_pkg_path.exists() and source_pkg_path.is_dir():
+            if source_pkg_path is not None:
                 # Legacy packages without provenance remain installable. Once a
                 # package advertises a manifest or signature, fail closed on any
                 # invalid or incomplete provenance instead of copying it.
@@ -320,18 +328,18 @@ class EntigramRegistry:
         registries = self.get_registries()
         
         for reg_url in registries:
-            cache_path = self._fetch_registry(reg_url)
-            if not cache_path: continue
-            
             for pkg_name, current_version in local_pkgs.items():
                 if pkg_name in updates_available: continue # already found an update
-                
-                source_pkg_path = cache_path / pkg_name
-                # Legacy fallback check
-                if not source_pkg_path.exists() and "/" not in pkg_name:
-                    source_pkg_path = cache_path / "@entigram" / pkg_name
 
-                if source_pkg_path.exists() and source_pkg_path.is_dir():
+                if self._is_api_registry(reg_url):
+                    cache_path = self._fetch_api_package(reg_url, pkg_name)
+                else:
+                    cache_path = self._fetch_registry(reg_url)
+                if not cache_path:
+                    continue
+
+                source_pkg_path = self._find_package_path(cache_path, pkg_name)
+                if source_pkg_path is not None:
                     pkg_manifest = source_pkg_path / ".etg" / "entigram.yaml"
                     if pkg_manifest.exists():
                         try:

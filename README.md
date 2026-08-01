@@ -209,6 +209,27 @@ If `--key` is omitted, Entigram creates `.etg/package_signing_ed25519_private.pe
 and keeps it out of version control. Package users can still suggest, inspect,
 and install packages without managing signing keys.
 
+Community packages are maintained in the public [`community-packages/`](community-packages/)
+tree and delivered through the standard package Worker at
+`https://api.entigram.ai/v1/registry`. Community package downloads do not
+require an Entigram Cloud key. The Worker can still use `ENTIGRAM_TOKEN` for
+premium packages that are not part of the public community tree.
+
+Entigram supports multiple package sources. Add a public or private Git
+registry to a workspace when a team maintains packages outside the core
+repository:
+
+```bash
+etg registry add --url https://github.com/example/my-entigram-packages.git
+etg package install --name @example/my-package
+```
+
+A Git package source may place packages at its repository root or under its
+own `community-packages/` directory. Package names are namespace-qualified so
+the Worker, the core community tree, and user registries can coexist like
+Maven repositories. Package source code remains reviewable in its source
+repository; the Worker is the delivery and caching layer.
+
 Before returning work to a human reviewer:
 
 ```bash

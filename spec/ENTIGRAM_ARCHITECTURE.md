@@ -39,9 +39,12 @@ container, IAM, or agent-runtime controls.
   proposals, conflict logging, and assessment posture through structured JSON.
 - **Sentinel:** performs limited package and LDS policy linting. It is not a
   malware scanner, dependency audit, or general repository vulnerability scan.
-- **Registry and package signing:** verify package contents and signature
-  integrity. A package signature is self-asserted until its key is matched to a
-  separately governed trusted-publisher registry.
+- **Registry and package signing:** resolve the default standard source through
+  the Cloudflare Worker, support additional Git sources, and verify package
+  contents and signature integrity. The public community source of truth is
+  `community-packages/` in the Entigram repository; the Worker is its delivery
+  and caching layer. A package signature is self-asserted until its key is
+  matched to a separately governed trusted-publisher registry.
 
 ## Data ownership
 

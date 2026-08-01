@@ -1,0 +1,268 @@
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix mk: <http://entigram.ai/ontology/custom#> .
+
+mk:Ontology a owl:Ontology ;
+    rdfs:label "Entigram Generated Ontology" .
+
+mk:Privacy_Profile a owl:Class ;
+    rdfs:label "Privacy_Profile" .
+
+mk:Data_Asset a owl:Class ;
+    rdfs:label "Data_Asset" .
+
+mk:Data_Field a owl:Class ;
+    rdfs:label "Data_Field" .
+
+mk:Privacy_Control a owl:Class ;
+    rdfs:label "Privacy_Control" .
+
+mk:Privacy_Evidence a owl:Class ;
+    rdfs:label "Privacy_Evidence" .
+
+mk:Privacy_Finding a owl:Class ;
+    rdfs:label "Privacy_Finding" .
+
+mk:Privacy_Profile_id a owl:DatatypeProperty ;
+    rdfs:domain mk:Privacy_Profile ;
+    rdfs:range xsd:string ;
+    rdfs:label "id" .
+
+mk:Privacy_Profile_profile_key a owl:DatatypeProperty ;
+    rdfs:domain mk:Privacy_Profile ;
+    rdfs:range xsd:string ;
+    rdfs:label "profile_key" .
+
+mk:Privacy_Profile_subject_ref a owl:DatatypeProperty ;
+    rdfs:domain mk:Privacy_Profile ;
+    rdfs:range xsd:string ;
+    rdfs:label "subject_ref" .
+
+mk:Privacy_Profile_assessed_at a owl:DatatypeProperty ;
+    rdfs:domain mk:Privacy_Profile ;
+    rdfs:range xsd:dateTime ;
+    rdfs:label "assessed_at" .
+
+mk:Data_Asset_id a owl:DatatypeProperty ;
+    rdfs:domain mk:Data_Asset ;
+    rdfs:range xsd:string ;
+    rdfs:label "id" .
+
+mk:Data_Asset_name a owl:DatatypeProperty ;
+    rdfs:domain mk:Data_Asset ;
+    rdfs:range xsd:string ;
+    rdfs:label "name" .
+
+mk:Data_Asset_owner a owl:DatatypeProperty ;
+    rdfs:domain mk:Data_Asset ;
+    rdfs:range xsd:string ;
+    rdfs:label "owner" .
+
+mk:Data_Asset_system_ref a owl:DatatypeProperty ;
+    rdfs:domain mk:Data_Asset ;
+    rdfs:range xsd:string ;
+    rdfs:label "system_ref" .
+
+mk:Data_Field_id a owl:DatatypeProperty ;
+    rdfs:domain mk:Data_Field ;
+    rdfs:range xsd:string ;
+    rdfs:label "id" .
+
+mk:Data_Field_name a owl:DatatypeProperty ;
+    rdfs:domain mk:Data_Field ;
+    rdfs:range xsd:string ;
+    rdfs:label "name" .
+
+mk:Data_Field_classification a owl:DatatypeProperty ;
+    rdfs:domain mk:Data_Field ;
+    rdfs:range xsd:string ;
+    rdfs:label "classification" .
+
+mk:Data_Field_pii_category a owl:DatatypeProperty ;
+    rdfs:domain mk:Data_Field ;
+    rdfs:range xsd:string ;
+    rdfs:label "pii_category" .
+
+mk:Data_Field_encrypted_at_rest a owl:DatatypeProperty ;
+    rdfs:domain mk:Data_Field ;
+    rdfs:range xsd:boolean ;
+    rdfs:label "encrypted_at_rest" .
+
+mk:Data_Field_retention_days a owl:DatatypeProperty ;
+    rdfs:domain mk:Data_Field ;
+    rdfs:range xsd:integer ;
+    rdfs:label "retention_days" .
+
+mk:Privacy_Control_id a owl:DatatypeProperty ;
+    rdfs:domain mk:Privacy_Control ;
+    rdfs:range xsd:string ;
+    rdfs:label "id" .
+
+mk:Privacy_Control_control_type a owl:DatatypeProperty ;
+    rdfs:domain mk:Privacy_Control ;
+    rdfs:range xsd:string ;
+    rdfs:label "control_type" .
+
+mk:Privacy_Control_scope a owl:DatatypeProperty ;
+    rdfs:domain mk:Privacy_Control ;
+    rdfs:range xsd:string ;
+    rdfs:label "scope" .
+
+mk:Privacy_Control_status a owl:DatatypeProperty ;
+    rdfs:domain mk:Privacy_Control ;
+    rdfs:range xsd:string ;
+    rdfs:label "status" .
+
+mk:Privacy_Control_evidence_ref a owl:DatatypeProperty ;
+    rdfs:domain mk:Privacy_Control ;
+    rdfs:range xsd:string ;
+    rdfs:label "evidence_ref" .
+
+mk:Privacy_Evidence_id a owl:DatatypeProperty ;
+    rdfs:domain mk:Privacy_Evidence ;
+    rdfs:range xsd:string ;
+    rdfs:label "id" .
+
+mk:Privacy_Evidence_evidence_ref a owl:DatatypeProperty ;
+    rdfs:domain mk:Privacy_Evidence ;
+    rdfs:range xsd:string ;
+    rdfs:label "evidence_ref" .
+
+mk:Privacy_Evidence_evidence_type a owl:DatatypeProperty ;
+    rdfs:domain mk:Privacy_Evidence ;
+    rdfs:range xsd:string ;
+    rdfs:label "evidence_type" .
+
+mk:Privacy_Evidence_observed_at a owl:DatatypeProperty ;
+    rdfs:domain mk:Privacy_Evidence ;
+    rdfs:range xsd:dateTime ;
+    rdfs:label "observed_at" .
+
+mk:Privacy_Finding_id a owl:DatatypeProperty ;
+    rdfs:domain mk:Privacy_Finding ;
+    rdfs:range xsd:string ;
+    rdfs:label "id" .
+
+mk:Privacy_Finding_code a owl:DatatypeProperty ;
+    rdfs:domain mk:Privacy_Finding ;
+    rdfs:range xsd:string ;
+    rdfs:label "code" .
+
+mk:Privacy_Finding_severity a owl:DatatypeProperty ;
+    rdfs:domain mk:Privacy_Finding ;
+    rdfs:range xsd:string ;
+    rdfs:label "severity" .
+
+mk:Privacy_Finding_message a owl:DatatypeProperty ;
+    rdfs:domain mk:Privacy_Finding ;
+    rdfs:range xsd:string ;
+    rdfs:label "message" .
+
+mk:Privacy_Finding_recommendation a owl:DatatypeProperty ;
+    rdfs:domain mk:Privacy_Finding ;
+    rdfs:range xsd:string ;
+    rdfs:label "recommendation" .
+
+mk:relates_Privacy_Profile_to_Data_Asset a owl:ObjectProperty ;
+    rdfs:domain mk:Privacy_Profile ;
+    rdfs:range mk:Data_Asset ;
+    rdfs:label "relates" .
+
+mk:relates_Data_Asset_to_Privacy_Profile a owl:ObjectProperty ;
+    owl:inverseOf mk:relates_Privacy_Profile_to_Data_Asset ;
+    rdfs:domain mk:Data_Asset ;
+    rdfs:range mk:Privacy_Profile ;
+    rdfs:label "inverse_relates" .
+
+mk:Data_Asset rdfs:subClassOf [
+        a owl:Restriction ;
+        owl:onProperty mk:relates_Data_Asset_to_Privacy_Profile ;
+        owl:maxCardinality 1
+    ] , [
+        a owl:Restriction ;
+        owl:onProperty mk:relates_Data_Asset_to_Privacy_Profile ;
+        owl:minCardinality 1
+    ] .
+
+mk:relates_Data_Asset_to_Data_Field a owl:ObjectProperty ;
+    rdfs:domain mk:Data_Asset ;
+    rdfs:range mk:Data_Field ;
+    rdfs:label "relates" .
+
+mk:relates_Data_Field_to_Data_Asset a owl:ObjectProperty ;
+    owl:inverseOf mk:relates_Data_Asset_to_Data_Field ;
+    rdfs:domain mk:Data_Field ;
+    rdfs:range mk:Data_Asset ;
+    rdfs:label "inverse_relates" .
+
+mk:Data_Field rdfs:subClassOf [
+        a owl:Restriction ;
+        owl:onProperty mk:relates_Data_Field_to_Data_Asset ;
+        owl:maxCardinality 1
+    ] , [
+        a owl:Restriction ;
+        owl:onProperty mk:relates_Data_Field_to_Data_Asset ;
+        owl:minCardinality 1
+    ] .
+
+mk:relates_Privacy_Profile_to_Privacy_Control a owl:ObjectProperty ;
+    rdfs:domain mk:Privacy_Profile ;
+    rdfs:range mk:Privacy_Control ;
+    rdfs:label "relates" .
+
+mk:relates_Privacy_Control_to_Privacy_Profile a owl:ObjectProperty ;
+    owl:inverseOf mk:relates_Privacy_Profile_to_Privacy_Control ;
+    rdfs:domain mk:Privacy_Control ;
+    rdfs:range mk:Privacy_Profile ;
+    rdfs:label "inverse_relates" .
+
+mk:Privacy_Control rdfs:subClassOf [
+        a owl:Restriction ;
+        owl:onProperty mk:relates_Privacy_Control_to_Privacy_Profile ;
+        owl:maxCardinality 1
+    ] , [
+        a owl:Restriction ;
+        owl:onProperty mk:relates_Privacy_Control_to_Privacy_Profile ;
+        owl:minCardinality 1
+    ] .
+
+mk:relates_Privacy_Control_to_Privacy_Evidence a owl:ObjectProperty ;
+    rdfs:domain mk:Privacy_Control ;
+    rdfs:range mk:Privacy_Evidence ;
+    rdfs:label "relates" .
+
+mk:relates_Privacy_Evidence_to_Privacy_Control a owl:ObjectProperty ;
+    owl:inverseOf mk:relates_Privacy_Control_to_Privacy_Evidence ;
+    rdfs:domain mk:Privacy_Evidence ;
+    rdfs:range mk:Privacy_Control ;
+    rdfs:label "inverse_relates" .
+
+mk:Privacy_Evidence rdfs:subClassOf [
+        a owl:Restriction ;
+        owl:onProperty mk:relates_Privacy_Evidence_to_Privacy_Control ;
+        owl:maxCardinality 1
+    ] .
+
+mk:relates_Privacy_Profile_to_Privacy_Finding a owl:ObjectProperty ;
+    rdfs:domain mk:Privacy_Profile ;
+    rdfs:range mk:Privacy_Finding ;
+    rdfs:label "relates" .
+
+mk:relates_Privacy_Finding_to_Privacy_Profile a owl:ObjectProperty ;
+    owl:inverseOf mk:relates_Privacy_Profile_to_Privacy_Finding ;
+    rdfs:domain mk:Privacy_Finding ;
+    rdfs:range mk:Privacy_Profile ;
+    rdfs:label "inverse_relates" .
+
+mk:Privacy_Finding rdfs:subClassOf [
+        a owl:Restriction ;
+        owl:onProperty mk:relates_Privacy_Finding_to_Privacy_Profile ;
+        owl:maxCardinality 1
+    ] , [
+        a owl:Restriction ;
+        owl:onProperty mk:relates_Privacy_Finding_to_Privacy_Profile ;
+        owl:minCardinality 1
+    ] .
+

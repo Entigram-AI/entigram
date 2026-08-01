@@ -13,7 +13,7 @@ class RepositoryOwnershipTests(unittest.TestCase):
                 "https://github.com/Entigram-AI/entigram/issues",
             ),
             "entigram/registry.py": (
-                "git@github.com:Entigram-AI/entigram-standard-packages.git",
+                "https://api.entigram.ai/v1/registry",
             ),
             ".github/workflows/release-please.yml": (
                 "repository: Entigram-AI/homebrew-entigram",

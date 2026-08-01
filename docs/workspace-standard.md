@@ -328,6 +328,22 @@ etg package verify-catalog --catalog standard_package_catalog.json
 Local exploration should not require signature management, but CI, registries,
 and enterprise workflows can enforce signatures.
 
+### Package sources and delivery
+
+The default standard source is the Entigram Cloudflare Worker:
+`https://api.entigram.ai/v1/registry`. The Worker serves packages from the
+public `Entigram-AI/entigram/community-packages/` tree without a cloud key and
+can authorize premium packages separately. The Worker is a distribution
+endpoint, not the source-of-truth repository.
+
+Entigram also supports multiple Git package sources. Add them with
+`etg registry add --url <git-url>`; a source may expose namespace-qualified
+packages at its repository root or beneath `community-packages/`. This lets
+users develop packages in their own repositories and share them without
+requiring every community package to be merged into Entigram. Package names
+must remain namespace-qualified to avoid collisions, and signed manifests
+should travel with the package artifact.
+
 ## Portability Rules
 
 The local workspace must remain useful without a hosted service:
