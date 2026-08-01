@@ -545,13 +545,26 @@ def _concise_hydration_payload(full_payload: dict, schema_content: str) -> dict:
         }
     }
     posture = boot.get("security_posture") or {}
+    advisories = posture.get("advisories", [])
+    detected_techs = posture.get("detected_technologies", [])
+    recommended_packages = sorted(set(
+        pkg
+        for adv in advisories
+        for pkg in adv.get("recommended_packages", [])
+    ))
     summary["ENTIGRAM_BOOT_SUMMARY"].update(
         {
             "assessment_mode": posture.get("mode", "off"),
+            "detected_technologies": detected_techs,
             "missing_security_capabilities": posture.get("missing_capabilities", []),
-            "risk_advisories": posture.get("advisories", []),
+            "recommended_assessment_packages": recommended_packages,
+            "risk_advisories": advisories,
         }
     )
+    if detected_techs:
+        summary["ENTIGRAM_BOOT_SUMMARY"]["next_commands"].append(
+            "etg assess --adapter <name> --adapter-module <path> --allow-executable-adapter --subject-type sha256 --subject-file <path>"
+        )
     return summary
 
 
@@ -673,51 +686,6 @@ def get_hydration_vector(target_path: Path, compact: bool = False, full: bool = 
     output += f"\n--- SEQUENCE COMPLETE ---"
     return output
 
-def launch_ui(target_dir=None):
-    """Launches the Streamlit UI dashboard."""
-    import subprocess
-    if importlib.util.find_spec("streamlit") is None:
-        print("❌ Streamlit is not installed in this environment.")
-        print("The CLI/MCP runtime is headless by default.")
-        print("For pipx installs: pipx install 'entigram-ai[ui]'")
-        print("For an existing pipx install: pipx inject entigram-ai streamlit")
-        print("For Homebrew installs, run the MCP/CLI normally or install the UI with pipx.")
-        return False
-
-    ui_path = Path(__file__).parent.parent / "ui" / "app.py"
-    print(f"🚀 Launching Entigram Visual Dashboard...")
-    try:
-        # Pass the directory to the UI via environment variable
-        env = os.environ.copy()
-        
-        # Resolve target directory (search upwards if not provided)
-        if not target_dir:
-            root = find_project_root(os.getcwd())
-            target_dir = str(root) if root else os.getcwd()
-        
-        env["ENTIGRAM_PROJECT_DIR"] = str(Path(target_dir).expanduser().resolve())
-        
-        # Invoke streamlit via the current python interpreter to ensure it works in venvs (like Brew)
-        subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "streamlit",
-                "run",
-                str(ui_path),
-                "--server.address=127.0.0.1",
-                "--server.enableXsrfProtection=true",
-            ],
-            env=env,
-            check=True,
-        )
-        return True
-    except KeyboardInterrupt:
-        print("\n👋 Dashboard stopped.")
-        return True
-    except Exception as e:
-        print(f"❌ Failed to launch dashboard: {e}")
-        return False
 
 
 def _paused_command_allowed(args) -> bool:
@@ -848,8 +816,11 @@ def _main():
     discover_parser.add_argument("--report-json", action="store_true", help="Print a structured discovery report instead of only LDS")
 
     # assessment command
-    assess_parser = subparsers.add_parser("assess", help="Run a package-provided read-only assessment")
-    assess_parser.add_argument("--adapter", required=True, help="Registered assessment adapter name")
+    assess_parser = subparsers.add_parser(
+        "assess",
+        help="Run assessments, view the security catalog, or request access to assessment packages",
+    )
+    assess_parser.add_argument("--adapter", help="Registered assessment adapter name")
     assess_parser.add_argument("--adapter-module", help="Explicit local assessment_adapter.py module; CLI only")
     assess_parser.add_argument(
         "--allow-executable-adapter",
@@ -859,8 +830,8 @@ def _main():
             "installed package adapters remain disabled until publisher trust and isolation exist"
         ),
     )
-    assess_parser.add_argument("--subject-type", required=True, help="Assessment subject type, such as sha256")
-    assess_subject_group = assess_parser.add_mutually_exclusive_group(required=True)
+    assess_parser.add_argument("--subject-type", help="Assessment subject type, such as sha256")
+    assess_subject_group = assess_parser.add_mutually_exclusive_group()
     assess_subject_group.add_argument("--subject", help="Assessment subject reference")
     assess_subject_group.add_argument(
         "--subject-file",
@@ -870,6 +841,16 @@ def _main():
     assess_parser.add_argument("--dir", default=".", help="Target Entigram workspace")
     assess_parser.add_argument("--out", help="Write the structured assessment result to a JSON file")
     assess_parser.add_argument("--json", action="store_true", dest="json_output", help="Print structured JSON")
+    assess_parser.add_argument(
+        "--catalog",
+        action="store_true",
+        help="List available assessment packages and detected workspace technologies",
+    )
+    assess_parser.add_argument(
+        "--request-access",
+        metavar="PACKAGE",
+        help="Request access to an assessment package (e.g. @entigram/api-security)",
+    )
 
     # merge command
     merge_parser = subparsers.add_parser("merge", help="Merge a remote schema and state ledger into the local workspace")
@@ -1104,9 +1085,6 @@ def _main():
         help="Maximum characters to keep for each tool result when compaction is enabled",
     )
 
-    # ui command
-    ui_parser = subparsers.add_parser("ui", help="Launch the Entigram Visual Dashboard")
-    ui_parser.add_argument("--dir", default=".", help="Target directory")
 
     # agent command
     agent_launch_parser = subparsers.add_parser("agent", help="Start agent boot, show instructions, or launch your configured AI agent")
@@ -1826,16 +1804,83 @@ def _main():
 
     elif args.command == "assess":
         from entigram.assessment import (
+            AssessmentConfigurationError,
             AssessmentSubject,
             assessment_decision,
             assess_subject,
             assess_with_installed_adapter,
+            build_assessment_catalog,
             load_assessment_adapter_module,
             load_installed_assessment_adapters,
+            record_package_access_request,
             workspace_security_posture,
         )
         try:
             target_dir = Path(args.dir).expanduser().resolve()
+
+            # --- catalog mode ---
+            if args.catalog or (not args.adapter and not args.request_access):
+                catalog = build_assessment_catalog(target_dir)
+                if args.json_output:
+                    print(json.dumps(catalog, indent=2, sort_keys=True))
+                else:
+                    detected = catalog["detected_technologies"]
+                    if detected:
+                        print("🔍 Detected Technologies:")
+                        for tech in detected:
+                            print(f"  • {tech['label']} (matched: {', '.join(tech['matched_signals'])})")
+                            print(f"    Frameworks: {', '.join(tech['frameworks'])}")
+                        print()
+
+                    recommended = catalog["recommended_packages"]
+                    if recommended:
+                        print("📦 Recommended Assessment Packages:")
+                        for pkg in recommended:
+                            tier_label = f" [{pkg['tier'].upper()}]" if pkg["tier"] != "standard" else ""
+                            print(f"  {pkg['package']}{tier_label}")
+                            print(f"    {pkg['description']}")
+                            print(f"    Capabilities: {', '.join(pkg['capabilities'])}")
+                            print(f"    Frameworks: {', '.join(pkg['frameworks'])}")
+                            print(f"    → Request access: etg assess --request-access {pkg['package']}")
+                            print()
+                    else:
+                        print("✅ No workspace-specific packages recommended.")
+                        print()
+
+                    other = catalog["other_packages"]
+                    if other:
+                        print(f"📋 Other Available Packages ({len(other)}):")
+                        for pkg in other:
+                            tier_label = f" [{pkg['tier'].upper()}]" if pkg["tier"] != "standard" else ""
+                            print(f"  {pkg['package']}{tier_label} — {pkg['description']}")
+                        print()
+
+                    print(f"🌐 Full catalog: etg assess --catalog")
+                    print(f"   Request access: etg assess --request-access <package-name>")
+                    print(f"   Or email: developer@entigram.com")
+                return
+
+            # --- request-access mode ---
+            if args.request_access:
+                record = record_package_access_request(target_dir, args.request_access)
+                if args.json_output:
+                    print(json.dumps(record, indent=2, sort_keys=True))
+                else:
+                    print(f"✅ Access request recorded for {record['package']}")
+                    print(f"   Description: {record['description']}")
+                    print(f"   Tier: {record['tier'].upper()}")
+                    print(f"   Capabilities: {', '.join(record['capabilities'])}")
+                    print(f"   Frameworks: {', '.join(record['frameworks'])}")
+                    print()
+                    print(f"   📧 Email developer@entigram.com to complete your request")
+                    print(f"   📁 Request saved: .etg/access_requests/")
+                return
+
+            # --- run assessment mode (requires --adapter) ---
+            if not args.subject_type or not (args.subject or args.subject_file):
+                print("Assessment run requires --adapter, --subject-type, and --subject or --subject-file.")
+                print("Run 'etg assess' without flags to see available packages.")
+                sys.exit(1)
             subject_file = None
             subject_ref = args.subject
             if args.subject_file:
@@ -1931,7 +1976,11 @@ def _main():
                     if finding.recommendation:
                         print(f"    Recommendation: {finding.recommendation}")
                 for advisory in posture["advisories"]:
-                    print(f"  [{advisory['severity'].upper()}] {advisory['message']}")
+                    ack_tag = " ACKNOWLEDGED" if advisory.get("acknowledged") else ""
+                    print(f"  [{advisory['severity'].upper()}{ack_tag}] {advisory['message']}")
+                    if advisory.get("acknowledged"):
+                        print(f"    Suppressed by: {advisory.get('suppressed_by', 'unknown')}")
+                        print(f"    Rationale: {advisory.get('suppression_rationale', 'N/A')}")
                     for mitigation in advisory.get("free_mitigations", []):
                         print(f"    Mitigation: {mitigation}")
                 if decision["required_capabilities_unassessed"]:
@@ -1946,8 +1995,10 @@ def _main():
                 sys.exit(2)
             if decision["decision"] == "review_required":
                 sys.exit(3)
-        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        except (OSError, ValueError, TypeError, json.JSONDecodeError,
+                AssessmentConfigurationError) as exc:
             print(f"Assessment failed: {exc}")
+
             sys.exit(1)
 
     elif args.command == "merge":
@@ -2228,9 +2279,6 @@ def _main():
         else:
             print(vector)
 
-    elif args.command == "ui":
-        if not launch_ui(args.dir):
-            sys.exit(1)
 
     elif args.command == "agent-instructions":
         print(_agent_instructions_text())
@@ -3359,7 +3407,6 @@ def _track_cli_operation(operation: str, argv) -> bool:
         "panel-bridge",
         "cloudflare-ollama-proxy",
         "cloudflare-claude",
-        "ui",
         "interview",
         "model",
     }:

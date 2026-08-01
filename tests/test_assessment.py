@@ -455,5 +455,259 @@ class TestAssessmentCLI(unittest.TestCase):
             self.assertIn("SUBJECT_CHANGED_DURING_ASSESSMENT", payload["reason_codes"])
 
 
+class TestTechnologyDetection(unittest.TestCase):
+    """Tests for workspace technology detection and proactive advisories."""
+
+    def test_web_frontend_detected_by_package_json(self):
+        from entigram.assessment import detect_workspace_technologies
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "package.json").write_text("{}")
+            detected = detect_workspace_technologies(root)
+            techs = [t["technology"] for t in detected]
+            self.assertIn("web-frontend", techs)
+            match = next(t for t in detected if t["technology"] == "web-frontend")
+            self.assertIn("package.json", match["matched_signals"])
+            self.assertIn("OWASP Top 10", match["frameworks"])
+
+    def test_api_backend_detected_by_requirements_txt(self):
+        from entigram.assessment import detect_workspace_technologies
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "requirements.txt").write_text("flask\n")
+            detected = detect_workspace_technologies(root)
+            techs = [t["technology"] for t in detected]
+            self.assertIn("web-api", techs)
+            match = next(t for t in detected if t["technology"] == "web-api")
+            self.assertIn("OWASP API Security Top 10", match["frameworks"])
+
+    def test_container_detected_by_dockerfile(self):
+        from entigram.assessment import detect_workspace_technologies
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "Dockerfile").write_text("FROM python:3.13\n")
+            detected = detect_workspace_technologies(root)
+            techs = [t["technology"] for t in detected]
+            self.assertIn("container", techs)
+
+    def test_no_signals_produces_no_detections(self):
+        from entigram.assessment import detect_workspace_technologies
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "README.md").write_text("hello")
+            detected = detect_workspace_technologies(root)
+            self.assertEqual(detected, [])
+
+    def test_inactive_posture_with_web_frontend_emits_advisory(self):
+        from entigram.assessment import workspace_security_posture
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            etg_dir = root / ".etg"
+            etg_dir.mkdir()
+            (etg_dir / "entigram.yaml").write_text(
+                yaml.dump({"status": "initialized", "packages": {}})
+            )
+            (root / "package.json").write_text("{}")
+            posture = workspace_security_posture(root)
+            self.assertFalse(posture["configured"])
+            self.assertFalse(posture["enforcement_blocked"])
+            self.assertGreater(len(posture["advisories"]), 0)
+            advisory = posture["advisories"][0]
+            self.assertEqual(advisory["code"], "ETG-RISK-UNCONFIGURED-TECHNOLOGY")
+            self.assertEqual(advisory["severity"], "warning")
+            self.assertFalse(advisory["acknowledged"])
+            self.assertTrue(advisory["user_dismissable"])
+            self.assertIn("web frontend", advisory["message"].lower())
+            self.assertIn("OWASP Top 10", advisory["compatible_frameworks"])
+            self.assertIn("web-frontend", posture.get("detected_technologies", []))
+            # Custom adapter mitigation should always be offered
+            adapter_mitigations = [m for m in advisory["free_mitigations"] if "adapter" in m.lower()]
+            self.assertGreater(len(adapter_mitigations), 0)
+
+    def test_inactive_posture_without_signals_has_no_advisories(self):
+        from entigram.assessment import workspace_security_posture
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            etg_dir = root / ".etg"
+            etg_dir.mkdir()
+            (etg_dir / "entigram.yaml").write_text(
+                yaml.dump({"status": "initialized", "packages": {}})
+            )
+            posture = workspace_security_posture(root)
+            self.assertFalse(posture["configured"])
+            self.assertEqual(posture["advisories"], [])
+
+    def test_multiple_technologies_produce_multiple_advisories(self):
+        from entigram.assessment import workspace_security_posture
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            etg_dir = root / ".etg"
+            etg_dir.mkdir()
+            (etg_dir / "entigram.yaml").write_text(
+                yaml.dump({"status": "initialized", "packages": {}})
+            )
+            (root / "package.json").write_text("{}")
+            (root / "Dockerfile").write_text("FROM node:20\n")
+            (root / "requirements.txt").write_text("django\n")
+            posture = workspace_security_posture(root)
+            techs = posture.get("detected_technologies", [])
+            self.assertIn("web-frontend", techs)
+            self.assertIn("web-api", techs)
+            self.assertIn("container", techs)
+            self.assertEqual(len(posture["advisories"]), 3)
+
+    def test_configured_posture_does_not_duplicate_tech_advisories(self):
+        """When external_artifacts is configured, tech advisories should not appear."""
+        manifest = {
+            "external_artifacts": {
+                "modalities": ["image"],
+                "trust": "untrusted",
+                "mode": "advisory",
+                "required_capabilities": ["artifact-reputation/v1"],
+            }
+        }
+        posture = compute_security_posture(manifest, ["artifact-reputation/v1"])
+        self.assertTrue(posture["configured"])
+        codes = [a.get("code") for a in posture["advisories"]]
+        self.assertNotIn("ETG-RISK-UNCONFIGURED-TECHNOLOGY", codes)
+
+    def test_suppressed_advisory_still_shown_as_acknowledged(self):
+        """Suppressed findings are always shown, never hidden."""
+        from entigram.assessment import workspace_security_posture
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            etg_dir = root / ".etg"
+            etg_dir.mkdir()
+            (etg_dir / "entigram.yaml").write_text(
+                yaml.dump({"status": "initialized", "packages": {}})
+            )
+            (root / "package.json").write_text("{}")
+            # Write suppression
+            (etg_dir / "assessment-suppressions.yaml").write_text(
+                yaml.dump({
+                    "web-frontend": {
+                        "rationale": "Static marketing site, no dynamic user input.",
+                        "suppressed_by": "tech-lead",
+                    }
+                })
+            )
+            posture = workspace_security_posture(root)
+            # Advisory is still present, never hidden
+            self.assertGreater(len(posture["advisories"]), 0)
+            advisory = posture["advisories"][0]
+            self.assertEqual(advisory["severity"], "warning")
+            self.assertTrue(advisory["acknowledged"])
+            self.assertEqual(advisory["suppressed_by"], "tech-lead")
+            self.assertIn("Static marketing site", advisory["suppression_rationale"])
+
+    def test_suppression_without_rationale_is_ignored(self):
+        """Suppressions require a rationale — empty ones are rejected."""
+        from entigram.assessment import workspace_security_posture
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            etg_dir = root / ".etg"
+            etg_dir.mkdir()
+            (etg_dir / "entigram.yaml").write_text(
+                yaml.dump({"status": "initialized", "packages": {}})
+            )
+            (root / "package.json").write_text("{}")
+            (etg_dir / "assessment-suppressions.yaml").write_text(
+                yaml.dump({"web-frontend": {"rationale": ""}})
+            )
+            posture = workspace_security_posture(root)
+            advisory = posture["advisories"][0]
+            # Suppression with empty rationale is not honored
+            self.assertFalse(advisory["acknowledged"])
+
+
+class TestAssessmentCatalog(unittest.TestCase):
+    """Tests for the assessment package catalog and request-access flow."""
+
+    def test_catalog_returns_all_packages(self):
+        from entigram.assessment import get_assessment_catalog
+
+        catalog = get_assessment_catalog()
+        self.assertGreater(len(catalog), 0)
+        packages = [p["package"] for p in catalog]
+        self.assertIn("@entigram/api-security", packages)
+        self.assertIn("@entigram/data-privacy", packages)
+        for pkg in catalog:
+            self.assertIn("capabilities", pkg)
+            self.assertIn("frameworks", pkg)
+            self.assertIn("tier", pkg)
+            self.assertIn("access_url", pkg)
+            self.assertTrue(pkg["access_url"].startswith("mailto:"))
+
+    def test_workspace_aware_catalog_recommends_relevant_packages(self):
+        from entigram.assessment import build_assessment_catalog
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "package.json").write_text("{}")
+            (root / "Dockerfile").write_text("FROM node:20\n")
+            catalog = build_assessment_catalog(root)
+            recommended_names = [p["package"] for p in catalog["recommended_packages"]]
+            self.assertIn("@entigram/web-security", recommended_names)
+            self.assertIn("@entigram/container-security", recommended_names)
+            for pkg in catalog["recommended_packages"]:
+                self.assertTrue(pkg["relevant_to_workspace"])
+                self.assertGreater(len(pkg["matched_technologies"]), 0)
+
+    def test_workspace_aware_catalog_with_no_signals(self):
+        from entigram.assessment import build_assessment_catalog
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            catalog = build_assessment_catalog(root)
+            self.assertEqual(catalog["recommended_packages"], [])
+            self.assertGreater(len(catalog["other_packages"]), 0)
+
+    def test_request_access_records_to_file(self):
+        from entigram.assessment import record_package_access_request
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / ".etg").mkdir()
+            record = record_package_access_request(root, "@entigram/api-security")
+            self.assertEqual(record["package"], "@entigram/api-security")
+            self.assertEqual(record["tier"], "standard")
+            self.assertIn("requested_at", record)
+            self.assertTrue(record["access_url"].startswith("mailto:"))
+            request_file = root / ".etg" / "access_requests" / "entigram_api-security.json"
+            self.assertTrue(request_file.is_file())
+            import json
+            persisted = json.loads(request_file.read_text())
+            self.assertEqual(persisted["package"], "@entigram/api-security")
+
+    def test_request_access_rejects_unknown_package(self):
+        from entigram.assessment import record_package_access_request
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / ".etg").mkdir()
+            with self.assertRaises(ValueError) as ctx:
+                record_package_access_request(root, "@entigram/does-not-exist")
+            self.assertIn("Unknown package", str(ctx.exception))
+
+    def test_request_access_rejects_invalid_package_name(self):
+        from entigram.assessment import record_package_access_request
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / ".etg").mkdir()
+            with self.assertRaises(ValueError) as ctx:
+                record_package_access_request(root, "bad-name")
+            self.assertIn("Invalid package name", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

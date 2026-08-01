@@ -27,9 +27,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-ui = [
-    "streamlit>=1.35.0",
-]
 panel = [
     "websockets>=13.0",
     "aiohttp>=3.10.0",
@@ -58,7 +55,6 @@ packages = [
     "entigram.ontology_compiler", 
     "entigram.sensing", 
     "entigram.sqlite_ledger", 
-    "entigram.ui", 
     "entigram.templates"
 ]
 
@@ -69,5 +65,4 @@ entigram = [
     "templates/**/*.md",
     "templates/**/*.py",
     "templates/**/.gitignore",
-    "ui/media/*.svg",
 ]

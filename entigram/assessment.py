@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -372,7 +373,7 @@ def workspace_security_posture(
     root = Path(target_dir).expanduser().resolve()
     manifest_path = root / ".etg" / "entigram.yaml"
     if not manifest_path.is_file():
-        return _inactive_posture()
+        return _inactive_posture(root)
 
     try:
         import yaml
@@ -386,15 +387,20 @@ def workspace_security_posture(
         else:
             capabilities = sorted(set(provided_capabilities))
             _validate_capabilities(capabilities, "provided capabilities", allow_empty=True)
-        return compute_security_posture(manifest, capabilities)
-    except AssessmentConfigurationError as exc:
+        return compute_security_posture(manifest, capabilities, root=root)
+    except (AssessmentConfigurationError, yaml.YAMLError, OSError, UnicodeDecodeError) as exc:
         return _invalid_posture(str(exc))
 
 
-def compute_security_posture(manifest: Mapping[str, Any], provided_capabilities: Iterable[str]) -> Dict[str, Any]:
+def compute_security_posture(
+    manifest: Mapping[str, Any],
+    provided_capabilities: Iterable[str],
+    *,
+    root: Optional[Path] = None,
+) -> Dict[str, Any]:
     config = manifest.get("external_artifacts")
     if config is None:
-        return _inactive_posture()
+        return _inactive_posture(root)
     if not isinstance(config, dict):
         raise AssessmentConfigurationError("external_artifacts must be an object")
 
@@ -437,7 +443,11 @@ def compute_security_posture(manifest: Mapping[str, Any], provided_capabilities:
     }
 
 
-def _inactive_posture() -> Dict[str, Any]:
+def _inactive_posture(root: Optional[Path] = None) -> Dict[str, Any]:
+    advisories = []
+    if root is not None:
+        detected = detect_workspace_technologies(root)
+        advisories = _technology_advisories(detected, root=root)
     return {
         "configured": False,
         "valid": True,
@@ -447,8 +457,243 @@ def _inactive_posture() -> Dict[str, Any]:
         "provided_capabilities": [],
         "missing_capabilities": [],
         "enforcement_blocked": False,
-        "advisories": [],
+        "advisories": advisories,
+        "detected_technologies": (
+            [t["technology"] for t in (detected if root is not None else [])]
+        ),
     }
+
+
+# ---------------------------------------------------------------------------
+# Workspace technology detection
+# ---------------------------------------------------------------------------
+
+_TECHNOLOGY_SIGNALS: List[Dict[str, Any]] = [
+    {
+        "technology": "web-frontend",
+        "label": "Web Frontend",
+        "signals": ["package.json", "next.config.js", "next.config.mjs", "next.config.ts",
+                    "vite.config.js", "vite.config.ts", "angular.json", "nuxt.config.ts"],
+        "frameworks": ["OWASP Top 10", "OWASP ASVS", "SANS/CWE Top 25"],
+        "recommended_checks": [
+            "Cross-site scripting (XSS) prevention (OWASP A7, CWE-79)",
+            "Content Security Policy (CSP) headers",
+            "Dependency vulnerability scanning (npm audit / Snyk)",
+            "Client-side input validation (CWE-20)",
+            "Sensitive data exposure in browser storage (OWASP A2)",
+        ],
+        "recommended_packages": ["@entigram/web-security"],
+    },
+    {
+        "technology": "web-api",
+        "label": "Web API / Backend",
+        "signals": ["app.py", "main.py", "manage.py", "server.py",
+                    "requirements.txt", "Gemfile", "go.mod", "pom.xml",
+                    "build.gradle", "Cargo.toml"],
+        "frameworks": ["OWASP Top 10", "OWASP API Security Top 10", "SANS/CWE Top 25",
+                       "NIST 800-53 (AC, SC)"],
+        "recommended_checks": [
+            "Authentication and authorization controls (OWASP A1, A7)",
+            "Injection prevention — SQL, NoSQL, OS command (OWASP A3, CWE-89)",
+            "Rate limiting and abuse prevention (API4:2023)",
+            "Secrets management — no hardcoded credentials (CWE-798)",
+            "Server-side request forgery prevention (OWASP A10, CWE-918)",
+            "Security logging and monitoring (OWASP A9)",
+        ],
+        "recommended_packages": ["@entigram/api-security", "@entigram/dependency-audit"],
+    },
+    {
+        "technology": "container",
+        "label": "Container / Infrastructure",
+        "signals": ["Dockerfile", "docker-compose.yml", "docker-compose.yaml",
+                    "kubernetes", "k8s", "helm"],
+        "frameworks": ["CIS Docker Benchmark", "OWASP Docker Security", "NIST 800-190",
+                       "SLSA (Supply-chain Levels for Software Artifacts)"],
+        "recommended_checks": [
+            "Base image provenance and vulnerability scanning",
+            "Least-privilege container configuration (CIS 5.x)",
+            "No secrets baked into images (CIS 4.10)",
+            "Network policy and resource limits",
+            "Image signing and attestation (SLSA L2+)",
+        ],
+        "recommended_packages": ["@entigram/container-security"],
+    },
+    {
+        "technology": "infrastructure-as-code",
+        "label": "Infrastructure as Code",
+        "signals": ["main.tf", "terraform", "pulumi", "cloudformation",
+                    "cdk.json", "serverless.yml"],
+        "frameworks": ["CIS Cloud Benchmarks", "NIST 800-53", "SOC 2 (CC6, CC7)"],
+        "recommended_checks": [
+            "Least-privilege IAM policies (NIST AC-6)",
+            "Encryption at rest and in transit (NIST SC-28, SC-8)",
+            "Network segmentation and security groups",
+            "State file protection and access control",
+            "Drift detection between declared and actual state",
+        ],
+        "recommended_packages": ["@entigram/iac-security"],
+    },
+    {
+        "technology": "mobile-app",
+        "label": "Mobile Application",
+        "signals": ["android", "ios", "AndroidManifest.xml",
+                    "Info.plist", "pubspec.yaml", "expo"],
+        "frameworks": ["OWASP MASVS", "OWASP Mobile Top 10", "NIST 800-163"],
+        "recommended_checks": [
+            "Secure local storage (MASVS-STORAGE)",
+            "Certificate pinning (MASVS-NETWORK)",
+            "Sensitive data exposure in logs (MASVS-STORAGE-2)",
+            "Binary protection and tamper detection (MASVS-RESILIENCE)",
+        ],
+        "recommended_packages": ["@entigram/mobile-security"],
+    },
+    {
+        "technology": "supply-chain",
+        "label": "Software Supply Chain",
+        "signals": ["package-lock.json", "yarn.lock", "poetry.lock", "Pipfile.lock",
+                    "go.sum", "Cargo.lock", "Gemfile.lock", "pnpm-lock.yaml"],
+        "frameworks": ["SLSA", "NIST SSDF (800-218)", "OpenSSF Scorecard",
+                       "SANS/CWE Top 25 (CWE-1357)"],
+        "recommended_checks": [
+            "Dependency vulnerability scanning and SCA",
+            "Lockfile integrity verification",
+            "Transitive dependency review",
+            "Known-malicious package detection",
+            "License compliance scanning",
+        ],
+        "recommended_packages": ["@entigram/dependency-audit", "@entigram/artifact-risk"],
+    },
+    {
+        "technology": "data-processing",
+        "label": "Data Processing / PII",
+        "signals": ["models.py", "schema.prisma", "migrations",
+                    "alembic", "flyway", "liquibase"],
+        "frameworks": ["OWASP Top 10 (A2 — Cryptographic Failures)",
+                       "PCI DSS v4.0", "SOC 2 (CC6.1)", "GDPR Art. 32"],
+        "recommended_checks": [
+            "PII detection and classification in data models",
+            "Encryption at rest for sensitive columns",
+            "Access control on data migration scripts",
+            "Audit logging for data access patterns",
+            "Data retention and deletion policies",
+        ],
+        "recommended_packages": ["@entigram/data-privacy"],
+    },
+]
+
+
+def detect_workspace_technologies(root: Path) -> List[Dict[str, Any]]:
+    """Detect workspace technologies by checking for signal files/directories."""
+    detected = []
+    for tech in _TECHNOLOGY_SIGNALS:
+        matched_signals = []
+        for signal in tech["signals"]:
+            candidate = root / signal
+            if candidate.exists():
+                matched_signals.append(signal)
+        if matched_signals:
+            detected.append({
+                "technology": tech["technology"],
+                "label": tech["label"],
+                "matched_signals": matched_signals,
+                "frameworks": tech["frameworks"],
+                "recommended_checks": tech["recommended_checks"],
+                "recommended_packages": tech.get("recommended_packages", []),
+            })
+    return detected
+
+
+def _technology_advisories(
+    detected: List[Dict[str, Any]],
+    root: Optional[Path] = None,
+) -> List[Dict[str, Any]]:
+    """Generate advisories for detected technologies without security config.
+
+    Severity is 'warning' by default — the system always raises flags.
+    Users can suppress non-critical findings via .etg/assessment-suppressions.yaml,
+    but suppressed findings are still shown as acknowledged, never hidden.
+    Users can also develop their own mitigation adapter to address the finding.
+    """
+    suppressions = _load_assessment_suppressions(root) if root is not None else {}
+    advisories = []
+    for tech in detected:
+        packages = tech.get("recommended_packages", [])
+        tech_id = tech["technology"]
+        suppression = suppressions.get(tech_id)
+        acknowledged = suppression is not None
+        mitigations = [
+            f"Configure external_artifacts in .etg/entigram.yaml to enable "
+            f"assessment-driven security posture for {tech['label'].lower()} workloads.",
+        ]
+        if tech.get("frameworks"):
+            mitigations.append(
+                f"Review {tech['frameworks'][0]} guidelines for your technology stack."
+            )
+        mitigations.extend([
+            "Run dependency and vulnerability scanning as part of your CI pipeline.",
+            f"Develop a custom assessment adapter: etg assess --adapter-module <path> --allow-executable-adapter",
+        ])
+        if packages:
+            mitigations.append(
+                f"Install assessment packages for automated checks: "
+                f"{', '.join(packages)}"
+            )
+        if not acknowledged:
+            mitigations.append(
+                f"Suppress this advisory after review: add '{tech_id}' to "
+                f".etg/assessment-suppressions.yaml with a rationale."
+            )
+        advisory = {
+            "code": "ETG-RISK-UNCONFIGURED-TECHNOLOGY",
+            "severity": "warning",
+            "technology": tech_id,
+            "label": tech["label"],
+            "matched_signals": tech["matched_signals"],
+            "message": (
+                f"Workspace contains {tech['label'].lower()} artifacts but no "
+                f"security assessment configuration."
+                + (f" Relevant frameworks: {', '.join(tech['frameworks'])}."
+                   if tech.get('frameworks') else "")
+            ),
+            "recommended_checks": tech["recommended_checks"],
+            "free_mitigations": mitigations,
+            "compatible_frameworks": tech["frameworks"],
+            "recommended_packages": packages,
+            "acknowledged": acknowledged,
+            "user_dismissable": True,
+        }
+        if acknowledged:
+            advisory["suppression_rationale"] = suppression.get("rationale", "")
+            advisory["suppressed_by"] = suppression.get("suppressed_by", "unknown")
+        advisories.append(advisory)
+    return advisories
+
+
+def _load_assessment_suppressions(root: Path) -> Dict[str, Dict[str, Any]]:
+    """Load user-acknowledged technology suppressions from workspace config."""
+    suppressions_path = root / ".etg" / "assessment-suppressions.yaml"
+    if not suppressions_path.is_file():
+        return {}
+    try:
+        import yaml
+        data = yaml.safe_load(suppressions_path.read_text()) or {}
+        if not isinstance(data, dict):
+            return {}
+        result = {}
+        for tech_id, entry in data.items():
+            if not isinstance(tech_id, str) or not isinstance(entry, dict):
+                continue
+            if "rationale" not in entry or not entry["rationale"]:
+                continue  # suppressions require a rationale
+            result[tech_id] = entry
+        return result
+    except (OSError, yaml.YAMLError) as exc:  # noqa: BLE001
+        logging.getLogger(__name__).warning(
+            "Failed to load assessment suppressions from %s: %s",
+            suppressions_path, exc,
+        )
+        return {}
+
 
 
 def _invalid_posture(detail: str) -> Dict[str, Any]:
@@ -533,3 +778,166 @@ def _validate_capabilities(value: Any, field_name: str, *, allow_empty: bool = F
         raise AssessmentConfigurationError(
             f"{field_name} values must use the form capability-name/v1"
         )
+
+
+# ---------------------------------------------------------------------------
+# Assessment package catalog
+# ---------------------------------------------------------------------------
+
+_PACKAGE_CATALOG: List[Dict[str, Any]] = [
+    {
+        "package": "@entigram/web-security",
+        "description": "OWASP-aligned web application security assessments",
+        "capabilities": ["xss-screening/v1", "csp-validation/v1", "dom-injection-detection/v1"],
+        "frameworks": ["OWASP Top 10", "OWASP ASVS", "SANS/CWE Top 25"],
+        "technologies": ["web-frontend"],
+        "tier": "standard",
+        "access_url": "mailto:developer@entigram.com?subject=Access%20Request%3A%20%40entigram%2Fweb-security",
+    },
+    {
+        "package": "@entigram/api-security",
+        "description": "API security assessments for backend services",
+        "capabilities": ["injection-detection/v1", "auth-misconfiguration/v1", "ssrf-detection/v1"],
+        "frameworks": ["OWASP API Security Top 10", "OWASP Top 10", "NIST 800-53"],
+        "technologies": ["web-api"],
+        "tier": "standard",
+        "access_url": "mailto:developer@entigram.com?subject=Access%20Request%3A%20%40entigram%2Fapi-security",
+    },
+    {
+        "package": "@entigram/dependency-audit",
+        "description": "Software composition analysis and supply chain risk",
+        "capabilities": ["dependency-vulnerability/v1", "license-compliance/v1", "malicious-package-detection/v1"],
+        "frameworks": ["SLSA", "NIST SSDF (800-218)", "OpenSSF Scorecard"],
+        "technologies": ["web-api", "web-frontend", "supply-chain"],
+        "tier": "standard",
+        "access_url": "mailto:developer@entigram.com?subject=Access%20Request%3A%20%40entigram%2Fdependency-audit",
+    },
+    {
+        "package": "@entigram/container-security",
+        "description": "Container image and orchestration security assessments",
+        "capabilities": ["image-vulnerability/v1", "dockerfile-lint/v1", "k8s-policy-check/v1"],
+        "frameworks": ["CIS Docker Benchmark", "NIST 800-190", "SLSA"],
+        "technologies": ["container"],
+        "tier": "standard",
+        "access_url": "mailto:developer@entigram.com?subject=Access%20Request%3A%20%40entigram%2Fcontainer-security",
+    },
+    {
+        "package": "@entigram/iac-security",
+        "description": "Infrastructure-as-code policy and drift assessments",
+        "capabilities": ["iac-misconfiguration/v1", "drift-detection/v1", "iam-audit/v1"],
+        "frameworks": ["CIS Cloud Benchmarks", "NIST 800-53", "SOC 2"],
+        "technologies": ["infrastructure-as-code"],
+        "tier": "standard",
+        "access_url": "mailto:developer@entigram.com?subject=Access%20Request%3A%20%40entigram%2Fiac-security",
+    },
+    {
+        "package": "@entigram/mobile-security",
+        "description": "Mobile application security verification",
+        "capabilities": ["mobile-storage-audit/v1", "certificate-pinning-check/v1", "binary-protection/v1"],
+        "frameworks": ["OWASP MASVS", "OWASP Mobile Top 10", "NIST 800-163"],
+        "technologies": ["mobile-app"],
+        "tier": "standard",
+        "access_url": "mailto:developer@entigram.com?subject=Access%20Request%3A%20%40entigram%2Fmobile-security",
+    },
+    {
+        "package": "@entigram/data-privacy",
+        "description": "PII detection, encryption audit, and data governance",
+        "capabilities": ["pii-detection/v1", "encryption-audit/v1", "retention-policy-check/v1"],
+        "frameworks": ["PCI DSS v4.0", "SOC 2", "GDPR Art. 32"],
+        "technologies": ["data-processing"],
+        "tier": "professional",
+        "access_url": "mailto:developer@entigram.com?subject=Access%20Request%3A%20%40entigram%2Fdata-privacy",
+    },
+    {
+        "package": "@entigram/artifact-risk",
+        "description": "Artifact reputation and provenance verification",
+        "capabilities": ["artifact-reputation/v1", "provenance-verification/v1"],
+        "frameworks": ["SLSA", "NIST SSDF (800-218)"],
+        "technologies": ["supply-chain"],
+        "tier": "standard",
+        "access_url": "mailto:developer@entigram.com?subject=Access%20Request%3A%20%40entigram%2Fartifact-risk",
+    },
+]
+
+
+_PACKAGE_NAME_RE = re.compile(r"^@[a-z][a-z0-9-]*/[a-z][a-z0-9-]*$")
+
+
+def get_assessment_catalog() -> List[Dict[str, Any]]:
+    """Return the full catalog of available assessment packages."""
+    return list(_PACKAGE_CATALOG)
+
+
+def build_assessment_catalog(
+    root: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Build a workspace-aware catalog showing relevant packages for detected technologies."""
+    detected = detect_workspace_technologies(root) if root is not None else []
+    detected_techs = [t["technology"] for t in detected]
+
+    relevant = []
+    other = []
+    for pkg in _PACKAGE_CATALOG:
+        entry = dict(pkg)
+        matched_techs = [t for t in pkg["technologies"] if t in detected_techs]
+        entry["relevant_to_workspace"] = bool(matched_techs)
+        entry["matched_technologies"] = matched_techs
+        if matched_techs:
+            relevant.append(entry)
+        else:
+            other.append(entry)
+
+    return {
+        "detected_technologies": detected,
+        "recommended_packages": relevant,
+        "other_packages": other,
+        "total_packages": len(_PACKAGE_CATALOG),
+        "request_access_command": "etg assess --request-access <package-name>",
+        "access_portal": "https://entigram.ai/packages",
+    }
+
+
+def record_package_access_request(
+    root: Path,
+    package_name: str,
+) -> Dict[str, Any]:
+    """Record a package access request in the workspace ledger and return the access details."""
+    if not package_name or not isinstance(package_name, str) or not _PACKAGE_NAME_RE.fullmatch(package_name):
+        raise ValueError(
+            f"Invalid package name: {package_name!r}. "
+            f"Package names must match @scope/name (e.g. @entigram/api-security)"
+        )
+
+    catalog_entry = None
+    for pkg in _PACKAGE_CATALOG:
+        if pkg["package"] == package_name:
+            catalog_entry = pkg
+            break
+
+    if catalog_entry is None:
+        available = [p["package"] for p in _PACKAGE_CATALOG]
+        raise ValueError(
+            f"Unknown package: {package_name}. "
+            f"Available packages: {', '.join(available)}"
+        )
+
+    import datetime
+    request_record = {
+        "package": package_name,
+        "description": catalog_entry["description"],
+        "tier": catalog_entry["tier"],
+        "capabilities": catalog_entry["capabilities"],
+        "frameworks": catalog_entry["frameworks"],
+        "access_url": catalog_entry["access_url"],
+        "requested_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "workspace": str(root),
+    }
+
+    # Persist the request in the workspace ledger
+    request_dir = root / ".etg" / "access_requests"
+    request_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = package_name.replace("@", "").replace("/", "_")
+    request_file = request_dir / f"{safe_name}.json"
+    request_file.write_text(json.dumps(request_record, indent=2) + "\n")
+
+    return request_record

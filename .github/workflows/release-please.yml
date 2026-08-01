@@ -49,7 +49,7 @@ jobs:
       - name: Install build dependencies
         run: |
           python -m pip install --upgrade pip build
-          python -m pip install -e ".[ui,panel]"
+          python -m pip install -e ".[panel]"
 
       - name: Run Tests
         run: PYTHONPATH=. python -B -m unittest discover tests
