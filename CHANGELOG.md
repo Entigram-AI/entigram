@@ -15,6 +15,40 @@
 * harden SQLite ledger concurrency with WAL mode and busy timeouts
 * close warning-producing registry, broker, router, and hydration resources
 
+## [1.20.0](https://github.com/Entigram-AI/entigram/compare/v1.19.0...v1.20.0) (2026-08-01)
+
+
+### Features
+
+* GitHub issue links for package requests + demand tracking ([95b4605](https://github.com/Entigram-AI/entigram/commit/95b4605ad2834d0c866581b5da25c1f1279d9f42))
+* security assessments, multi-agent skills, and package request flow ([caf389c](https://github.com/Entigram-AI/entigram/commit/caf389c3e6c8573aae693c5f25c8a98b55e9eddb))
+
+
+### Bug Fixes
+
+* address P1/P2 findings from multi-agent review ([b4b124d](https://github.com/Entigram-AI/entigram/commit/b4b124d23eb7f6b36d324de014ababae2bd470e5))
+
+## [1.19.0](https://github.com/Entigram-AI/entigram/compare/v1.18.0...v1.19.0) (2026-08-01)
+
+
+### Features
+
+* add assessment package catalog and request-access monetization hook ([243fcc5](https://github.com/Entigram-AI/entigram/commit/243fcc570486771c2221bf1e16fe3f7d304dff27))
+* governed security assessments, tech-aware advisories, and UI removal ([79a161b](https://github.com/Entigram-AI/entigram/commit/79a161b6334595b86ae6949eb19d00c39cf09de7))
+* install multi-agent PR review skill (moltenbits/claude-review pattern) ([b1eb279](https://github.com/Entigram-AI/entigram/commit/b1eb279d2cc6dddd60f5600aedf626c0f90d8e81))
+* package 6 multi-agent skills with entigram ([a53739b](https://github.com/Entigram-AI/entigram/commit/a53739b1be833b69f14aff3c1455cd414b74d141))
+
+
+### Bug Fixes
+
+* add debug logging to suppression loader instead of silent swallow ([abe4742](https://github.com/Entigram-AI/entigram/commit/abe4742a3f5b2ed1144461dd50b1f4f3bd25f382))
+* address P0-P2 findings from multi-agent review + rewrite skill ([c205276](https://github.com/Entigram-AI/entigram/commit/c2052762cacb818d6b9ccc0592dd9d2283b7301a))
+* always raise flags — elevate advisories to warning, add suppression with rationale ([c5b9b81](https://github.com/Entigram-AI/entigram/commit/c5b9b8102d5d09e4d2aac67bc238a84d5f436a7f))
+* direct access requests to developer@entigram.com ([094f1f8](https://github.com/Entigram-AI/entigram/commit/094f1f86459b3f4ddbfed09088871fd09cd6cb98))
+* emit proactive security advisories for detected workspace technologies ([2c80f5a](https://github.com/Entigram-AI/entigram/commit/2c80f5a2b903b4fc0851a893b8ad055006e4b50e))
+* integrate assess into hydration, expand frameworks beyond OWASP, add package recs ([ee92c7e](https://github.com/Entigram-AI/entigram/commit/ee92c7ea0a13783776fedb3a955d3615cedca80b))
+* remove stale entigram.ui package refs breaking CI build ([27a77ac](https://github.com/Entigram-AI/entigram/commit/27a77acaed9f25dcce97d790ff8b156658ffbab6))
+
 ## [1.18.0](https://github.com/Entigram-AI/entigram/compare/v1.17.1...v1.18.0) (2026-07-31)
 
 
