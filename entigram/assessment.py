@@ -473,13 +473,15 @@ _TECHNOLOGY_SIGNALS: List[Dict[str, Any]] = [
         "label": "Web Frontend",
         "signals": ["package.json", "next.config.js", "next.config.mjs", "next.config.ts",
                     "vite.config.js", "vite.config.ts", "angular.json", "nuxt.config.ts"],
-        "frameworks": ["OWASP Top 10", "OWASP ASVS"],
+        "frameworks": ["OWASP Top 10", "OWASP ASVS", "SANS/CWE Top 25"],
         "recommended_checks": [
-            "Cross-site scripting (XSS) prevention",
+            "Cross-site scripting (XSS) prevention (OWASP A7, CWE-79)",
             "Content Security Policy (CSP) headers",
-            "Dependency vulnerability scanning (npm audit)",
-            "Client-side input validation",
+            "Dependency vulnerability scanning (npm audit / Snyk)",
+            "Client-side input validation (CWE-20)",
+            "Sensitive data exposure in browser storage (OWASP A2)",
         ],
+        "recommended_packages": ["@entigram/web-security"],
     },
     {
         "technology": "web-api",
@@ -487,52 +489,94 @@ _TECHNOLOGY_SIGNALS: List[Dict[str, Any]] = [
         "signals": ["app.py", "main.py", "manage.py", "server.py",
                     "requirements.txt", "Gemfile", "go.mod", "pom.xml",
                     "build.gradle", "Cargo.toml"],
-        "frameworks": ["OWASP Top 10", "OWASP API Security Top 10"],
+        "frameworks": ["OWASP Top 10", "OWASP API Security Top 10", "SANS/CWE Top 25",
+                       "NIST 800-53 (AC, SC)"],
         "recommended_checks": [
-            "Authentication and authorization controls",
-            "Input validation and injection prevention",
-            "Rate limiting and abuse prevention",
-            "Secrets management (no hardcoded credentials)",
+            "Authentication and authorization controls (OWASP A1, A7)",
+            "Injection prevention — SQL, NoSQL, OS command (OWASP A3, CWE-89)",
+            "Rate limiting and abuse prevention (API4:2023)",
+            "Secrets management — no hardcoded credentials (CWE-798)",
+            "Server-side request forgery prevention (OWASP A10, CWE-918)",
+            "Security logging and monitoring (OWASP A9)",
         ],
+        "recommended_packages": ["@entigram/api-security", "@entigram/dependency-audit"],
     },
     {
         "technology": "container",
         "label": "Container / Infrastructure",
         "signals": ["Dockerfile", "docker-compose.yml", "docker-compose.yaml",
                     "kubernetes", "k8s", "helm"],
-        "frameworks": ["CIS Docker Benchmark", "OWASP Docker Security"],
+        "frameworks": ["CIS Docker Benchmark", "OWASP Docker Security", "NIST 800-190",
+                       "SLSA (Supply-chain Levels for Software Artifacts)"],
         "recommended_checks": [
             "Base image provenance and vulnerability scanning",
-            "Least-privilege container configuration",
-            "No secrets baked into images",
+            "Least-privilege container configuration (CIS 5.x)",
+            "No secrets baked into images (CIS 4.10)",
             "Network policy and resource limits",
+            "Image signing and attestation (SLSA L2+)",
         ],
+        "recommended_packages": ["@entigram/container-security"],
     },
     {
         "technology": "infrastructure-as-code",
         "label": "Infrastructure as Code",
         "signals": ["main.tf", "terraform", "pulumi", "cloudformation",
                     "cdk.json", "serverless.yml"],
-        "frameworks": ["CIS Cloud Benchmarks", "NIST 800-53"],
+        "frameworks": ["CIS Cloud Benchmarks", "NIST 800-53", "SOC 2 (CC6, CC7)"],
         "recommended_checks": [
-            "Least-privilege IAM policies",
-            "Encryption at rest and in transit",
+            "Least-privilege IAM policies (NIST AC-6)",
+            "Encryption at rest and in transit (NIST SC-28, SC-8)",
             "Network segmentation and security groups",
-            "State file protection",
+            "State file protection and access control",
+            "Drift detection between declared and actual state",
         ],
+        "recommended_packages": ["@entigram/iac-security"],
     },
     {
         "technology": "mobile-app",
         "label": "Mobile Application",
         "signals": ["android", "ios", "AndroidManifest.xml",
                     "Info.plist", "pubspec.yaml", "expo"],
-        "frameworks": ["OWASP MASVS", "OWASP Mobile Top 10"],
+        "frameworks": ["OWASP MASVS", "OWASP Mobile Top 10", "NIST 800-163"],
         "recommended_checks": [
-            "Secure local storage",
-            "Certificate pinning",
-            "Sensitive data exposure in logs",
-            "Binary protection and tamper detection",
+            "Secure local storage (MASVS-STORAGE)",
+            "Certificate pinning (MASVS-NETWORK)",
+            "Sensitive data exposure in logs (MASVS-STORAGE-2)",
+            "Binary protection and tamper detection (MASVS-RESILIENCE)",
         ],
+        "recommended_packages": ["@entigram/mobile-security"],
+    },
+    {
+        "technology": "supply-chain",
+        "label": "Software Supply Chain",
+        "signals": ["package-lock.json", "yarn.lock", "poetry.lock", "Pipfile.lock",
+                    "go.sum", "Cargo.lock", "Gemfile.lock", "pnpm-lock.yaml"],
+        "frameworks": ["SLSA", "NIST SSDF (800-218)", "OpenSSF Scorecard",
+                       "SANS/CWE Top 25 (CWE-1357)"],
+        "recommended_checks": [
+            "Dependency vulnerability scanning and SCA",
+            "Lockfile integrity verification",
+            "Transitive dependency review",
+            "Known-malicious package detection",
+            "License compliance scanning",
+        ],
+        "recommended_packages": ["@entigram/dependency-audit", "@entigram/artifact-risk"],
+    },
+    {
+        "technology": "data-processing",
+        "label": "Data Processing / PII",
+        "signals": ["models.py", "schema.prisma", "migrations",
+                    "alembic", "flyway", "liquibase"],
+        "frameworks": ["OWASP Top 10 (A2 — Cryptographic Failures)",
+                       "PCI DSS v4.0", "SOC 2 (CC6.1)", "GDPR Art. 32"],
+        "recommended_checks": [
+            "PII detection and classification in data models",
+            "Encryption at rest for sensitive columns",
+            "Access control on data migration scripts",
+            "Audit logging for data access patterns",
+            "Data retention and deletion policies",
+        ],
+        "recommended_packages": ["@entigram/data-privacy"],
     },
 ]
 
@@ -553,6 +597,7 @@ def detect_workspace_technologies(root: Path) -> List[Dict[str, Any]]:
                 "matched_signals": matched_signals,
                 "frameworks": tech["frameworks"],
                 "recommended_checks": tech["recommended_checks"],
+                "recommended_packages": tech.get("recommended_packages", []),
             })
     return detected
 
@@ -561,6 +606,18 @@ def _technology_advisories(detected: List[Dict[str, Any]]) -> List[Dict[str, Any
     """Generate informational advisories for detected technologies without security config."""
     advisories = []
     for tech in detected:
+        packages = tech.get("recommended_packages", [])
+        mitigations = [
+            f"Configure external_artifacts in .etg/entigram.yaml to enable "
+            f"assessment-driven security posture for {tech['label'].lower()} workloads.",
+            f"Review {tech['frameworks'][0]} guidelines for your technology stack.",
+            "Run dependency and vulnerability scanning as part of your CI pipeline.",
+        ]
+        if packages:
+            mitigations.append(
+                f"Install assessment packages for automated checks: "
+                f"{', '.join(packages)}"
+            )
         advisories.append({
             "code": "ETG-RISK-UNCONFIGURED-TECHNOLOGY",
             "severity": "info",
@@ -573,13 +630,9 @@ def _technology_advisories(detected: List[Dict[str, Any]]) -> List[Dict[str, Any
                 f"{', '.join(tech['frameworks'])}."
             ),
             "recommended_checks": tech["recommended_checks"],
-            "free_mitigations": [
-                f"Configure external_artifacts in .etg/entigram.yaml to enable "
-                f"assessment-driven security posture for {tech['label'].lower()} workloads.",
-                f"Review {tech['frameworks'][0]} guidelines for your technology stack.",
-                "Run dependency and vulnerability scanning as part of your CI pipeline.",
-            ],
+            "free_mitigations": mitigations,
             "compatible_frameworks": tech["frameworks"],
+            "recommended_packages": packages,
         })
     return advisories
 

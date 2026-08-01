@@ -545,13 +545,26 @@ def _concise_hydration_payload(full_payload: dict, schema_content: str) -> dict:
         }
     }
     posture = boot.get("security_posture") or {}
+    advisories = posture.get("advisories", [])
+    detected_techs = posture.get("detected_technologies", [])
+    recommended_packages = sorted(set(
+        pkg
+        for adv in advisories
+        for pkg in adv.get("recommended_packages", [])
+    ))
     summary["ENTIGRAM_BOOT_SUMMARY"].update(
         {
             "assessment_mode": posture.get("mode", "off"),
+            "detected_technologies": detected_techs,
             "missing_security_capabilities": posture.get("missing_capabilities", []),
-            "risk_advisories": posture.get("advisories", []),
+            "recommended_assessment_packages": recommended_packages,
+            "risk_advisories": advisories,
         }
     )
+    if detected_techs:
+        summary["ENTIGRAM_BOOT_SUMMARY"]["next_commands"].append(
+            "etg assess --adapter <name> --adapter-module <path> --allow-executable-adapter --subject-type sha256 --subject-file <path>"
+        )
     return summary
 
 
