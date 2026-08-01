@@ -644,8 +644,8 @@ class TestAssessmentCatalog(unittest.TestCase):
             self.assertIn("capabilities", pkg)
             self.assertIn("frameworks", pkg)
             self.assertIn("tier", pkg)
-            self.assertIn("access_url", pkg)
-            self.assertTrue(pkg["access_url"].startswith("mailto:"))
+            self.assertIn("status", pkg)
+            self.assertIn(pkg["status"], ("published", "coming_soon", "preview"))
 
     def test_workspace_aware_catalog_recommends_relevant_packages(self):
         from entigram.assessment import build_assessment_catalog
@@ -680,13 +680,62 @@ class TestAssessmentCatalog(unittest.TestCase):
             record = record_package_access_request(root, "@entigram/api-security")
             self.assertEqual(record["package"], "@entigram/api-security")
             self.assertEqual(record["tier"], "standard")
+            self.assertEqual(record["status"], "published")
             self.assertIn("requested_at", record)
-            self.assertTrue(record["access_url"].startswith("mailto:"))
+            self.assertIn("issue_url", record)
+            self.assertTrue(record["issue_url"].startswith("https://github.com/Entigram-AI/entigram/issues/new"))
             request_file = root / ".etg" / "access_requests" / "entigram_api-security.json"
             self.assertTrue(request_file.is_file())
             import json
             persisted = json.loads(request_file.read_text())
             self.assertEqual(persisted["package"], "@entigram/api-security")
+            self.assertEqual(persisted["status"], "published")
+            # Verify demand ledger was appended
+            demand_file = root / ".etg" / "access_requests" / "demand_ledger.jsonl"
+            self.assertTrue(demand_file.is_file())
+            lines = demand_file.read_text().strip().split("\n")
+            self.assertEqual(len(lines), 1)
+            entry = json.loads(lines[0])
+            self.assertEqual(entry["package"], "@entigram/api-security")
+            self.assertEqual(entry["status"], "published")
+
+    def test_request_access_coming_soon_package(self):
+        from entigram.assessment import record_package_access_request
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / ".etg").mkdir()
+            record = record_package_access_request(root, "@entigram/data-privacy")
+            self.assertEqual(record["package"], "@entigram/data-privacy")
+            self.assertEqual(record["tier"], "professional")
+            self.assertEqual(record["status"], "coming_soon")
+            # Demand is still tracked even for unpublished packages
+            import json
+            demand_file = root / ".etg" / "access_requests" / "demand_ledger.jsonl"
+            self.assertTrue(demand_file.is_file())
+            entry = json.loads(demand_file.read_text().strip())
+            self.assertEqual(entry["package"], "@entigram/data-privacy")
+            self.assertEqual(entry["status"], "coming_soon")
+
+    def test_demand_ledger_appends_multiple_requests(self):
+        from entigram.assessment import record_package_access_request
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / ".etg").mkdir()
+            record_package_access_request(root, "@entigram/api-security")
+            record_package_access_request(root, "@entigram/web-security")
+            record_package_access_request(root, "@entigram/data-privacy")
+            import json
+            demand_file = root / ".etg" / "access_requests" / "demand_ledger.jsonl"
+            lines = demand_file.read_text().strip().split("\n")
+            self.assertEqual(len(lines), 3)
+            packages = [json.loads(line)["package"] for line in lines]
+            self.assertEqual(packages, [
+                "@entigram/api-security",
+                "@entigram/web-security",
+                "@entigram/data-privacy",
+            ])
 
     def test_request_access_rejects_unknown_package(self):
         from entigram.assessment import record_package_access_request
@@ -708,6 +757,122 @@ class TestAssessmentCatalog(unittest.TestCase):
                 record_package_access_request(root, "bad-name")
             self.assertIn("Invalid package name", str(ctx.exception))
 
+class TestBuildPackageIssueUrl(unittest.TestCase):
+
+    def test_published_package_url_structure(self):
+        from entigram.assessment import _build_package_issue_url
+        from urllib.parse import urlparse, parse_qs, unquote
+
+        entry = {
+            "package": "@entigram/api-security",
+            "description": "API security assessments",
+            "tier": "standard",
+            "status": "published",
+            "capabilities": ["injection-detection/v1"],
+            "frameworks": ["OWASP Top 10"],
+            "technologies": ["web-api"],
+        }
+        url = _build_package_issue_url(entry)
+        parsed = urlparse(url)
+        self.assertEqual(parsed.scheme, "https")
+        self.assertIn("github.com", parsed.netloc)
+        self.assertIn("/issues/new", parsed.path)
+        qs = parse_qs(parsed.query)
+        self.assertEqual(qs["title"][0], "Package Request: @entigram/api-security")
+        self.assertIn("package-request", unquote(qs["labels"][0]))
+        self.assertNotIn("coming-soon", unquote(qs["labels"][0]))
+        body = qs["body"][0]
+        self.assertIn("injection-detection/v1", body)
+        self.assertIn("OWASP Top 10", body)
+        self.assertIn("Published", body)
+
+    def test_coming_soon_package_has_extra_label(self):
+        from entigram.assessment import _build_package_issue_url
+        from urllib.parse import urlparse, parse_qs, unquote
+
+        entry = {
+            "package": "@entigram/data-privacy",
+            "description": "PII detection",
+            "tier": "professional",
+            "status": "coming_soon",
+            "capabilities": ["pii-detection/v1"],
+            "frameworks": ["GDPR Art. 32"],
+            "technologies": ["data-processing"],
+        }
+        url = _build_package_issue_url(entry)
+        parsed = urlparse(url)
+        qs = parse_qs(parsed.query)
+        labels = unquote(qs["labels"][0])
+        self.assertIn("coming-soon", labels)
+        body = qs["body"][0]
+        self.assertIn("Coming Soon", body)
+
+    def test_preview_status_renders_correctly(self):
+        from entigram.assessment import _build_package_issue_url
+        from urllib.parse import urlparse, parse_qs
+
+        entry = {
+            "package": "@entigram/test-pkg",
+            "description": "Preview package",
+            "tier": "standard",
+            "status": "preview",
+            "capabilities": ["test/v1"],
+            "frameworks": ["Test"],
+            "technologies": ["web-api"],
+        }
+        url = _build_package_issue_url(entry)
+        parsed = urlparse(url)
+        qs = parse_qs(parsed.query)
+        body = qs["body"][0]
+        self.assertIn("Preview", body)
+        self.assertNotIn("Published", body)
+
+    def test_workspace_detection_included_in_body(self):
+        from entigram.assessment import _build_package_issue_url
+        from urllib.parse import urlparse, parse_qs
+
+        entry = {
+            "package": "@entigram/api-security",
+            "description": "API security",
+            "tier": "standard",
+            "status": "published",
+            "capabilities": ["injection-detection/v1"],
+            "frameworks": ["OWASP Top 10"],
+            "technologies": ["web-api"],
+        }
+        techs = [{"label": "Web API", "technology": "web-api",
+                   "matched_signals": ["requirements.txt", "app.py"]}]
+        url = _build_package_issue_url(entry, detected_technologies=techs)
+        parsed = urlparse(url)
+        qs = parse_qs(parsed.query)
+        body = qs["body"][0]
+        self.assertIn("Workspace Detection Context", body)
+        self.assertIn("requirements.txt", body)
+
+    def test_url_capped_at_max_length(self):
+        from entigram.assessment import _build_package_issue_url, _MAX_ISSUE_URL_LENGTH
+
+        entry = {
+            "package": "@entigram/api-security",
+            "description": "API security",
+            "tier": "standard",
+            "status": "published",
+            "capabilities": ["injection-detection/v1"],
+            "frameworks": ["OWASP Top 10"],
+            "technologies": ["web-api"],
+        }
+        # Generate massive detection context to force URL over limit
+        huge_techs = [
+            {"label": f"Tech {i}", "technology": "web-api",
+             "matched_signals": [f"signal_{j}.py" for j in range(50)]}
+            for i in range(20)
+        ]
+        url = _build_package_issue_url(entry, detected_technologies=huge_techs)
+        self.assertLessEqual(len(url), _MAX_ISSUE_URL_LENGTH)
+        # Workspace context should have been stripped
+        self.assertNotIn("Workspace Detection Context", url)
+
 
 if __name__ == "__main__":
     unittest.main()
+
