@@ -645,7 +645,7 @@ class TestAssessmentCatalog(unittest.TestCase):
             self.assertIn("frameworks", pkg)
             self.assertIn("tier", pkg)
             self.assertIn("access_url", pkg)
-            self.assertTrue(pkg["access_url"].startswith("https://"))
+            self.assertTrue(pkg["access_url"].startswith("mailto:"))
 
     def test_workspace_aware_catalog_recommends_relevant_packages(self):
         from entigram.assessment import build_assessment_catalog
@@ -681,7 +681,7 @@ class TestAssessmentCatalog(unittest.TestCase):
             self.assertEqual(record["package"], "@entigram/api-security")
             self.assertEqual(record["tier"], "standard")
             self.assertIn("requested_at", record)
-            self.assertTrue(record["access_url"].startswith("https://"))
+            self.assertTrue(record["access_url"].startswith("mailto:"))
             request_file = root / ".etg" / "access_requests" / "entigram_api-security.json"
             self.assertTrue(request_file.is_file())
             import json

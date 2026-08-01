@@ -1854,8 +1854,9 @@ def _main():
                             print(f"  {pkg['package']}{tier_label} — {pkg['description']}")
                         print()
 
-                    print(f"🌐 Full catalog: {catalog['access_portal']}")
+                    print(f"🌐 Full catalog: etg assess --catalog")
                     print(f"   Request access: etg assess --request-access <package-name>")
+                    print(f"   Or email: developer@entigram.com")
                 return
 
             # --- request-access mode ---
@@ -1870,7 +1871,7 @@ def _main():
                     print(f"   Capabilities: {', '.join(record['capabilities'])}")
                     print(f"   Frameworks: {', '.join(record['frameworks'])}")
                     print()
-                    print(f"   🌐 Complete your request: {record['access_url']}")
+                    print(f"   📧 Email developer@entigram.com to complete your request")
                     print(f"   📁 Request saved: .etg/access_requests/")
                 return
 

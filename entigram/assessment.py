@@ -781,7 +781,7 @@ _PACKAGE_CATALOG: List[Dict[str, Any]] = [
         "frameworks": ["OWASP Top 10", "OWASP ASVS", "SANS/CWE Top 25"],
         "technologies": ["web-frontend"],
         "tier": "standard",
-        "access_url": "https://entigram.ai/packages/web-security",
+        "access_url": "mailto:developer@entigram.com?subject=Access%20Request%3A%20%40entigram%2Fweb-security",
     },
     {
         "package": "@entigram/api-security",
@@ -790,7 +790,7 @@ _PACKAGE_CATALOG: List[Dict[str, Any]] = [
         "frameworks": ["OWASP API Security Top 10", "OWASP Top 10", "NIST 800-53"],
         "technologies": ["web-api"],
         "tier": "standard",
-        "access_url": "https://entigram.ai/packages/api-security",
+        "access_url": "mailto:developer@entigram.com?subject=Access%20Request%3A%20%40entigram%2Fapi-security",
     },
     {
         "package": "@entigram/dependency-audit",
@@ -799,7 +799,7 @@ _PACKAGE_CATALOG: List[Dict[str, Any]] = [
         "frameworks": ["SLSA", "NIST SSDF (800-218)", "OpenSSF Scorecard"],
         "technologies": ["web-api", "web-frontend", "supply-chain"],
         "tier": "standard",
-        "access_url": "https://entigram.ai/packages/dependency-audit",
+        "access_url": "mailto:developer@entigram.com?subject=Access%20Request%3A%20%40entigram%2Fdependency-audit",
     },
     {
         "package": "@entigram/container-security",
@@ -808,7 +808,7 @@ _PACKAGE_CATALOG: List[Dict[str, Any]] = [
         "frameworks": ["CIS Docker Benchmark", "NIST 800-190", "SLSA"],
         "technologies": ["container"],
         "tier": "standard",
-        "access_url": "https://entigram.ai/packages/container-security",
+        "access_url": "mailto:developer@entigram.com?subject=Access%20Request%3A%20%40entigram%2Fcontainer-security",
     },
     {
         "package": "@entigram/iac-security",
@@ -817,7 +817,7 @@ _PACKAGE_CATALOG: List[Dict[str, Any]] = [
         "frameworks": ["CIS Cloud Benchmarks", "NIST 800-53", "SOC 2"],
         "technologies": ["infrastructure-as-code"],
         "tier": "standard",
-        "access_url": "https://entigram.ai/packages/iac-security",
+        "access_url": "mailto:developer@entigram.com?subject=Access%20Request%3A%20%40entigram%2Fiac-security",
     },
     {
         "package": "@entigram/mobile-security",
@@ -826,7 +826,7 @@ _PACKAGE_CATALOG: List[Dict[str, Any]] = [
         "frameworks": ["OWASP MASVS", "OWASP Mobile Top 10", "NIST 800-163"],
         "technologies": ["mobile-app"],
         "tier": "standard",
-        "access_url": "https://entigram.ai/packages/mobile-security",
+        "access_url": "mailto:developer@entigram.com?subject=Access%20Request%3A%20%40entigram%2Fmobile-security",
     },
     {
         "package": "@entigram/data-privacy",
@@ -835,7 +835,7 @@ _PACKAGE_CATALOG: List[Dict[str, Any]] = [
         "frameworks": ["PCI DSS v4.0", "SOC 2", "GDPR Art. 32"],
         "technologies": ["data-processing"],
         "tier": "professional",
-        "access_url": "https://entigram.ai/packages/data-privacy",
+        "access_url": "mailto:developer@entigram.com?subject=Access%20Request%3A%20%40entigram%2Fdata-privacy",
     },
     {
         "package": "@entigram/artifact-risk",
@@ -844,9 +844,10 @@ _PACKAGE_CATALOG: List[Dict[str, Any]] = [
         "frameworks": ["SLSA", "NIST SSDF (800-218)"],
         "technologies": ["supply-chain"],
         "tier": "standard",
-        "access_url": "https://entigram.ai/packages/artifact-risk",
+        "access_url": "mailto:developer@entigram.com?subject=Access%20Request%3A%20%40entigram%2Fartifact-risk",
     },
 ]
+
 
 _PACKAGE_NAME_RE = re.compile(r"^@[a-z][a-z0-9-]*/[a-z][a-z0-9-]*$")
 
