@@ -446,7 +446,7 @@ def _inactive_posture(root: Optional[Path] = None) -> Dict[str, Any]:
     advisories = []
     if root is not None:
         detected = detect_workspace_technologies(root)
-        advisories = _technology_advisories(detected)
+        advisories = _technology_advisories(detected, root=root)
     return {
         "configured": False,
         "valid": True,
@@ -602,26 +602,45 @@ def detect_workspace_technologies(root: Path) -> List[Dict[str, Any]]:
     return detected
 
 
-def _technology_advisories(detected: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Generate informational advisories for detected technologies without security config."""
+def _technology_advisories(
+    detected: List[Dict[str, Any]],
+    root: Optional[Path] = None,
+) -> List[Dict[str, Any]]:
+    """Generate advisories for detected technologies without security config.
+
+    Severity is 'warning' by default — the system always raises flags.
+    Users can suppress non-critical findings via .etg/assessment-suppressions.yaml,
+    but suppressed findings are still shown as acknowledged, never hidden.
+    Users can also develop their own mitigation adapter to address the finding.
+    """
+    suppressions = _load_assessment_suppressions(root) if root is not None else {}
     advisories = []
     for tech in detected:
         packages = tech.get("recommended_packages", [])
+        tech_id = tech["technology"]
+        suppression = suppressions.get(tech_id)
+        acknowledged = suppression is not None
         mitigations = [
             f"Configure external_artifacts in .etg/entigram.yaml to enable "
             f"assessment-driven security posture for {tech['label'].lower()} workloads.",
             f"Review {tech['frameworks'][0]} guidelines for your technology stack.",
             "Run dependency and vulnerability scanning as part of your CI pipeline.",
+            f"Develop a custom assessment adapter: etg assess --adapter-module <path> --allow-executable-adapter",
         ]
         if packages:
             mitigations.append(
                 f"Install assessment packages for automated checks: "
                 f"{', '.join(packages)}"
             )
-        advisories.append({
+        if not acknowledged:
+            mitigations.append(
+                f"Suppress this advisory after review: add '{tech_id}' to "
+                f".etg/assessment-suppressions.yaml with a rationale."
+            )
+        advisory = {
             "code": "ETG-RISK-UNCONFIGURED-TECHNOLOGY",
-            "severity": "info",
-            "technology": tech["technology"],
+            "severity": "warning",
+            "technology": tech_id,
             "label": tech["label"],
             "matched_signals": tech["matched_signals"],
             "message": (
@@ -633,8 +652,37 @@ def _technology_advisories(detected: List[Dict[str, Any]]) -> List[Dict[str, Any
             "free_mitigations": mitigations,
             "compatible_frameworks": tech["frameworks"],
             "recommended_packages": packages,
-        })
+            "acknowledged": acknowledged,
+            "user_dismissable": True,
+        }
+        if acknowledged:
+            advisory["suppression_rationale"] = suppression.get("rationale", "")
+            advisory["suppressed_by"] = suppression.get("suppressed_by", "unknown")
+        advisories.append(advisory)
     return advisories
+
+
+def _load_assessment_suppressions(root: Path) -> Dict[str, Dict[str, Any]]:
+    """Load user-acknowledged technology suppressions from workspace config."""
+    suppressions_path = root / ".etg" / "assessment-suppressions.yaml"
+    if not suppressions_path.is_file():
+        return {}
+    try:
+        import yaml
+        data = yaml.safe_load(suppressions_path.read_text()) or {}
+        if not isinstance(data, dict):
+            return {}
+        result = {}
+        for tech_id, entry in data.items():
+            if not isinstance(tech_id, str) or not isinstance(entry, dict):
+                continue
+            if "rationale" not in entry or not entry["rationale"]:
+                continue  # suppressions require a rationale
+            result[tech_id] = entry
+        return result
+    except Exception:
+        return {}
+
 
 
 def _invalid_posture(detail: str) -> Dict[str, Any]:

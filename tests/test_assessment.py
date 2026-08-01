@@ -519,10 +519,15 @@ class TestTechnologyDetection(unittest.TestCase):
             self.assertGreater(len(posture["advisories"]), 0)
             advisory = posture["advisories"][0]
             self.assertEqual(advisory["code"], "ETG-RISK-UNCONFIGURED-TECHNOLOGY")
-            self.assertEqual(advisory["severity"], "info")
+            self.assertEqual(advisory["severity"], "warning")
+            self.assertFalse(advisory["acknowledged"])
+            self.assertTrue(advisory["user_dismissable"])
             self.assertIn("web frontend", advisory["message"].lower())
             self.assertIn("OWASP Top 10", advisory["compatible_frameworks"])
             self.assertIn("web-frontend", posture.get("detected_technologies", []))
+            # Custom adapter mitigation should always be offered
+            adapter_mitigations = [m for m in advisory["free_mitigations"] if "adapter" in m.lower()]
+            self.assertGreater(len(adapter_mitigations), 0)
 
     def test_inactive_posture_without_signals_has_no_advisories(self):
         from entigram.assessment import workspace_security_posture
@@ -572,6 +577,56 @@ class TestTechnologyDetection(unittest.TestCase):
         self.assertTrue(posture["configured"])
         codes = [a.get("code") for a in posture["advisories"]]
         self.assertNotIn("ETG-RISK-UNCONFIGURED-TECHNOLOGY", codes)
+
+    def test_suppressed_advisory_still_shown_as_acknowledged(self):
+        """Suppressed findings are always shown, never hidden."""
+        from entigram.assessment import workspace_security_posture
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            etg_dir = root / ".etg"
+            etg_dir.mkdir()
+            (etg_dir / "entigram.yaml").write_text(
+                yaml.dump({"status": "initialized", "packages": {}})
+            )
+            (root / "package.json").write_text("{}")
+            # Write suppression
+            (etg_dir / "assessment-suppressions.yaml").write_text(
+                yaml.dump({
+                    "web-frontend": {
+                        "rationale": "Static marketing site, no dynamic user input.",
+                        "suppressed_by": "tech-lead",
+                    }
+                })
+            )
+            posture = workspace_security_posture(root)
+            # Advisory is still present, never hidden
+            self.assertGreater(len(posture["advisories"]), 0)
+            advisory = posture["advisories"][0]
+            self.assertEqual(advisory["severity"], "warning")
+            self.assertTrue(advisory["acknowledged"])
+            self.assertEqual(advisory["suppressed_by"], "tech-lead")
+            self.assertIn("Static marketing site", advisory["suppression_rationale"])
+
+    def test_suppression_without_rationale_is_ignored(self):
+        """Suppressions require a rationale — empty ones are rejected."""
+        from entigram.assessment import workspace_security_posture
+
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            etg_dir = root / ".etg"
+            etg_dir.mkdir()
+            (etg_dir / "entigram.yaml").write_text(
+                yaml.dump({"status": "initialized", "packages": {}})
+            )
+            (root / "package.json").write_text("{}")
+            (etg_dir / "assessment-suppressions.yaml").write_text(
+                yaml.dump({"web-frontend": {"rationale": ""}})
+            )
+            posture = workspace_security_posture(root)
+            advisory = posture["advisories"][0]
+            # Suppression with empty rationale is not honored
+            self.assertFalse(advisory["acknowledged"])
 
 
 class TestAssessmentCatalog(unittest.TestCase):

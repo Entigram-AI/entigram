@@ -1974,7 +1974,11 @@ def _main():
                     if finding.recommendation:
                         print(f"    Recommendation: {finding.recommendation}")
                 for advisory in posture["advisories"]:
-                    print(f"  [{advisory['severity'].upper()}] {advisory['message']}")
+                    ack_tag = " ACKNOWLEDGED" if advisory.get("acknowledged") else ""
+                    print(f"  [{advisory['severity'].upper()}{ack_tag}] {advisory['message']}")
+                    if advisory.get("acknowledged"):
+                        print(f"    Suppressed by: {advisory.get('suppressed_by', 'unknown')}")
+                        print(f"    Rationale: {advisory.get('suppression_rationale', 'N/A')}")
                     for mitigation in advisory.get("free_mitigations", []):
                         print(f"    Mitigation: {mitigation}")
                 if decision["required_capabilities_unassessed"]:
