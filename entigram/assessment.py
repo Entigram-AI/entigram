@@ -372,7 +372,7 @@ def workspace_security_posture(
     root = Path(target_dir).expanduser().resolve()
     manifest_path = root / ".etg" / "entigram.yaml"
     if not manifest_path.is_file():
-        return _inactive_posture()
+        return _inactive_posture(root)
 
     try:
         import yaml
@@ -386,15 +386,20 @@ def workspace_security_posture(
         else:
             capabilities = sorted(set(provided_capabilities))
             _validate_capabilities(capabilities, "provided capabilities", allow_empty=True)
-        return compute_security_posture(manifest, capabilities)
+        return compute_security_posture(manifest, capabilities, root=root)
     except AssessmentConfigurationError as exc:
         return _invalid_posture(str(exc))
 
 
-def compute_security_posture(manifest: Mapping[str, Any], provided_capabilities: Iterable[str]) -> Dict[str, Any]:
+def compute_security_posture(
+    manifest: Mapping[str, Any],
+    provided_capabilities: Iterable[str],
+    *,
+    root: Optional[Path] = None,
+) -> Dict[str, Any]:
     config = manifest.get("external_artifacts")
     if config is None:
-        return _inactive_posture()
+        return _inactive_posture(root)
     if not isinstance(config, dict):
         raise AssessmentConfigurationError("external_artifacts must be an object")
 
@@ -437,7 +442,11 @@ def compute_security_posture(manifest: Mapping[str, Any], provided_capabilities:
     }
 
 
-def _inactive_posture() -> Dict[str, Any]:
+def _inactive_posture(root: Optional[Path] = None) -> Dict[str, Any]:
+    advisories = []
+    if root is not None:
+        detected = detect_workspace_technologies(root)
+        advisories = _technology_advisories(detected)
     return {
         "configured": False,
         "valid": True,
@@ -447,8 +456,132 @@ def _inactive_posture() -> Dict[str, Any]:
         "provided_capabilities": [],
         "missing_capabilities": [],
         "enforcement_blocked": False,
-        "advisories": [],
+        "advisories": advisories,
+        "detected_technologies": (
+            [t["technology"] for t in (detected if root is not None else [])]
+        ),
     }
+
+
+# ---------------------------------------------------------------------------
+# Workspace technology detection
+# ---------------------------------------------------------------------------
+
+_TECHNOLOGY_SIGNALS: List[Dict[str, Any]] = [
+    {
+        "technology": "web-frontend",
+        "label": "Web Frontend",
+        "signals": ["package.json", "next.config.js", "next.config.mjs", "next.config.ts",
+                    "vite.config.js", "vite.config.ts", "angular.json", "nuxt.config.ts"],
+        "frameworks": ["OWASP Top 10", "OWASP ASVS"],
+        "recommended_checks": [
+            "Cross-site scripting (XSS) prevention",
+            "Content Security Policy (CSP) headers",
+            "Dependency vulnerability scanning (npm audit)",
+            "Client-side input validation",
+        ],
+    },
+    {
+        "technology": "web-api",
+        "label": "Web API / Backend",
+        "signals": ["app.py", "main.py", "manage.py", "server.py",
+                    "requirements.txt", "Gemfile", "go.mod", "pom.xml",
+                    "build.gradle", "Cargo.toml"],
+        "frameworks": ["OWASP Top 10", "OWASP API Security Top 10"],
+        "recommended_checks": [
+            "Authentication and authorization controls",
+            "Input validation and injection prevention",
+            "Rate limiting and abuse prevention",
+            "Secrets management (no hardcoded credentials)",
+        ],
+    },
+    {
+        "technology": "container",
+        "label": "Container / Infrastructure",
+        "signals": ["Dockerfile", "docker-compose.yml", "docker-compose.yaml",
+                    "kubernetes", "k8s", "helm"],
+        "frameworks": ["CIS Docker Benchmark", "OWASP Docker Security"],
+        "recommended_checks": [
+            "Base image provenance and vulnerability scanning",
+            "Least-privilege container configuration",
+            "No secrets baked into images",
+            "Network policy and resource limits",
+        ],
+    },
+    {
+        "technology": "infrastructure-as-code",
+        "label": "Infrastructure as Code",
+        "signals": ["main.tf", "terraform", "pulumi", "cloudformation",
+                    "cdk.json", "serverless.yml"],
+        "frameworks": ["CIS Cloud Benchmarks", "NIST 800-53"],
+        "recommended_checks": [
+            "Least-privilege IAM policies",
+            "Encryption at rest and in transit",
+            "Network segmentation and security groups",
+            "State file protection",
+        ],
+    },
+    {
+        "technology": "mobile-app",
+        "label": "Mobile Application",
+        "signals": ["android", "ios", "AndroidManifest.xml",
+                    "Info.plist", "pubspec.yaml", "expo"],
+        "frameworks": ["OWASP MASVS", "OWASP Mobile Top 10"],
+        "recommended_checks": [
+            "Secure local storage",
+            "Certificate pinning",
+            "Sensitive data exposure in logs",
+            "Binary protection and tamper detection",
+        ],
+    },
+]
+
+
+def detect_workspace_technologies(root: Path) -> List[Dict[str, Any]]:
+    """Detect workspace technologies by checking for signal files/directories."""
+    detected = []
+    for tech in _TECHNOLOGY_SIGNALS:
+        matched_signals = []
+        for signal in tech["signals"]:
+            candidate = root / signal
+            if candidate.exists():
+                matched_signals.append(signal)
+        if matched_signals:
+            detected.append({
+                "technology": tech["technology"],
+                "label": tech["label"],
+                "matched_signals": matched_signals,
+                "frameworks": tech["frameworks"],
+                "recommended_checks": tech["recommended_checks"],
+            })
+    return detected
+
+
+def _technology_advisories(detected: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Generate informational advisories for detected technologies without security config."""
+    advisories = []
+    for tech in detected:
+        advisories.append({
+            "code": "ETG-RISK-UNCONFIGURED-TECHNOLOGY",
+            "severity": "info",
+            "technology": tech["technology"],
+            "label": tech["label"],
+            "matched_signals": tech["matched_signals"],
+            "message": (
+                f"Workspace contains {tech['label'].lower()} artifacts but no "
+                f"security assessment configuration. Relevant frameworks: "
+                f"{', '.join(tech['frameworks'])}."
+            ),
+            "recommended_checks": tech["recommended_checks"],
+            "free_mitigations": [
+                f"Configure external_artifacts in .etg/entigram.yaml to enable "
+                f"assessment-driven security posture for {tech['label'].lower()} workloads.",
+                f"Review {tech['frameworks'][0]} guidelines for your technology stack.",
+                "Run dependency and vulnerability scanning as part of your CI pipeline.",
+            ],
+            "compatible_frameworks": tech["frameworks"],
+        })
+    return advisories
 
 
 def _invalid_posture(detail: str) -> Dict[str, Any]:
