@@ -132,7 +132,7 @@ class TestEntigramSelfImprovementModel(unittest.TestCase):
         self.assertIn("MCP Tool Contract Documentation", names)
         self.assertIn("Tamper-Evident Audit Bundles", names)
         self.assertIn("Immutable Gate Smoke Demo", names)
-        self.assertIn("Headless CLI UI Boundary", names)
+        self.assertIn("Headless CLI Boundary", names)
         self.assertIn("CLI Version Introspection", names)
         self.assertIn("Workspace Manifest Version Clarity", names)
         self.assertIn("Signed Audit Bundles", names)
