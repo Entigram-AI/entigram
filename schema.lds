@@ -584,9 +584,9 @@ EXPECTATION: Immutable Gate Smoke Demo {
   proof: python -m unittest tests.test_entigram_self_improvement_model
 }
 
-EXPECTATION: Headless CLI UI Boundary {
-  developer_expectation: Entigram's CLI/MCP install should remain headless by default while giving clear installation guidance for the optional dashboard.
-  implementation_rule: Streamlit must be declared as a UI extra and `etg ui` must explain pipx installation/injection when Streamlit is missing.
+EXPECTATION: Headless CLI Boundary {
+  developer_expectation: Entigram's CLI/MCP install should remain headless and should not advertise deprecated dashboard dependencies.
+  implementation_rule: CLI/MCP bootstrap, Make targets, and maintained documentation must remain terminal-first and must not require or advertise the deprecated dashboard dependency or command.
   validation_check: python -m unittest tests.test_cli_integration
   proof: python -m unittest tests.test_cli_integration
 }
