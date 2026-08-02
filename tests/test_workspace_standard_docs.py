@@ -37,6 +37,9 @@ class TestWorkspaceStandardDocs(unittest.TestCase):
         self.assertIn("etg broker handoff", readme)
         self.assertIn("Delivery status: current", readme)
         self.assertNotIn("python3 -m entigram.cli_runner.etg_cli agent --engine Antigravity", readme)
+        self.assertIn("docs/assets/entigram-logo.svg", readme)
+        self.assertTrue((ROOT / "docs" / "assets" / "entigram-logo.svg").is_file())
+        self.assertNotIn("streamlit", readme.lower())
 
     def test_mcp_docs_link_back_to_workspace_standard(self):
         mcp_docs = (ROOT / "docs" / "mcp-tools.md").read_text()

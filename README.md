@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="entigram/ui/media/logo.svg" alt="Entigram" width="520">
+  <img src="docs/assets/entigram-logo.svg" alt="Entigram" width="520">
 </p>
 
 # Entigram: The Semantic Governance Layer for Enterprise Agents
@@ -47,6 +47,18 @@ pipx install entigram-ai
 
 For source checkouts, use the repository virtual environment or run the module
 form from the environment where Entigram's dependencies are installed.
+
+### Choose a path
+
+- **Users:** Start with this Quickstart, then try the
+  [minimal governed workspace](docs/minimal-governed-workspace.md).
+- **Agents:** Read [AGENTS.md](AGENTS.md) and the
+  [Workspace Standard](docs/workspace-standard.md); use
+  [Agent Orchestration](docs/agent-orchestration.md) when coordinating agents.
+- **MCP integrators:** Use the [MCP tool contract](docs/mcp-tools.md).
+- **OpenCode users:** Follow the [OpenCode integration guide](docs/opencode.md).
+- **Package authors:** Read the [package contract](docs/workspace-standard.md#package-contract)
+  and inspect the public [community packages](community-packages/).
 
 ### 1. Initialize a Governance Workspace
 
@@ -230,6 +242,30 @@ the Worker, the core community tree, and user registries can coexist like
 Maven repositories. Package source code remains reviewable in its source
 repository; the Worker is the delivery and caching layer.
 
+### Run a community assessment
+
+Community assessment packages run locally and do not require a cloud key. For
+example, install the public data-privacy package and run its metadata-only
+adapter:
+
+```bash
+etg package install --name @entigram/data-privacy
+etg assess \
+  --adapter data-privacy-assessment \
+  --adapter-module .etg/packages/@entigram/data-privacy/assessment_adapter.py \
+  --allow-executable-adapter \
+  --subject-type data-privacy-profile \
+  --subject workspace-profile \
+  --input-json .etg/packages/@entigram/data-privacy/examples/privacy-profile.json \
+  --json
+```
+
+The adapter reads metadata about assets, fields, and controls—not field
+values. `ok: true` means that the assessment executed; use `decision` and
+`safe_to_process` to determine whether processing may continue. Review the
+[package instructions](community-packages/@entigram/data-privacy/SKILL.md) for
+the input shape and limitations.
+
 Before returning work to a human reviewer:
 
 ```bash
@@ -260,23 +296,8 @@ Run the local Immutable Gate smoke demo:
 python3 scripts/demo_immutable_gate.py
 ```
 
-### Optional Dashboard
-
-`etg ui` requires Streamlit. The CLI/MCP runtime is headless by default.
-
-For pipx:
-```bash
-pipx install 'entigram-ai[ui]'
-```
-
-For an existing pipx install:
-```bash
-pipx inject entigram-ai streamlit
-```
-
-Homebrew installs are optimized for the CLI/MCP path. If `etg ui` reports that
-Streamlit is missing, that is expected unless the dashboard dependency has been
-installed into the same Python environment.
+The Entigram runtime is terminal-first and headless. Use the CLI and MCP
+surfaces described above to operate a governed workspace.
 
 ## 🏗️ How it Fits
 
