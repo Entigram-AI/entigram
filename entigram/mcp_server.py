@@ -35,11 +35,27 @@ def create_mcp_server(target_dir: str = ".", host: Optional[str] = None, port: O
 
     @mcp.tool()
     def etg_get_impact(file_path: str) -> str:
-        """Analyze and return the localized context and impact graph for a given file."""
+        """Read the localized context and change-impact graph for a workspace file; does not write workspace state."""
         try:
             return service.get_impact(file_path)
         except Exception as exc:
             return _tool_error("IMPACT_ANALYSIS_FAILED", f"Failed to analyze impact - {exc}")
+
+    @mcp.tool()
+    def etg_get_workspace_context() -> str:
+        """Read workspace lifecycle, manifest, schema, delivery, security, and instruction context."""
+        try:
+            return service.get_workspace_context()
+        except Exception as exc:
+            return _tool_error("WORKSPACE_CONTEXT_DISCOVERY_FAILED", f"Failed to read workspace context - {exc}")
+
+    @mcp.tool()
+    def etg_get_capabilities() -> str:
+        """Read the authoritative Entigram MCP capability catalog and safety boundaries."""
+        try:
+            return service.get_capabilities()
+        except Exception as exc:
+            return _tool_error("CAPABILITY_DISCOVERY_FAILED", f"Failed to read capability catalog - {exc}")
 
     @mcp.tool()
     def etg_get_assessment_capabilities() -> str:
@@ -79,6 +95,8 @@ def create_mcp_server(target_dir: str = ".", host: Optional[str] = None, port: O
     registered_tools = {
         "etg_get_schemas",
         "etg_get_impact",
+        "etg_get_workspace_context",
+        "etg_get_capabilities",
         "etg_get_assessment_capabilities",
         "etg_assess",
         "etg_propose_alignment",

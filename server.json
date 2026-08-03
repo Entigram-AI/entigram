@@ -1,0 +1,21 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.entigram-ai/entigram",
+  "title": "Entigram Semantic Governance",
+  "description": "Schema-first semantic governance for enterprise agent workspaces, including authoritative schemas, impact analysis, assessments, and auditable alignment and conflict proposals.",
+  "repository": {
+    "url": "https://github.com/Entigram-AI/entigram",
+    "source": "github"
+  },
+  "version": "1.21.1",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "entigram-ai",
+      "version": "1.21.1",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}
