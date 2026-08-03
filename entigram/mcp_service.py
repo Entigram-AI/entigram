@@ -19,6 +19,8 @@ _ERROR_LABELS = {
     "conflict": "Invalid Conflict",
     "schema": "Schema Discovery Failed",
     "impact": "Impact Analysis Failed",
+    "context": "Workspace Context Discovery Failed",
+    "capabilities": "Capability Discovery Failed",
 }
 
 
@@ -131,6 +133,85 @@ class EntigramMCPService:
             return json.dumps({"ok": True, "impact": impact}, indent=2, sort_keys=True)
         except Exception as exc:
             return self._error("impact", "IMPACT_ANALYSIS_FAILED", str(exc))
+
+    @_track_mcp_usage("etg_get_workspace_context")
+    def get_workspace_context(self) -> str:
+        """Return read-only workspace context for agent bootstrapping."""
+        try:
+            from entigram.workspace_lifecycle import instruction_blocks, load_manifest, workspace_state
+
+            manifest = load_manifest(self.target_dir)
+            state = workspace_state(self.target_dir)
+            schemas = []
+            for path in self._schema_paths():
+                entities, relationships = SchemaParser(path.read_text()).parse()
+                schemas.append(
+                    {
+                        "path": self._relative_path(path),
+                        "entity_count": len(entities),
+                        "entities": sorted(entities),
+                        "relationship_count": len(relationships),
+                    }
+                )
+
+            delivery_status = None
+            if state == "active":
+                try:
+                    delivery_status = EntigramBroker(str(self.target_dir)).delivery_status()
+                except Exception as exc:
+                    delivery_status = {"status": "unavailable", "error": str(exc)}
+
+            policy_path = self.target_dir / ".etg" / "agent_policy.md"
+            return json.dumps(
+                {
+                    "ok": True,
+                    "workspace": {
+                        "state": state,
+                        "manifest_path": ".etg/entigram.yaml",
+                        "workspace_schema_version": manifest.get("workspace_schema_version"),
+                        "packages": manifest.get("packages", {}),
+                        "schema_paths": [item["path"] for item in schemas],
+                        "schemas": schemas,
+                        "policy_path": ".etg/agent_policy.md" if policy_path.is_file() else None,
+                        "instruction_files": [item["path"] for item in instruction_blocks(self.target_dir)],
+                        "delivery_status": delivery_status,
+                        "next_commands": [
+                            "hydrate",
+                            "etg broker preflight --file <path>",
+                            "etg broker impact --file <path>",
+                            "etg broker handoff",
+                            "etg broker status",
+                        ],
+                    },
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        except Exception as exc:
+            return self._error("context", "WORKSPACE_CONTEXT_DISCOVERY_FAILED", str(exc))
+
+    @_track_mcp_usage("etg_get_capabilities")
+    def get_capabilities(self) -> str:
+        """Return the authoritative read/write MCP capability catalog."""
+        try:
+            from entigram.usage import MCP_TOOL_DECLARATIONS
+
+            return json.dumps(
+                {
+                    "ok": True,
+                    "server": {
+                        "name": "entigram",
+                        "purpose": "Schema-first semantic governance for agent workspaces",
+                        "transport_boundary": "Local stdio is the default. SSE remains loopback-only until authenticated remote transport exists.",
+                        "documentation": "docs/mcp-tools.md",
+                    },
+                    "capabilities": list(MCP_TOOL_DECLARATIONS),
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        except Exception as exc:
+            return self._error("capabilities", "CAPABILITY_DISCOVERY_FAILED", str(exc))
 
     @_track_mcp_usage("etg_get_assessment_capabilities")
     def get_assessment_capabilities(self) -> str:

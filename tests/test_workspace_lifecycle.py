@@ -274,12 +274,14 @@ class TestWorkspaceLifecycle(unittest.TestCase):
         self.assertEqual(report["estimator"]["name"], "heuristic_chars_div_4_v1")
         self.assertEqual(report["observed"]["session"]["estimated_total_tokens"], 10)
         self.assertEqual(report["attribution"]["estimated_percent"], 10.0)
-        self.assertEqual(report["footprint"]["mcp_tool_declarations"]["count"], 6)
+        self.assertEqual(report["footprint"]["mcp_tool_declarations"]["count"], 8)
         self.assertEqual(
             {tool["name"] for tool in MCP_TOOL_DECLARATIONS},
             {
                 "etg_get_schemas",
                 "etg_get_impact",
+                "etg_get_workspace_context",
+                "etg_get_capabilities",
                 "etg_get_assessment_capabilities",
                 "etg_assess",
                 "etg_propose_alignment",

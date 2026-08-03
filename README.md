@@ -4,6 +4,8 @@
 
 # Entigram: The Semantic Governance Layer for Enterprise Agents
 
+<!-- mcp-name: io.github.entigram-ai/entigram -->
+
 **Entigram** is a schema-first control plane for enterprise agents that grounds agent behavior in verified domain models, approved semantic alignments, and auditable state transitions.
 
 It provides the infrastructure to build **constrained autonomy**, ensuring that agents operate across fragmented enterprise systems without inventing fields, joins, entities, or state transitions.
@@ -148,7 +150,14 @@ Start the local MCP server from the governed workspace:
 etg serve
 ```
 
-Agents should discover schemas with `etg_get_schemas`, propose alignments with
+For agent and MCP-host discovery, start with
+[`docs/discoverability.md`](docs/discoverability.md). MCP clients should call
+`etg_get_capabilities` and `etg_get_workspace_context` before selecting a
+governed operation. Agents can also load the reusable
+[`entigram-workspace` Agent Skill](skills/entigram-workspace/SKILL.md).
+
+Agents should discover schemas with `etg_get_schemas`, inspect change risk with
+`etg_get_impact`, propose alignments with
 `etg_propose_alignment`, and record deterministic conflicts with
 `etg_log_conflict`. MCP responses use a stable JSON envelope:
 ```json

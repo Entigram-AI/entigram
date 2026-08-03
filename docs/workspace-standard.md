@@ -37,6 +37,26 @@ An initialized workspace uses these files and paths:
 Draft files, demos, templates, generated TTL files, and package-local schemas are
 not authoritative unless `.etg/entigram.yaml` lists them in `schema_paths`.
 
+## Discoverability Contract
+
+An Entigram repository may expose the following machine-readable and
+progressive-disclosure surfaces:
+
+- `AGENTS.md` routes coding agents to `.etg/agent_policy.md`.
+- `skills/entigram-workspace/SKILL.md` provides portable Agent Skill metadata
+  and boot instructions.
+- `server.json` describes the package-backed MCP server for registries and
+  clients.
+- `etg_get_capabilities` returns the live MCP capability catalog, including
+  read-only and ledger-write behavior.
+- `etg_get_workspace_context` returns the local boot context without changing
+  workspace state.
+
+These surfaces describe how an agent can discover Entigram. They do not grant
+permissions, approve proposed state, replace host orchestration, or make direct
+filesystem, database, shell, or network access governed. The workspace contract
+and stable MCP response envelope remain authoritative.
+
 ## Manifest Contract
 
 `.etg/entigram.yaml` is the workspace manifest. It must remain human-readable

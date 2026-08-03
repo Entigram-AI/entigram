@@ -75,6 +75,28 @@ ENTITY: Ghost {
         self.assertEqual([schema["path"] for schema in output["schemas"]], ["schema.lds"])
         self.assertNotIn("Ghost", output["schemas"][0]["entities"])
 
+    def test_get_workspace_context_returns_read_only_boot_context(self):
+        output = json.loads(self.service.get_workspace_context())
+
+        self.assertTrue(output["ok"])
+        workspace = output["workspace"]
+        self.assertEqual(workspace["state"], "active")
+        self.assertEqual(workspace["manifest_path"], ".etg/entigram.yaml")
+        self.assertEqual(workspace["schema_paths"], ["schema.lds"])
+        self.assertEqual(workspace["schemas"][0]["entities"], ["Account", "User"])
+        self.assertIn("etg broker preflight --file <path>", workspace["next_commands"])
+
+    def test_get_capabilities_classifies_tools_and_transport_boundary(self):
+        output = json.loads(self.service.get_capabilities())
+
+        self.assertTrue(output["ok"])
+        self.assertEqual(output["server"]["name"], "entigram")
+        capabilities = {item["name"]: item for item in output["capabilities"]}
+        self.assertTrue(capabilities["etg_get_workspace_context"]["read_only"])
+        self.assertFalse(capabilities["etg_propose_alignment"]["read_only"])
+        self.assertTrue(capabilities["etg_propose_alignment"]["writes_ledger"])
+        self.assertIn("loopback-only", output["server"]["transport_boundary"])
+
     def test_propose_alignment_validates_and_writes_proposal(self):
         result = json.loads(
             self.service.propose_alignment(

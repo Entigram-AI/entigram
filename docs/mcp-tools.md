@@ -50,6 +50,40 @@ When workspace governance is paused, every Entigram MCP tool returns:
 
 Resume the workspace with `etg resume` before retrying the tool.
 
+## Discovery tools
+
+MCP clients should call `etg_get_capabilities` first when the available Entigram
+surface is unknown. It returns the authoritative tool catalog, input shapes,
+read-only classification, ledger-write behavior, and transport boundary.
+
+`etg_get_workspace_context` returns read-only workspace context for bootstrapping:
+
+- lifecycle state and manifest version
+- active packages and authoritative schema paths
+- schema entity and relationship counts
+- canonical policy and instruction-file paths
+- current delivery status when available
+- the recommended hydration, preflight, impact, and handoff commands
+
+Neither tool changes the workspace or ledger. They complement the CLI hydration
+sequence; `hydrate` remains the canonical full agent boot command.
+
+## Safety classification
+
+| Tool | Read-only | Writes `.etg/state.db` | Purpose |
+| --- | --- | --- | --- |
+| `etg_get_schemas` | Yes | No | Read authoritative LDS schemas. |
+| `etg_get_impact` | Yes | No | Analyze file change impact. |
+| `etg_get_workspace_context` | Yes | No | Read workspace boot context. |
+| `etg_get_capabilities` | Yes | No | Read the MCP capability catalog. |
+| `etg_get_assessment_capabilities` | Yes | No | Read signed assessment metadata and advisories. |
+| `etg_assess` | Yes | No | Run the fail-closed assessment boundary. |
+| `etg_propose_alignment` | No | Yes | Persist a proposed alignment. |
+| `etg_log_conflict` | No | Yes | Persist a conflict for review. |
+
+The read/write classification is also returned by `etg_get_capabilities` so
+clients can make tool-selection decisions without scraping prose.
+
 ## `etg_get_schemas`
 
 Returns the authoritative LDS schemas for the workspace.
