@@ -14,7 +14,9 @@ file conflicts with `.etg/agent_policy.md`, the canonical policy wins.
 
 ## Primary Directives
 1. **Schema First:** Never generate code or ontologies before an Entigram Schema is explicitly defined in `schema.lds`.
-2. **Persistence:** You MUST maintain the local `schema.lds` and `draft_schema.lds` files. Update them (using your `replace` or `write_file` tools) after EVERY turn where new domain information is established.
+2. **Schema changes:** Treat `schema.lds` and `draft_schema.lds` as governed
+   contracts. Change them only when the task requires schema modeling, and
+   follow `.etg/agent_policy.md` for the required lock and handoff flow.
 3. **Portable Broker Flow:** Use the current Entigram CLI defaults:
    - **Hydrate First:** `hydrate`
    - **Before Risky Changes:** `etg broker preflight --file <path>` and `etg broker impact --file <path>`
@@ -30,5 +32,4 @@ file conflicts with `.etg/agent_policy.md`, the canonical policy wins.
 - **Schema Modeling:** Read `interview_prompt.md` and begin the domain modeling interview. Record your progress in `schema.lds`. (Note: For Antigravity, ensure all turns are committed to state).
 - **Package Skills:** You MUST read the `SKILL.md` file for each active package to understand your specific roles and protocols.
 <!-- ENTIGRAM_END -->
-
 

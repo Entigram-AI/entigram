@@ -31,17 +31,11 @@ bootstrap: ## Bootstraps the Entigram Compiler dependencies and internal SQLite 
 	@echo "Bootstrapping Entigram Compiler..."
 	@if [ ! -d "$(VENV_DIR)" ]; then python3 -m venv $(VENV_DIR); fi
 	@$(PIP) install --upgrade pip
-	@$(PIP) install -e .[ui]
+	@$(PIP) install -e .
 	@echo "Initializing internal SQLite state ledger..."
 	@mkdir -p .etg
 	@$(PYTHON) -c "import sys; from pathlib import Path; sys.path.append(str(Path.cwd())); from entigram.sqlite_ledger.manager import LedgerManager; LedgerManager('.etg/state.db')"
 	@echo "Bootstrap complete. Entigram is ready."
-
-start: ## Launches the lightweight local web interface
-start: bootstrap
-	@echo "Starting Entigram Interface on localhost..."
-	@# Workaround for Python 3.14 Protobuf compatibility if needed
-	@export PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python && $(VENV_DIR)/bin/streamlit run entigram/ui/app.py
 
 cloudflare-ollama-proxy: ## Starts an Ollama-compatible proxy backed by Cloudflare Workers AI
 	@echo "Starting Cloudflare-backed Ollama proxy on http://127.0.0.1:11435..."

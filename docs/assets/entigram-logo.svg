@@ -1,0 +1,28 @@
+<svg width="1200" height="360" viewBox="0 0 1200 360" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Entigram logo</title>
+  <desc id="desc">A rounded Material-style owl-inspired Entigram mark with a wordmark.</desc>
+  <defs>
+    <style>
+      .blue { fill: #4285f4; }
+      .green { fill: #34a853; }
+      .yellow { fill: #fbbc04; }
+      .red { fill: #ea4335; }
+      .ink { fill: #202124; }
+      .word { fill: #202124; font-family: Inter, Avenir, Helvetica, Arial, sans-serif; font-weight: 700; letter-spacing: 6px; }
+    </style>
+  </defs>
+
+  <g transform="translate(64 38)">
+    <path class="blue" d="M216 36c72 0 132 50 146 116 8 36 0 76-21 108-12 18-31 28-52 28H143c-21 0-40-10-52-28-21-32-29-72-21-108 14-66 74-116 146-116Z"/>
+    <path class="green" d="M54 54c71 4 125 24 162 61-58 10-101 42-129 94C51 190 25 166 10 137 1 120 3 98 15 83c10-13 25-21 39-29Z"/>
+    <path class="green" d="M378 54c-71 4-125 24-162 61 58 10 101 42 129 94 36-19 62-43 77-72 9-17 7-39-5-54-10-13-25-21-39-29Z"/>
+    <circle class="yellow" cx="151" cy="177" r="48"/>
+    <circle class="ink" cx="151" cy="177" r="20"/>
+    <circle class="yellow" cx="281" cy="177" r="48"/>
+    <circle class="ink" cx="281" cy="177" r="20"/>
+    <path class="red" d="M216 184c20 0 38 13 45 32l-45 84-45-84c7-19 25-32 45-32Z"/>
+    <path fill="#ffffff" opacity=".9" d="M216 92c22 0 40 18 40 40h-80c0-22 18-40 40-40Z"/>
+  </g>
+
+  <text class="word" x="522" y="221" font-size="86">ENTIGRAM</text>
+</svg>
