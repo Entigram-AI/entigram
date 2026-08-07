@@ -61,6 +61,7 @@ form from the environment where Entigram's dependencies are installed.
 - **OpenCode users:** Follow the [OpenCode integration guide](docs/opencode.md).
 - **Package authors:** Read the [package contract](docs/workspace-standard.md#package-contract)
   and inspect the public [community packages](community-packages/).
+- **Security-resource roadmap:** See the [future security resource catalog](docs/security-resource-catalog.md).
 
 ### 1. Initialize a Governance Workspace
 

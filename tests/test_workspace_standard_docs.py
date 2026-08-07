@@ -1,3 +1,4 @@
+import json
 import unittest
 from pathlib import Path
 
@@ -40,6 +41,21 @@ class TestWorkspaceStandardDocs(unittest.TestCase):
         self.assertIn("docs/assets/entigram-logo.svg", readme)
         self.assertTrue((ROOT / "docs" / "assets" / "entigram-logo.svg").is_file())
         self.assertNotIn("streamlit", readme.lower())
+        self.assertIn("docs/security-resource-catalog.md", readme)
+
+    def test_security_resource_catalog_is_planning_only(self):
+        catalog = json.loads(
+            (ROOT / "docs" / "security-resource-catalog.json").read_text()
+        )
+        resources = {resource["id"]: resource for resource in catalog["resources"]}
+
+        self.assertEqual(
+            set(resources), {"mitre-attack", "osint-framework"}
+        )
+        for resource in resources.values():
+            self.assertEqual(resource["status"], "cataloged-not-integrated")
+            self.assertTrue(resource["url"].startswith("https://"))
+            self.assertTrue(resource["not_for"])
 
     def test_mcp_docs_link_back_to_workspace_standard(self):
         mcp_docs = (ROOT / "docs" / "mcp-tools.md").read_text()
