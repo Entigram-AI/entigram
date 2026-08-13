@@ -32,9 +32,11 @@ Entigram-initialized workspace.
   must be rejected or escalated to the human operator.
 - Resolve conflicts through `.etg/state.db`.
 - `etg pause` temporarily compacts Entigram-owned context and blocks governance
-  operations. `etg resume` restores that context. These workspace commands are
-  separate from `etg broker hibernate` and `etg broker resume`, which checkpoint
-  an individual agent.
+  operations. Paused work is limited to five changed files by default; use
+  `etg pause-status`, then `etg resume` and `hydrate`, before the next change
+  once the budget is exhausted. `etg resume` restores that context. These
+  workspace commands are separate from `etg broker hibernate` and `etg broker
+  resume`, which checkpoint an individual agent.
 - `etg eject` archives `.etg` before detaching Entigram from the workspace. It
   does not delete project schemas, ontologies, or application code.
 
@@ -95,7 +97,10 @@ def inject_entigram_manifest(target_dir: str, selected_packages: list, cli_engin
         "schema_paths": ["schema.lds"],
         # Keep generated workspaces portable when they are copied or moved.
         "state_ledger": f".etg/{CANONICAL_LEDGER_NAME}",
-        "lifecycle": {"state": "active"},
+        "lifecycle": {
+            "state": "active",
+            "change_budget": {"max_changed_files": 5},
+        },
         "status": "initialized",
         "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
@@ -177,6 +182,15 @@ Do not infer package capabilities from a catalog entry alone.
         with open(instruction_path, "w") as f:
             f.write(entigram_context)
 
+    if cli_engine == "Antigravity":
+        try:
+            from .antigravity_hooks import install_antigravity_hooks
+
+            install_antigravity_hooks(target_path)
+        except Exception as exc:
+            print(f"Error installing Antigravity hooks: {exc}")
+            return False
+
     # 1.6 Record in history
     try:
         add_project_to_history(target_dir)
@@ -237,4 +251,12 @@ Do not infer package capabilities from a catalog entry alone.
                     shutil.copy2(item, target_file)
                 elif item.is_dir():
                     shutil.copytree(item, target_file, dirs_exist_ok=True)
+
+    try:
+        from .workspace_lifecycle import establish_active_change_baseline
+
+        establish_active_change_baseline(target_path, reason="workspace_initialization")
+    except Exception as exc:
+        print(f"Error recording Entigram change baseline: {exc}")
+        return False
     return True

@@ -316,6 +316,11 @@ class TestBrokerDeliverySnapshots(unittest.TestCase):
             self.assertEqual(snapshot["artifact_ids"], checklist["artifact_ids"])
             artifacts = ledger.get_delivery_artifacts()
             self.assertTrue(any(a["path"] == "schema.lds" for a in artifacts))
+            from entigram.workspace_lifecycle import active_change_status
+
+            self.assertEqual(
+                active_change_status(Path(test_dir))["budget"]["changed_files"], 0
+            )
         finally:
             if ledger is not None:
                 ledger.close()

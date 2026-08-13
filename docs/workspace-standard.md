@@ -32,7 +32,9 @@ An initialized workspace uses these files and paths:
 | `.etg/state.db` | Yes | Local SQLite ledger for alignments, conflicts, resolutions, delivery evidence, delivery snapshots, and agent state. |
 | `.etg/agent_policy.md` | Recommended | Canonical agent instructions for hydration, impact analysis, and handoff. |
 | `AGENTS.md` or tool-specific instruction files | Recommended | Thin pointers that direct agents to `.etg/agent_policy.md`. |
+| `.agents/hooks.json` | Antigravity | Entigram's namespaced session gate, merged with any existing Antigravity hooks. |
 | `.etg/lifecycle/pause-backup.json` | While paused | Private, exact backup of Entigram-owned context used for reversible resume. |
+| `.etg/lifecycle/check-in-baseline.json` | Recommended | Private active-workspace metadata baseline refreshed after a successful handoff. |
 
 Draft files, demos, templates, generated TTL files, and package-local schemas are
 not authoritative unless `.etg/entigram.yaml` lists them in `schema_paths`.
@@ -74,6 +76,8 @@ governed_artifact_globs:
 state_ledger: .etg/state.db
 lifecycle:
   state: active
+  change_budget:
+    max_changed_files: 5
 external_artifacts:
   modalities: [image, pdf]
   trust: untrusted
@@ -97,6 +101,12 @@ non-ignored workspace files across languages. In a non-Git workspace, Entigram
 falls back to polyglot source and project-configuration defaults. Both paths
 exclude `.git`, `.etg`, virtual environments, dependency directories, caches,
 and build output.
+
+`lifecycle.change_budget.max_changed_files` is optional and defaults to `5`.
+It defines the number of changed workspace files permitted after initialization
+or the most recent successful broker handoff before Entigram asks the agent to
+check in again. It is an admission cadence, not a replacement for Warden,
+delivery evidence, or host filesystem permissions.
 
 `external_artifacts` is optional and capability-aware. Its absence emits no
 artifact-security warning. When present, `modalities` declares the artifact
@@ -192,7 +202,11 @@ lifecycle:
 Entigram-owned policy and marked agent instruction blocks. While paused,
 hydration returns a compact `WORKSPACE_PAUSED` envelope without loading schema
 or ledger context. Governed CLI and MCP operations return the same stable error
-code.
+code. Pause also snapshots user-visible workspace files and starts a bounded
+change window (five changed files by default). `etg pause-status` reports drift
+from that baseline; after the budget is exhausted, resume and hydrate before
+another change. Local Git workspaces receive a temporary pre-commit guard that
+rejects a commit exceeding the budget.
 
 `etg resume` restores exact Entigram-owned content. It preserves edits outside
 marked blocks and refuses to overwrite changed paused content unless `--force`

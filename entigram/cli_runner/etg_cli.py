@@ -689,7 +689,18 @@ def get_hydration_vector(target_path: Path, compact: bool = False, full: bool = 
 
 
 def _paused_command_allowed(args) -> bool:
-    if args.command in {"usage", "pause", "resume", "eject", "hydrate", "boot"}:
+    if args.command in {
+        "usage",
+        "antigravity-hook",
+        "pause",
+        "pause-status",
+        "change-status",
+        "resume",
+        "eject",
+        "hydrate",
+        "boot",
+        "antigravity-hook",
+    }:
         return True
     return args.command == "config" and bool(getattr(args, "list", False))
 
@@ -712,7 +723,15 @@ def _emit_lifecycle_result(result, *, json_output: bool = False) -> None:
             print(f"Backup: {result['backup']}")
         else:
             print("Entigram workspace governance is already paused.")
-        print("Allowed: etg usage, etg resume, etg eject")
+        budget = result.get("change_budget") or {}
+        if budget:
+            print(
+                "Paused change budget: "
+                f"{budget.get('changed_files', 0)}/{budget.get('max_changed_files')} changed files."
+            )
+        if result.get("git_pre_commit_guard"):
+            print("Temporary Git pre-commit guard: installed")
+        print("Allowed: etg usage, etg pause-status, etg resume, etg eject")
     elif state == "active":
         if result.get("changed"):
             print("Entigram workspace governance resumed.")
@@ -720,6 +739,14 @@ def _emit_lifecycle_result(result, *, json_output: bool = False) -> None:
                 print(f"Conflicting paused content: {result['conflict_archive']}")
         else:
             print("Entigram workspace governance is already active.")
+        paused_change_status = result.get("paused_change_status") or {}
+        paused_budget = paused_change_status.get("budget") or {}
+        if paused_budget:
+            print(
+                "Paused changes observed: "
+                f"{paused_budget.get('changed_files', 0)}/"
+                f"{paused_budget.get('max_changed_files')} files."
+            )
         print("Next: hydrate")
     elif state == "ejected":
         print("Entigram detached from this workspace.")
@@ -729,6 +756,43 @@ def _emit_lifecycle_result(result, *, json_output: bool = False) -> None:
             for path in result["residual_references"]:
                 print(f"  - {path}")
         print("Re-enroll with: etg init")
+
+
+def _emit_paused_change_status(result, *, json_output: bool = False) -> None:
+    if json_output:
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return
+    budget = result["budget"]
+    print("Entigram paused change status")
+    print(
+        "Changed files: "
+        f"{budget['changed_files']}/{budget['max_changed_files']} "
+        f"({budget['remaining_files']} remaining)"
+    )
+    if budget["exhausted"]:
+        print("Check-in required: run `etg resume`, then `hydrate`, before another change.")
+    else:
+        print("Within paused change budget.")
+    for change_type, paths in result["changes"].items():
+        if paths:
+            print(f"{change_type.title()}: {', '.join(paths)}")
+
+
+def _emit_active_change_status(result, *, json_output: bool = False) -> None:
+    if json_output:
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return
+    budget = result["budget"]
+    print("Entigram active change status")
+    print(
+        "Changed files since check-in: "
+        f"{budget['changed_files']}/{budget['max_changed_files']} "
+        f"({budget['remaining_files']} remaining)"
+    )
+    print(result["next_action"])
+    for change_type, paths in result["changes"].items():
+        if paths:
+            print(f"{change_type.title()}: {', '.join(paths)}")
 
 
 def _main():
@@ -769,7 +833,37 @@ def _main():
     pause_parser = subparsers.add_parser("pause", help="Pause workspace governance and compact Entigram context")
     pause_parser.add_argument("--dir", help="Target directory (defaults to current workspace)")
     pause_parser.add_argument("--reason", help="Optional operator reason recorded in the local pause backup")
+    pause_parser.add_argument(
+        "--max-changed-files",
+        type=int,
+        default=5,
+        help="Maximum changed files allowed while paused before a resume and hydrate check-in (default: 5)",
+    )
     pause_parser.add_argument("--json", action="store_true", dest="json_output", help="Output stable JSON")
+
+    pause_status_parser = subparsers.add_parser(
+        "pause-status",
+        help="Inspect paused-workspace drift against its change budget",
+    )
+    pause_status_parser.add_argument("--dir", help="Target directory (defaults to current workspace)")
+    pause_status_parser.add_argument(
+        "--enforce",
+        action="store_true",
+        help="Exit nonzero only when the paused change budget has been exceeded",
+    )
+    pause_status_parser.add_argument("--json", action="store_true", dest="json_output", help="Output stable JSON")
+
+    change_status_parser = subparsers.add_parser(
+        "change-status",
+        help="Inspect changed files since the active handoff or paused baseline",
+    )
+    change_status_parser.add_argument("--dir", help="Target directory (defaults to current workspace)")
+    change_status_parser.add_argument(
+        "--enforce",
+        action="store_true",
+        help="Exit nonzero when another check-in is required before a write",
+    )
+    change_status_parser.add_argument("--json", action="store_true", dest="json_output", help="Output stable JSON")
 
     resume_parser = subparsers.add_parser("resume", help="Resume paused workspace governance")
     resume_parser.add_argument("--dir", help="Target directory (defaults to current workspace)")
@@ -782,6 +876,18 @@ def _main():
     eject_parser.add_argument("--dry-run", action="store_true", help="Show the detach plan without changing files")
     eject_parser.add_argument("--yes", action="store_true", help="Confirm non-interactively")
     eject_parser.add_argument("--json", action="store_true", dest="json_output", help="Output stable JSON")
+
+    antigravity_hook_parser = subparsers.add_parser(
+        "antigravity-hook",
+        help=argparse.SUPPRESS,
+    )
+    antigravity_hook_parser.add_argument("--dir", required=True, help=argparse.SUPPRESS)
+    antigravity_hook_parser.add_argument(
+        "--event",
+        required=True,
+        choices=["pre-invocation", "pre-tool-use", "post-tool-use", "stop"],
+        help=argparse.SUPPRESS,
+    )
 
     # config command
     config_parser = subparsers.add_parser("config", help="Manage workspace configuration")
@@ -1577,6 +1683,20 @@ def _main():
         parser.print_help()
     elif hasattr(args, 'func'):
         args.func(args)
+    elif args.command == "antigravity-hook":
+        from entigram.antigravity_hooks import handle_antigravity_hook
+
+        try:
+            raw_payload = sys.stdin.read()
+            payload = json.loads(raw_payload) if raw_payload.strip() else {}
+        except (OSError, ValueError):
+            payload = {}
+        result = handle_antigravity_hook(
+            _resolve_workspace_dir(args.dir),
+            args.event,
+            payload,
+        )
+        print(json.dumps(result, sort_keys=True))
     elif args.command == "usage":
         from contextlib import redirect_stderr, redirect_stdout
         from io import StringIO
@@ -1621,11 +1741,72 @@ def _main():
         from entigram.workspace_lifecycle import WorkspaceLifecycleError, pause_workspace
 
         try:
-            result = pause_workspace(_resolve_workspace_dir(args.dir), reason=args.reason)
+            result = pause_workspace(
+                _resolve_workspace_dir(args.dir),
+                reason=args.reason,
+                max_changed_files=args.max_changed_files,
+            )
         except WorkspaceLifecycleError as exc:
             _emit_lifecycle_error(exc, json_output=args.json_output)
             sys.exit(1)
         _emit_lifecycle_result(result, json_output=args.json_output)
+    elif args.command == "pause-status":
+        from entigram.workspace_lifecycle import (
+            WorkspaceLifecycleError,
+            enforce_paused_change_budget,
+            paused_change_status,
+        )
+
+        try:
+            target_path = _resolve_workspace_dir(args.dir)
+            result = (
+                enforce_paused_change_budget(target_path)
+                if args.enforce
+                else paused_change_status(target_path)
+            )
+        except WorkspaceLifecycleError as exc:
+            _emit_lifecycle_error(exc, json_output=args.json_output)
+            sys.exit(2 if exc.code == "PAUSED_CHANGE_BUDGET_EXCEEDED" else 1)
+        _emit_paused_change_status(result, json_output=args.json_output)
+    elif args.command == "change-status":
+        from entigram.workspace_lifecycle import (
+            WorkspaceLifecycleError,
+            active_change_status,
+            enforce_active_change_budget,
+            enforce_paused_change_budget,
+            is_workspace_paused,
+            paused_change_status,
+        )
+
+        try:
+            target_path = _resolve_workspace_dir(args.dir)
+            paused = is_workspace_paused(target_path)
+            if paused:
+                result = (
+                    enforce_paused_change_budget(target_path)
+                    if args.enforce
+                    else paused_change_status(target_path)
+                )
+            else:
+                result = (
+                    enforce_active_change_budget(target_path)
+                    if args.enforce
+                    else active_change_status(target_path)
+                )
+        except WorkspaceLifecycleError as exc:
+            _emit_lifecycle_error(exc, json_output=args.json_output)
+            sys.exit(
+                2
+                if exc.code in {
+                    "PAUSED_CHANGE_BUDGET_EXCEEDED",
+                    "ACTIVE_CHANGE_CHECK_IN_REQUIRED",
+                }
+                else 1
+            )
+        if paused:
+            _emit_paused_change_status(result, json_output=args.json_output)
+        else:
+            _emit_active_change_status(result, json_output=args.json_output)
     elif args.command == "resume":
         from entigram.workspace_lifecycle import WorkspaceLifecycleError, resume_workspace
 
@@ -1727,6 +1908,11 @@ def _main():
             with open(manifest_path, 'w') as f:
                 yaml.dump(config, f, default_flow_style=False)
             print(f"✅ Default engine updated to: {args.engine}")
+            if args.engine == "Antigravity":
+                from entigram.antigravity_hooks import install_antigravity_hooks
+
+                install_antigravity_hooks(Path(target_dir))
+                print("✅ Entigram Antigravity lifecycle hooks installed.")
         else:
             print("No changes requested. Use --engine to update settings or --list to view them.")
 
@@ -3436,6 +3622,7 @@ def _cli_workspace(argv) -> Path:
 def _track_cli_operation(operation: str, argv) -> bool:
     if not operation or operation in {
         "usage",
+        "antigravity-hook",
         "eject",
         "serve",
         "panel-bridge",

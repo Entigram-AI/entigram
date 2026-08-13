@@ -119,6 +119,17 @@ etg broker status
 
 `broker status` must report `Delivery status: current`.
 
+Keep active agent work in bounded, reviewable increments:
+
+```bash
+etg change-status
+```
+
+By default, after five changed files since the previous Entigram handoff, the
+next agent write is held until it checks in again. Antigravity workspaces also
+install a session hook that loads the policy and schema before the first turn.
+See [workspace lifecycle](docs/workspace-lifecycle.md).
+
 Inspect Entigram's estimated share of a session:
 
 ```bash
@@ -130,8 +141,16 @@ Temporarily compact and disable workspace governance:
 
 ```bash
 etg pause --reason "Working without governed context"
+etg pause-status
 etg resume
 ```
+
+Paused work is deliberately bounded: Entigram snapshots the workspace and allows
+five changed files by default. Before a sixth change, resume governance and
+hydrate the agent again. Set a different limit when pausing with
+`--max-changed-files N`. In local Git repositories, pause also installs a
+temporary pre-commit guard so oversized paused work cannot be committed without
+that check-in.
 
 Archive and detach Entigram while preserving project schemas and code:
 
