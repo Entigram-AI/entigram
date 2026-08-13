@@ -81,6 +81,8 @@ lifecycle:
   state: active
   change_budget:
     max_changed_files: 5
+agent_governance:
+  active_agents: [codex]
 external_artifacts:
   modalities: [image, pdf]
   trust: untrusted
@@ -194,12 +196,21 @@ Automation should branch on the JSON fields, not on surrounding prose.
 ## Workspace Lifecycle Contract
 
 Workspaces without a `lifecycle` block are treated as active for compatibility.
-New workspaces declare:
+New workspaces also declare the selected agent for lifecycle enforcement:
 
 ```yaml
 lifecycle:
   state: active
+agent_governance:
+  active_agents: [codex]
 ```
+
+Workspaces may declare more than one agent. The operating supported agent
+requires its matching native adapter; Entigram detects it from the adapter or
+known host signals, and otherwise uses the configured default. When the
+operating adapter is absent, Entigram withholds governed hydration context and
+refuses delivery or handoff. CI, scripts, and unsupported agents need a
+recorded per-agent exception; see `workspace-lifecycle.md`.
 
 `etg pause` changes the state to `paused` only after backing up and compacting
 Entigram-owned policy and marked agent instruction blocks. While paused,

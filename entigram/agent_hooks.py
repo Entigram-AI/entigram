@@ -20,7 +20,11 @@ from .antigravity_hooks import (
     install_antigravity_hooks,
     remove_antigravity_hooks,
 )
-from .workspace_lifecycle import WorkspaceLifecycleError
+from .workspace_lifecycle import (
+    SUPPORTED_AGENT_RUNTIMES,
+    WorkspaceLifecycleError,
+    normalize_agent_runtime,
+)
 
 
 CODEX_HOOK_PATH = ".codex/hooks.json"
@@ -28,7 +32,7 @@ CLAUDE_HOOK_PATH = ".claude/settings.json"
 CODEX_RUNTIME = "codex"
 CLAUDE_RUNTIME = "claude"
 ANTIGRAVITY_RUNTIME = "antigravity"
-ALL_RUNTIMES = (ANTIGRAVITY_RUNTIME, CODEX_RUNTIME, CLAUDE_RUNTIME)
+ALL_RUNTIMES = SUPPORTED_AGENT_RUNTIMES
 
 
 def install_agent_hooks(
@@ -73,15 +77,15 @@ def remove_agent_hooks(target_dir: Path) -> Dict[str, Any]:
     }
 
 
-def agent_hook_status(target_dir: Path) -> Dict[str, Any]:
+def agent_hook_status(
+    target_dir: Path, *, include_git_checkin_guard: bool = True
+) -> Dict[str, Any]:
     """Report installed adapters and the portable enforcement backstop."""
     root = Path(target_dir).expanduser().resolve()
     antigravity = _load_json_config(root / ".agents" / "hooks.json")
     codex = _load_json_config(root / CODEX_HOOK_PATH)
     claude = _load_json_config(root / CLAUDE_HOOK_PATH)
-    from .workspace_lifecycle import workspace_git_checkin_guard_status
-
-    return {
+    result = {
         "ok": True,
         "workspace": str(root),
         "runtimes": {
@@ -89,8 +93,12 @@ def agent_hook_status(target_dir: Path) -> Dict[str, Any]:
             CODEX_RUNTIME: _contains_runtime_hook(codex, CODEX_RUNTIME),
             CLAUDE_RUNTIME: _contains_runtime_hook(claude, CLAUDE_RUNTIME),
         },
-        "git_checkin_guard": workspace_git_checkin_guard_status(root),
     }
+    if include_git_checkin_guard:
+        from .workspace_lifecycle import workspace_git_checkin_guard_status
+
+        result["git_checkin_guard"] = workspace_git_checkin_guard_status(root)
+    return result
 
 
 def handle_agent_hook(
@@ -105,11 +113,35 @@ def handle_agent_hook(
     if normalized_runtime not in {CODEX_RUNTIME, CLAUDE_RUNTIME}:
         return {"decision": "deny", "reason": f"Unsupported agent runtime: {runtime}"}
 
+    from .workspace_lifecycle import active_agent_adapter_status
+
+    enforcement = active_agent_adapter_status(Path(target_dir), agent=normalized_runtime)
+    if not enforcement["ok"]:
+        reason = (
+            "Entigram workspace-agent enforcement is required. "
+            + enforcement.get("next_action", "Declare and configure this agent.")
+        )
+        if event.strip().lower() == "session-start":
+            return _codex_response(
+                event,
+                {"injectSteps": [{"ephemeralMessage": reason}]},
+                target_dir,
+            ) if normalized_runtime == CODEX_RUNTIME else _claude_response(
+                event,
+                {"injectSteps": [{"ephemeralMessage": reason}]},
+                target_dir,
+            )
+        return _codex_response(event, {"decision": "deny", "reason": reason}, target_dir) if normalized_runtime == CODEX_RUNTIME else _claude_response(
+            event, {"decision": "deny", "reason": reason}, target_dir
+        )
+
     data = payload if isinstance(payload, dict) else {}
     internal_event, internal_payload = _internal_hook_request(
         normalized_runtime, event, data
     )
-    result = handle_antigravity_hook(target_dir, internal_event, internal_payload)
+    result = handle_antigravity_hook(
+        target_dir, internal_event, internal_payload, runtime=normalized_runtime
+    )
 
     if normalized_runtime == CODEX_RUNTIME:
         return _codex_response(event, result, target_dir)
@@ -130,14 +162,7 @@ def _requested_runtimes(engine: str) -> Iterable[str]:
 
 def _normalize_runtime(value: str) -> str:
     normalized = (value or "all").strip().lower()
-    aliases = {
-        "all": "all",
-        "antigravity": ANTIGRAVITY_RUNTIME,
-        "codex": CODEX_RUNTIME,
-        "claude": CLAUDE_RUNTIME,
-        "claude code": CLAUDE_RUNTIME,
-    }
-    return aliases.get(normalized, normalized)
+    return "all" if normalized == "all" else (normalize_agent_runtime(normalized) or normalized)
 
 
 def _install_codex_hooks(root: Path) -> Dict[str, Any]:

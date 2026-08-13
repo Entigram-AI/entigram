@@ -105,6 +105,58 @@ etg agent-hooks install
 etg agent-hooks status
 ```
 
+### Workspace-agent enforcement
+
+Every new workspace declares the agents that may operate in it. Initialization
+adds the selected `etg init --engine` agent and makes it the default launch
+agent. Add another agent without replacing the default:
+
+```yaml
+agent_governance:
+  active_agents:
+    - codex
+    - claude
+```
+
+For a supported operating agent (Codex, Claude Code, or Antigravity), its
+native adapter must be installed before Entigram loads governed context or
+accepts a delivery. Entigram identifies an adapter event directly; generic CLI
+commands use known host markers or parent-process detection, then fall back to
+the configured default. Use `hydrate --agent <agent>` when detection is not
+available. The other declared agents are checked when they begin operating.
+
+`hydrate` withholds policy, schema, and ledger content while the operating
+agent's adapter is missing; `etg broker deliver` and `etg broker handoff`
+refuse to create a delivery snapshot; `etg broker status` reports governance
+enforcement as required rather than current.
+
+Add and install the matching adapter with:
+
+```bash
+etg config --add-agent "Claude Code"
+# or reinstall an adapter for an existing declared agent
+etg agent-hooks install --engine Codex
+```
+
+The adapter file proves project configuration, not host trust. The agent host
+must still allow project hooks to run. Entigram does not claim to observe that
+host-specific approval state.
+
+CI, scripts, and unsupported agents require a deliberate, auditable exception
+for that agent:
+
+```bash
+etg config --add-agent ci
+etg config --adapter-exception "CI release runner has no native hook protocol" \
+  --approved-by "Release Engineering" --adapter-exception-agent ci
+```
+
+The exception is stored in `.etg/entigram.yaml` and recorded as immutable
+ledger evidence. It permits adapter-free delivery, but its status remains
+`exception`, not `enforced`. Clear the manifest exception (without erasing its
+ledger history) with `etg config --clear-adapter-exception
+--adapter-exception-agent ci`.
+
 ## Pause
 
 ```bash

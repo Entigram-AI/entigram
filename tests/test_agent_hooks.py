@@ -3,6 +3,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import yaml
+
 from entigram.agent_hooks import (
     agent_hook_status,
     handle_agent_hook,
@@ -33,20 +35,25 @@ class TestAgentHooks(unittest.TestCase):
             "tool_input": {"command": "apply_patch"},
         }
 
-    def test_init_installs_supported_native_adapters(self):
+    def _add_workspace_agent(self, runtime):
+        manifest_path = self.root / ".etg" / "entigram.yaml"
+        manifest = yaml.safe_load(manifest_path.read_text())
+        manifest["agent_governance"]["active_agents"].append(runtime)
+        manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False))
+        install_agent_hooks(self.root, engine=runtime)
+
+    def test_init_installs_selected_native_adapter(self):
         codex = json.loads((self.root / ".codex" / "hooks.json").read_text())
-        claude = json.loads((self.root / ".claude" / "settings.json").read_text())
         self.assertIn("SessionStart", codex["hooks"])
-        self.assertIn("PreToolUse", claude["hooks"])
         self.assertIn("--runtime codex", json.dumps(codex))
-        self.assertIn("--runtime claude", json.dumps(claude))
         self.assertIn("mcp__.*", json.dumps(codex))
-        self.assertIn("mcp__.*", json.dumps(claude))
+        self.assertFalse((self.root / ".claude" / "settings.json").exists())
+        self.assertFalse((self.root / ".agents" / "hooks.json").exists())
 
         status = agent_hook_status(self.root)
-        self.assertTrue(status["runtimes"]["antigravity"])
+        self.assertFalse(status["runtimes"]["antigravity"])
         self.assertTrue(status["runtimes"]["codex"])
-        self.assertTrue(status["runtimes"]["claude"])
+        self.assertFalse(status["runtimes"]["claude"])
         self.assertFalse(status["git_checkin_guard"]["installed"])
 
     def test_codex_session_context_write_admission_and_stop_gate(self):
@@ -91,6 +98,7 @@ class TestAgentHooks(unittest.TestCase):
         self.assertIn("broker handoff", stopped["reason"])
 
     def test_claude_denies_next_write_when_change_budget_is_exhausted(self):
+        self._add_workspace_agent("claude")
         handle_agent_hook(
             self.root,
             runtime="claude",

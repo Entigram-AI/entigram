@@ -5,6 +5,7 @@ from pathlib import Path
 from datetime import datetime
 from .project_history import add_project_to_history
 from .sqlite_ledger.paths import CANONICAL_LEDGER_NAME
+from .workspace_lifecycle import normalize_agent_runtime
 
 
 def _agent_policy_text() -> str:
@@ -39,6 +40,11 @@ Entigram-initialized workspace.
   resume`, which checkpoint an individual agent.
 - `etg eject` archives `.etg` before detaching Entigram from the workspace. It
   does not delete project schemas, ontologies, or application code.
+- Every operating workspace agent must be declared and have its Entigram
+  lifecycle adapter active. `hydrate`, delivery, and handoff refuse an
+  unenforced supported agent. Use `etg agent-hooks install --engine <agent>` to
+  restore enforcement. CI, scripts, and unsupported agents require a recorded
+  per-agent exception rather than silently bypassing this control.
 
 ## External Artifact Safety
 
@@ -101,6 +107,9 @@ def inject_entigram_manifest(target_dir: str, selected_packages: list, cli_engin
             "state": "active",
             "change_budget": {"max_changed_files": 5},
         },
+        "agent_governance": {
+            "active_agents": [normalize_agent_runtime(cli_engine)],
+        },
         "status": "initialized",
         "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
@@ -142,6 +151,10 @@ canonical policy is the source of truth for governance rules.
    `etg broker impact --file <path>`.
 4. Before handoff, run `etg broker handoff` and `etg broker status`.
 5. Do not hand off unless status reports `Delivery status: current`.
+6. Before working as a declared workspace agent, keep that agent's lifecycle
+   adapter installed. If `hydrate` reports `ACTIVE_AGENT_ADAPTER_REQUIRED`,
+   install the missing adapter or record that agent's approved exception before
+   editing.
 
 ## Workspace Context
 
@@ -245,8 +258,18 @@ Do not infer package capabilities from a catalog entry alone.
 
     try:
         from .agent_hooks import install_agent_hooks
+        from .workspace_lifecycle import (
+            SUPPORTED_AGENT_RUNTIMES,
+            install_workspace_git_checkin_guard,
+        )
 
-        install_agent_hooks(target_path, engine="all")
+        initial_runtime = normalize_agent_runtime(cli_engine)
+        if initial_runtime in SUPPORTED_AGENT_RUNTIMES:
+            install_agent_hooks(target_path, engine=initial_runtime)
+        else:
+            # Unsupported launchers remain usable only after their own recorded
+            # exception, but still receive the portable Git check-in backstop.
+            install_workspace_git_checkin_guard(target_path)
     except Exception as exc:
         print(f"Error installing Entigram agent lifecycle adapters: {exc}")
         return False

@@ -37,6 +37,18 @@ PAUSE_GIT_HOOK_START = "# >>> entigram paused change budget >>>"
 PAUSE_GIT_HOOK_END = "# <<< entigram paused change budget <<<"
 GIT_CHECKIN_GUARD_START = "# >>> entigram lifecycle check-in >>>"
 GIT_CHECKIN_GUARD_END = "# <<< entigram lifecycle check-in <<<"
+SUPPORTED_AGENT_RUNTIMES = ("antigravity", "codex", "claude")
+_AGENT_RUNTIME_ALIASES = {
+    "antigravity": "antigravity",
+    "codex": "codex",
+    "claude": "claude",
+    "claude code": "claude",
+}
+_AGENT_RUNTIME_DISPLAY_NAMES = {
+    "antigravity": "Antigravity",
+    "codex": "Codex",
+    "claude": "Claude Code",
+}
 
 _MARKER_RE = re.compile(
     rf"{re.escape(ENTIGRAM_START)}.*?{re.escape(ENTIGRAM_END)}",
@@ -156,6 +168,402 @@ def paused_hydration_vector(*, compact: bool = False) -> str:
         f"{encoded}\n"
         "--- SEQUENCE COMPLETE ---"
     )
+
+
+def normalize_agent_runtime(value: Any) -> Optional[str]:
+    """Return the canonical runtime name for a configured agent, when known."""
+    if not isinstance(value, str):
+        return None
+    normalized = " ".join(value.strip().lower().split())
+    return _AGENT_RUNTIME_ALIASES.get(normalized, normalized or None)
+
+
+def detect_current_agent_runtime() -> Dict[str, Optional[str]]:
+    """Best-effort runtime detection without treating a shell as an agent.
+
+    Native adapters always supply their runtime explicitly. Generic CLI commands
+    can use this conservative helper when a host exports a known session marker
+    or is directly visible in the parent-process chain. A configured default is
+    deliberately not reported as automatic detection.
+    """
+    configured = normalize_agent_runtime(os.environ.get("ENTIGRAM_AGENT_RUNTIME"))
+    if configured:
+        return {"agent": configured, "source": "environment:ENTIGRAM_AGENT_RUNTIME"}
+
+    markers = (
+        ("CODEX_THREAD_ID", "codex"),
+        ("CODEX_HOME", "codex"),
+        ("CLAUDECODE", "claude"),
+        ("CLAUDE_CODE", "claude"),
+        ("CLAUDE_AGENT_SDK", "claude"),
+        ("ANTIGRAVITY_SESSION_ID", "antigravity"),
+        ("AGY_SESSION_ID", "antigravity"),
+    )
+    for variable, runtime in markers:
+        if os.environ.get(variable):
+            return {"agent": runtime, "source": f"environment:{variable}"}
+
+    # Parent inspection is intentionally advisory: walk a short chain and only
+    # recognize an executable token, never arbitrary command-line text.
+    pid = os.getppid()
+    seen = set()
+    for _ in range(6):
+        if not pid or pid in seen:
+            break
+        seen.add(pid)
+        try:
+            completed = subprocess.run(
+                ["ps", "-p", str(pid), "-o", "ppid=,comm="],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=0.2,
+            )
+        except (OSError, subprocess.SubprocessError):
+            break
+        if completed.returncode != 0 or not completed.stdout.strip():
+            break
+        parent, _, command = completed.stdout.strip().partition(" ")
+        executable = Path(command.strip()).name.lower()
+        runtime = normalize_agent_runtime(executable)
+        if runtime in SUPPORTED_AGENT_RUNTIMES:
+            return {"agent": runtime, "source": "parent_process"}
+        try:
+            pid = int(parent)
+        except ValueError:
+            break
+    return {"agent": None, "source": None}
+
+
+def declared_workspace_agents(manifest: Dict[str, Any]) -> List[str]:
+    """Return normalized, deduplicated agents declared for a workspace.
+
+    `active_agent` is accepted as a legacy singular declaration. `cli_engine`
+    remains the default launch engine and is used only when no agent declaration
+    exists, preserving older workspaces without silently treating every adapter
+    configuration file as an active agent.
+    """
+    governance = manifest.get("agent_governance")
+    governance = governance if isinstance(governance, dict) else {}
+    declared = governance.get("active_agents")
+    if not isinstance(declared, list):
+        declared = [governance["active_agent"]] if governance.get("active_agent") else []
+    if not declared and manifest.get("cli_engine"):
+        declared = [manifest["cli_engine"]]
+
+    agents: List[str] = []
+    for value in declared:
+        agent = normalize_agent_runtime(value)
+        if agent and agent not in agents:
+            agents.append(agent)
+    return agents
+
+
+def _valid_adapter_exception(value: Any) -> bool:
+    return bool(
+        isinstance(value, dict)
+        and all(
+            isinstance(value.get(field), str) and value[field].strip()
+            for field in ("reason", "approved_by", "recorded_at")
+        )
+        and isinstance(value.get("evidence_id"), int)
+    )
+
+
+def _adapter_exceptions(governance: Dict[str, Any], agents: List[str]) -> Dict[str, Dict[str, Any]]:
+    exceptions = governance.get("adapter_exceptions")
+    if isinstance(exceptions, dict):
+        return {
+            agent: exception
+            for agent, exception in exceptions.items()
+            if isinstance(agent, str) and _valid_adapter_exception(exception)
+        }
+
+    # Compatibility with the short-lived single-agent field introduced before
+    # workspaces gained multi-agent declarations.
+    legacy = governance.get("adapter_exception")
+    if agents and _valid_adapter_exception(legacy):
+        return {agents[0]: legacy}
+    return {}
+
+
+def active_agent_adapter_status(
+    target_dir: Path, *, agent: Optional[str] = None
+) -> Dict[str, Any]:
+    """Describe enforcement for the operating agent in a multi-agent workspace.
+
+    A roster says which agents may work in the workspace. The operating agent is
+    chosen from an explicit adapter/launch value, then conservative host
+    detection, then the configured default. Only the operating agent must pass
+    its adapter gate; another declared agent is checked when it becomes active.
+    """
+    root = Path(target_dir).expanduser().resolve()
+    manifest = load_manifest(root)
+    governance = manifest.get("agent_governance")
+    governance = governance if isinstance(governance, dict) else {}
+    agents = declared_workspace_agents(manifest)
+    default_agent = normalize_agent_runtime(manifest.get("cli_engine"))
+    if default_agent not in agents:
+        default_agent = agents[0] if agents else None
+    if agent is not None:
+        operating_agent = normalize_agent_runtime(agent)
+        operating_agent_source = "explicit"
+    else:
+        detected = detect_current_agent_runtime()
+        operating_agent = detected["agent"] or default_agent
+        operating_agent_source = detected["source"] or ("configured_default" if default_agent else None)
+    exceptions = _adapter_exceptions(governance, agents)
+
+    hook_status: Dict[str, Any] = {}
+    hook_error = None
+    try:
+        from .agent_hooks import agent_hook_status
+
+        hook_status = agent_hook_status(root, include_git_checkin_guard=False)
+    except WorkspaceLifecycleError as exc:
+        hook_error = exc.as_dict()["error"]
+
+    agent_states: Dict[str, Dict[str, Any]] = {}
+    next_actions: List[str] = []
+    agent_actions: Dict[str, str] = {}
+    for agent in agents:
+        runtime = agent if agent in SUPPORTED_AGENT_RUNTIMES else None
+        installed = bool(hook_status.get("runtimes", {}).get(agent)) if runtime else False
+        exception = exceptions.get(agent)
+        state: Dict[str, Any] = {
+            "runtime": runtime,
+            "installed": installed,
+            "exception": exception,
+        }
+        if hook_error:
+            state["status_error"] = hook_error
+
+        if installed:
+            state.update({"ok": True, "status": "enforced", "requirement": "native_adapter"})
+        elif exception:
+            state.update(
+                {
+                    "ok": True,
+                    "status": "exception",
+                    "requirement": "native_adapter" if runtime else "recorded_exception",
+                }
+            )
+        elif runtime:
+            display_name = _AGENT_RUNTIME_DISPLAY_NAMES[agent]
+            state.update({"ok": False, "status": "degraded", "requirement": "native_adapter"})
+            agent_actions[agent] = (
+                f"Install the {display_name} adapter with `etg agent-hooks install "
+                f"--dir {shlex.quote(str(root))} --engine {display_name}`."
+            )
+        else:
+            state.update({"ok": False, "status": "exception_required", "requirement": "recorded_exception"})
+            agent_actions[agent] = (
+                f"Record an adapter exception for {agent} with `etg config --adapter-exception "
+                f"REASON --approved-by OPERATOR --adapter-exception-agent {agent}`."
+            )
+        agent_states[agent] = state
+
+    if not agents:
+        next_actions.append(
+            "Declare one or more workspace agents with `etg config --add-agent Codex`, "
+            "or record an adapter exception for CI or an unsupported host."
+        )
+        operating_state = None
+        status = "exception_required"
+    elif not operating_agent or operating_agent not in agent_states:
+        agent_argument = shlex.quote(operating_agent) if operating_agent else "<agent>"
+        next_actions.insert(
+            0,
+            "Declare the operating agent with `etg config --add-agent "
+            f"{agent_argument}` before it works in this workspace.",
+        )
+        operating_state = {
+            "ok": False,
+            "status": "undeclared_agent",
+            "requirement": "declared_workspace_agent",
+        }
+        status = "undeclared_agent"
+    else:
+        operating_state = agent_states[operating_agent]
+        status = operating_state["status"]
+
+    return {
+        "ok": bool(operating_state and operating_state["ok"]),
+        "status": status,
+        "active_agents": agents,
+        "default_agent": default_agent,
+        "operating_agent": operating_agent,
+        "operating_agent_source": operating_agent_source,
+        "agents": agent_states,
+        "next_action": (
+            " ".join(next_actions)
+            if next_actions
+            else agent_actions.get(operating_agent, "Continue through Entigram gates.")
+        ),
+    }
+
+
+def active_agent_adapter_error(status: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the stable failure envelope used by hydration and delivery gates."""
+    return {
+        "code": "ACTIVE_AGENT_ADAPTER_REQUIRED",
+        "message": (
+            "The operating workspace agent lacks an enforced Entigram lifecycle adapter, "
+            "and no recorded per-agent exception authorizes adapter-free operation."
+        ),
+        "details": status,
+    }
+
+
+def adapter_requirement_hydration_vector(
+    status: Dict[str, Any], *, compact: bool = False
+) -> str:
+    payload = {
+        "ENTIGRAM_BOOT_VECTOR": {
+            "workspace_state": "active",
+            "ok": False,
+            "error": active_agent_adapter_error(status),
+        }
+    }
+    encoded = (
+        json.dumps(payload, separators=(",", ":"), sort_keys=True)
+        if compact
+        else json.dumps(payload, indent=2, sort_keys=True)
+    )
+    return (
+        "--- ENTIGRAM HYDRATION SEQUENCE ---\n"
+        f"{encoded}\n"
+        "--- SEQUENCE COMPLETE ---"
+    )
+
+
+def record_active_agent_adapter_exception(
+    target_dir: Path,
+    *,
+    reason: str,
+    approved_by: str,
+    agent: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Record an explicit, auditable exception for one declared agent."""
+    if not isinstance(reason, str) or not reason.strip():
+        raise WorkspaceLifecycleError(
+            "INVALID_ADAPTER_EXCEPTION",
+            "An adapter exception requires a non-empty reason.",
+        )
+    if not isinstance(approved_by, str) or not approved_by.strip():
+        raise WorkspaceLifecycleError(
+            "INVALID_ADAPTER_EXCEPTION",
+            "An adapter exception requires the approving operator.",
+        )
+
+    root = Path(target_dir).expanduser().resolve()
+    manifest_path = _manifest_path(root)
+    original_manifest = manifest_path.read_text()
+    manifest = load_manifest(root)
+    governance = manifest.get("agent_governance")
+    if not isinstance(governance, dict):
+        governance = {}
+        manifest["agent_governance"] = governance
+    agents = declared_workspace_agents(manifest)
+    exception_agent = normalize_agent_runtime(agent) if agent else (
+        normalize_agent_runtime(manifest.get("cli_engine")) or (agents[0] if agents else None)
+    )
+    if not exception_agent:
+        raise WorkspaceLifecycleError(
+            "INVALID_ADAPTER_EXCEPTION",
+            "Declare the agent receiving this exception with --add-agent or --engine.",
+        )
+    if exception_agent not in agents:
+        agents.append(exception_agent)
+    governance["active_agents"] = agents
+    governance.pop("active_agent", None)
+
+    recorded_at = _utc_now()
+    exception = {
+        "reason": reason.strip(),
+        "approved_by": approved_by.strip(),
+        "recorded_at": recorded_at,
+    }
+    exceptions = _adapter_exceptions(governance, agents)
+    governance["adapter_exceptions"] = exceptions
+    exceptions[exception_agent] = exception
+    governance.pop("adapter_exception", None)
+    manifest["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    _atomic_write_text(
+        manifest_path,
+        yaml.safe_dump(manifest, default_flow_style=False, sort_keys=False),
+    )
+
+    try:
+        from .sqlite_ledger.manager import LedgerManager
+        from .sqlite_ledger.paths import resolve_ledger_path
+
+        ledger = LedgerManager(str(resolve_ledger_path(str(root))))
+        evidence_id = ledger.record_delivery_evidence(
+            evidence_type="active_agent_adapter_exception",
+            artifact_ref=".etg/entigram.yaml",
+            command="etg config --adapter-exception",
+            result_summary=(
+                f"Adapter exception for {exception_agent} "
+                f"agent: {exception['reason']}"
+            ),
+            passed=True,
+            agent_id=exception["approved_by"],
+        )
+    except Exception as exc:
+        _atomic_write_text(manifest_path, original_manifest)
+        raise WorkspaceLifecycleError(
+            "ADAPTER_EXCEPTION_RECORDING_FAILED",
+            f"Could not record the adapter exception in the ledger: {exc}",
+        ) from exc
+
+    if not evidence_id:
+        _atomic_write_text(manifest_path, original_manifest)
+        raise WorkspaceLifecycleError(
+            "ADAPTER_EXCEPTION_RECORDING_FAILED",
+            "Could not record the adapter exception in the ledger.",
+        )
+
+    exception["evidence_id"] = evidence_id
+    _atomic_write_text(
+        manifest_path,
+        yaml.safe_dump(manifest, default_flow_style=False, sort_keys=False),
+    )
+    result = active_agent_adapter_status(root, agent=exception_agent)
+    result["recorded_agent"] = exception_agent
+    result["recorded_exception"] = exception
+    return result
+
+
+def clear_active_agent_adapter_exception(
+    target_dir: Path, *, agent: Optional[str] = None
+) -> bool:
+    """Clear one manifest exception while retaining immutable ledger history."""
+    root = Path(target_dir).expanduser().resolve()
+    manifest_path = _manifest_path(root)
+    manifest = load_manifest(root)
+    governance = manifest.get("agent_governance")
+    if not isinstance(governance, dict):
+        return False
+    agents = declared_workspace_agents(manifest)
+    exception_agent = normalize_agent_runtime(agent) if agent else (
+        normalize_agent_runtime(manifest.get("cli_engine")) or (agents[0] if agents else None)
+    )
+    exceptions = governance.get("adapter_exceptions")
+    if isinstance(exceptions, dict) and exception_agent in exceptions:
+        exceptions.pop(exception_agent)
+        if not exceptions:
+            governance.pop("adapter_exceptions", None)
+    elif governance.get("adapter_exception") and agents and exception_agent == agents[0]:
+        governance.pop("adapter_exception")
+    else:
+        return False
+    manifest["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    _atomic_write_text(
+        manifest_path,
+        yaml.safe_dump(manifest, default_flow_style=False, sort_keys=False),
+    )
+    return True
 
 
 def paused_change_status(target_dir: Path) -> Dict[str, Any]:
