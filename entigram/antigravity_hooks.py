@@ -79,11 +79,24 @@ def handle_antigravity_hook(
     target_dir: Path,
     event: str,
     payload: Optional[Dict[str, Any]] = None,
+    *,
+    runtime: str = "antigravity",
 ) -> Dict[str, Any]:
-    """Return the JSON result required by one Antigravity lifecycle event."""
+    """Return the JSON result required by one native lifecycle event."""
     root = Path(target_dir).expanduser().resolve()
     data = payload if isinstance(payload, dict) else {}
     try:
+        from .workspace_lifecycle import active_agent_adapter_status
+
+        enforcement = active_agent_adapter_status(root, agent=runtime)
+        if not enforcement["ok"]:
+            reason = (
+                "Entigram workspace-agent enforcement is required. "
+                + enforcement.get("next_action", "Declare and configure this agent.")
+            )
+            if event == "pre-invocation":
+                return {"injectSteps": [{"ephemeralMessage": reason}]}
+            return {"decision": "deny", "reason": reason}
         if event == "pre-invocation":
             return _pre_invocation(root, data)
         if event == "pre-tool-use":

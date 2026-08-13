@@ -16,6 +16,20 @@ class TestCLIIntegration(unittest.TestCase):
     def setUp(self):
         self.test_dir = tempfile.mkdtemp()
         self.old_cwd = os.getcwd()
+        self.agent_markers = {
+            key: os.environ.pop(key)
+            for key in (
+                "ENTIGRAM_AGENT_RUNTIME",
+                "CODEX_THREAD_ID",
+                "CODEX_HOME",
+                "CLAUDECODE",
+                "CLAUDE_CODE",
+                "CLAUDE_AGENT_SDK",
+                "ANTIGRAVITY_SESSION_ID",
+                "AGY_SESSION_ID",
+            )
+            if key in os.environ
+        }
         os.chdir(self.test_dir)
         self.old_stdout = sys.stdout
         sys.stdout = StringIO()
@@ -23,6 +37,7 @@ class TestCLIIntegration(unittest.TestCase):
     def tearDown(self):
         os.chdir(self.old_cwd)
         shutil.rmtree(self.test_dir)
+        os.environ.update(self.agent_markers)
         sys.stdout = self.old_stdout
 
     def run_cli(self, args):

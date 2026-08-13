@@ -300,6 +300,9 @@ def _agent_start_text(target_dir):
     manifest_path = target_path / ".etg" / "entigram.yaml"
     policy_path = target_path / ".etg" / "agent_policy.md"
     schema_path = target_path / "schema.lds"
+    from entigram.workspace_lifecycle import active_agent_adapter_status
+
+    adapter_status = active_agent_adapter_status(target_path)
     lines = [
         f"Entigram agent start: {target_path}",
         "",
@@ -308,12 +311,44 @@ def _agent_start_text(target_dir):
         f"  .etg/agent_policy.md: {'found' if policy_path.exists() else 'missing'}",
         f"  schema.lds: {'found' if schema_path.exists() else 'missing'}",
         "",
+        "Workspace-agent enforcement:",
+        f"  agents: {', '.join(adapter_status.get('active_agents') or ['unconfigured'])}",
+        f"  default launch agent: {adapter_status.get('default_agent') or 'unconfigured'}",
+        "  operating agent: "
+        f"{adapter_status.get('operating_agent') or 'unresolved'} "
+        f"({adapter_status.get('operating_agent_source') or 'unresolved'})",
+        f"  status: {adapter_status.get('status', 'unknown')}",
+        f"  next action: {adapter_status.get('next_action', 'inspect agent-hooks status')}",
+        "",
         _agent_instructions_text().rstrip(),
         "",
         "Compact hydration vector:",
         get_hydration_vector(target_path, compact=True),
     ]
     return "\n".join(lines)
+
+
+def _require_active_agent_adapter(target_dir, *, requested_engine=None):
+    """Fail closed before Entigram launches or invokes a governed agent."""
+    from entigram.workspace_lifecycle import (
+        active_agent_adapter_status,
+        normalize_agent_runtime,
+    )
+
+    status = active_agent_adapter_status(Path(target_dir), agent=requested_engine)
+    requested_runtime = normalize_agent_runtime(requested_engine)
+    if requested_engine and requested_runtime not in status.get("active_agents", []):
+        print(
+            "❌ Agent launch refused: the requested engine is not declared for "
+            "this workspace. Run `etg config --add-agent "
+            f"{requested_engine}` first."
+        )
+        raise SystemExit(1)
+    if not status["ok"]:
+        print("❌ Agent launch refused: workspace-agent lifecycle enforcement is required.")
+        print(status["next_action"])
+        raise SystemExit(1)
+    return status
 
 
 def get_default_engine():
@@ -568,7 +603,12 @@ def _concise_hydration_payload(full_payload: dict, schema_content: str) -> dict:
     return summary
 
 
-def get_hydration_vector(target_path: Path, compact: bool = False, full: bool = False) -> str:
+def get_hydration_vector(
+    target_path: Path,
+    compact: bool = False,
+    full: bool = False,
+    agent: str = None,
+) -> str:
     """Deterministic boot sequence to align LLM state vector by flattening ledger and Schema."""
     entigram_dir = target_path / ".etg"
     manifest_path = entigram_dir / "entigram.yaml"
@@ -582,6 +622,15 @@ def get_hydration_vector(target_path: Path, compact: bool = False, full: bool = 
 
     if is_workspace_paused(target_path):
         return paused_hydration_vector(compact=compact)
+
+    from entigram.workspace_lifecycle import (
+        active_agent_adapter_status,
+        adapter_requirement_hydration_vector,
+    )
+
+    adapter_status = active_agent_adapter_status(target_path, agent=agent)
+    if not adapter_status["ok"]:
+        return adapter_requirement_hydration_vector(adapter_status, compact=compact)
 
     # 1. Load Manifest
     try:
@@ -663,6 +712,7 @@ def get_hydration_vector(target_path: Path, compact: bool = False, full: bool = 
             "packages": list(manifest.get("packages", {}).keys()),
             "agent_policy_path": ".etg/agent_policy.md",
             "agent_policy": agent_policy,
+            "agent_governance": adapter_status,
             "physical_laws": schema_content,
             "commissioner": commissioner_checklist,
             "semantic_alignments": alignments,
@@ -949,6 +999,33 @@ def _main():
     config_parser = subparsers.add_parser("config", help="Manage workspace configuration")
     config_parser.add_argument("--dir", default=".", help="Target directory")
     config_parser.add_argument("--engine", help="Update the default CLI engine")
+    agent_roster_group = config_parser.add_mutually_exclusive_group()
+    agent_roster_group.add_argument(
+        "--add-agent",
+        help="Declare an additional workspace agent and install its adapter when supported",
+    )
+    agent_roster_group.add_argument(
+        "--remove-agent",
+        help="Remove a declared workspace agent and its active exception",
+    )
+    adapter_exception_group = config_parser.add_mutually_exclusive_group()
+    adapter_exception_group.add_argument(
+        "--adapter-exception",
+        help="Record why an active agent may operate without a native lifecycle adapter",
+    )
+    adapter_exception_group.add_argument(
+        "--clear-adapter-exception",
+        action="store_true",
+        help="Clear the current adapter exception while retaining its ledger history",
+    )
+    config_parser.add_argument(
+        "--approved-by",
+        help="Operator approving --adapter-exception",
+    )
+    config_parser.add_argument(
+        "--adapter-exception-agent",
+        help="Declared agent receiving or clearing the adapter exception",
+    )
     config_parser.add_argument("--list", action="store_true", help="List current configuration")
 
     # warden command
@@ -1650,12 +1727,14 @@ def _main():
     hydrate_parser.add_argument("--dir", help="Target directory (defaults to current directory)")
     hydrate_parser.add_argument("--compact", action="store_true", help="Minimize whitespace for extreme token efficiency")
     hydrate_parser.add_argument("--full", action="store_true", help="Include the full schema, ledger, and delivery state vector")
+    hydrate_parser.add_argument("--agent", help="Operating agent when host detection is unavailable")
     hydrate_parser.add_argument("--out", help="Save the hydration vector to a file instead of printing")
 
     boot_parser = subparsers.add_parser("boot", help="Alias for 'hydrate'")
     boot_parser.add_argument("--dir", help="Target directory (defaults to current directory)")
     boot_parser.add_argument("--compact", action="store_true", help="Minimize whitespace for extreme token efficiency")
     boot_parser.add_argument("--full", action="store_true", help="Include the full schema, ledger, and delivery state vector")
+    boot_parser.add_argument("--agent", help="Operating agent when host detection is unavailable")
     boot_parser.add_argument("--out", help="Save the hydration vector to a file instead of printing")
 
     align_parser = broker_subparsers.add_parser("align", help="Authorize semantic alignment")
@@ -1770,7 +1849,10 @@ def _main():
         print(json.dumps(result, sort_keys=True))
     elif args.command == "agent-hooks":
         from entigram.agent_hooks import agent_hook_status, install_agent_hooks
-        from entigram.workspace_lifecycle import WorkspaceLifecycleError
+        from entigram.workspace_lifecycle import (
+            WorkspaceLifecycleError,
+            active_agent_adapter_status,
+        )
 
         try:
             target_path = _resolve_workspace_dir(args.dir)
@@ -1781,6 +1863,7 @@ def _main():
             else:
                 print("Use `etg agent-hooks install` or `etg agent-hooks status`.")
                 sys.exit(2)
+            result["workspace_agent_enforcement"] = active_agent_adapter_status(target_path)
         except WorkspaceLifecycleError as exc:
             _emit_lifecycle_error(exc, json_output=getattr(args, "json_output", False))
             sys.exit(1)
@@ -1796,6 +1879,17 @@ def _main():
                 "  - portable Git check-in guard: "
                 + ("installed" if git_guard.get("installed") else git_guard.get("reason", "not installed"))
             )
+            enforcement = result.get("workspace_agent_enforcement") or {}
+            print(
+                "  - workspace-agent enforcement: "
+                f"{enforcement.get('status', 'unknown')}"
+            )
+            print(
+                "    operating agent: "
+                f"{enforcement.get('operating_agent') or 'unresolved'} "
+                f"({enforcement.get('operating_agent_source') or 'unresolved'})"
+            )
+            print(f"    next action: {enforcement.get('next_action', 'inspect workspace configuration')}")
     elif args.command == "benchmark":
         from entigram.governance_benchmark import (
             GovernanceBenchmarkError,
@@ -2006,7 +2100,7 @@ def _main():
         try:
             yaml = _load_yaml_module()
             with open(manifest_path, 'r') as f:
-                config = yaml.safe_load(f)
+                config = yaml.safe_load(f) or {}
         except Exception as e:
             print(f"❌ Failed to read config: {e}")
             sys.exit(1)
@@ -2017,18 +2111,151 @@ def _main():
                 print(f"{k}: {v}")
             return
 
-        if args.engine:
-            config['cli_engine'] = args.engine
-            config['last_updated'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            with open(manifest_path, 'w') as f:
-                yaml.dump(config, f, default_flow_style=False)
-            print(f"✅ Default engine updated to: {args.engine}")
-            from entigram.agent_hooks import install_agent_hooks
+        changed = False
+        if args.adapter_exception_agent and not (
+            args.adapter_exception or args.clear_adapter_exception
+        ):
+            print("❌ --adapter-exception-agent requires --adapter-exception or --clear-adapter-exception.")
+            sys.exit(2)
 
-            install_agent_hooks(Path(target_dir), engine="all")
-            print("✅ Entigram lifecycle adapters installed for supported agents.")
-        else:
-            print("No changes requested. Use --engine to update settings or --list to view them.")
+        if args.engine or args.add_agent or args.remove_agent:
+            from entigram.workspace_lifecycle import (
+                SUPPORTED_AGENT_RUNTIMES,
+                WorkspaceLifecycleError,
+                declared_workspace_agents,
+                normalize_agent_runtime,
+            )
+
+            governance = config.get("agent_governance")
+            if not isinstance(governance, dict):
+                governance = {}
+                config["agent_governance"] = governance
+            agents = declared_workspace_agents(config)
+            original_agents = list(agents)
+            requested = []
+            for value in (args.engine, args.add_agent):
+                runtime = normalize_agent_runtime(value)
+                if runtime and runtime not in requested:
+                    requested.append(runtime)
+
+            # Install requested native adapters before changing the manifest so a
+            # filesystem failure cannot leave a workspace newly blocked.
+            if requested:
+                from entigram.agent_hooks import install_agent_hooks
+
+                for runtime in requested:
+                    if runtime in SUPPORTED_AGENT_RUNTIMES:
+                        try:
+                            install_agent_hooks(Path(target_dir), engine=runtime)
+                        except WorkspaceLifecycleError as exc:
+                            _emit_lifecycle_error(exc, json_output=False)
+                            sys.exit(1)
+                        except OSError as exc:
+                            print(
+                                "❌ Could not install the workspace-agent lifecycle "
+                                f"adapter for {runtime}: {exc}"
+                            )
+                            sys.exit(1)
+                        print(
+                            "✅ Entigram lifecycle adapter installed for workspace agent: "
+                            f"{runtime}."
+                        )
+                    else:
+                        print(
+                            f"⚠️  No native lifecycle adapter exists for {runtime}. "
+                            "Record that agent's exception before it hydrates or hands off."
+                        )
+
+            for runtime in requested:
+                if runtime not in agents:
+                    agents.append(runtime)
+
+            if args.remove_agent:
+                removed = normalize_agent_runtime(args.remove_agent)
+                if removed not in agents:
+                    print(f"❌ {args.remove_agent} is not a declared workspace agent.")
+                    sys.exit(2)
+                default_runtime = normalize_agent_runtime(
+                    args.engine if args.engine else config.get("cli_engine")
+                )
+                if removed == default_runtime:
+                    print(
+                        "❌ Choose another default with --engine before removing the "
+                        "current default workspace agent."
+                    )
+                    sys.exit(2)
+                agents.remove(removed)
+                exceptions = governance.get("adapter_exceptions")
+                if isinstance(exceptions, dict):
+                    exceptions.pop(removed, None)
+                    if not exceptions:
+                        governance.pop("adapter_exceptions", None)
+                print(f"✅ Removed workspace agent: {removed}.")
+
+            governance["active_agents"] = agents
+            governance.pop("active_agent", None)
+            legacy_exception = governance.get("adapter_exception")
+            if isinstance(legacy_exception, dict) and original_agents:
+                exceptions = governance.get("adapter_exceptions")
+                if not isinstance(exceptions, dict):
+                    exceptions = {}
+                    governance["adapter_exceptions"] = exceptions
+                exceptions.setdefault(original_agents[0], legacy_exception)
+            governance.pop("adapter_exception", None)
+            if args.engine:
+                config["cli_engine"] = args.engine
+                print(f"✅ Default launch engine updated to: {args.engine}")
+            config["last_updated"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            with open(manifest_path, "w") as f:
+                yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+            changed = True
+
+        if args.adapter_exception:
+            if not args.approved_by:
+                print("❌ --adapter-exception requires --approved-by.")
+                sys.exit(2)
+            from entigram.workspace_lifecycle import (
+                WorkspaceLifecycleError,
+                record_active_agent_adapter_exception,
+            )
+
+            try:
+                status = record_active_agent_adapter_exception(
+                    Path(target_dir),
+                    reason=args.adapter_exception,
+                    approved_by=args.approved_by,
+                    agent=args.adapter_exception_agent,
+                )
+            except WorkspaceLifecycleError as exc:
+                _emit_lifecycle_error(exc, json_output=False)
+                sys.exit(1)
+            print(
+                "✅ Workspace-agent adapter exception recorded in the manifest and ledger "
+                f"for {status['recorded_agent']} (evidence "
+                f"#{status['recorded_exception']['evidence_id']})."
+            )
+            changed = True
+        elif args.clear_adapter_exception:
+            from entigram.workspace_lifecycle import (
+                WorkspaceLifecycleError,
+                clear_active_agent_adapter_exception,
+            )
+
+            try:
+                cleared = clear_active_agent_adapter_exception(
+                    Path(target_dir), agent=args.adapter_exception_agent
+                )
+            except WorkspaceLifecycleError as exc:
+                _emit_lifecycle_error(exc, json_output=False)
+                sys.exit(1)
+            if cleared:
+                print("✅ Workspace-agent adapter exception cleared; ledger history remains.")
+            else:
+                print("No workspace-agent adapter exception was configured.")
+            changed = True
+
+        if not changed:
+            print("No changes requested. Use --engine, --add-agent, or --list to manage settings.")
 
     elif args.command == "warden":
         from entigram.governance.warden import Warden
@@ -2604,6 +2831,7 @@ def _main():
             target_path,
             compact=getattr(args, "compact", False),
             full=getattr(args, "full", False),
+            agent=getattr(args, "agent", None),
         )
         
         if getattr(args, "out", None):
@@ -2659,11 +2887,19 @@ def _main():
         if args.engine:
             engine = args.engine
 
+        if manifest_path.exists():
+            _require_active_agent_adapter(
+                target_dir,
+                requested_engine=engine,
+            )
+
         print(f"🤖 Launching AI Agent ({engine})...")
         
         # ACTIVE HYDRATION: Force the LLM state vector to align with the local ontology
         # OPTIMIZATION: Use a temporary boot file for long vectors
-        hydration_vector = get_hydration_vector(Path(target_dir), compact=True, full=True)
+        hydration_vector = get_hydration_vector(
+            Path(target_dir), compact=True, full=True, agent=engine
+        )
         
         boot_file = Path(target_dir) / ".etg" / "boot.json"
         with open(boot_file, "w") as f:
@@ -2711,11 +2947,18 @@ def _main():
         if args.engine:
             engine = args.engine
 
+        _require_active_agent_adapter(
+            target_dir,
+            requested_engine=engine,
+        )
+
         print(f"🎤 Starting Autonomous Modeler Interview ({engine})...")
 
         # ACTIVE HYDRATION: Force the LLM state vector to align with the local ontology
         # OPTIMIZATION: Use a temporary boot file for long vectors
-        hydration_vector = get_hydration_vector(Path(target_dir), compact=True, full=True)
+        hydration_vector = get_hydration_vector(
+            Path(target_dir), compact=True, full=True, agent=engine
+        )
         
         boot_file = Path(target_dir) / ".etg" / "boot.json"
         with open(boot_file, "w") as f:
@@ -2748,10 +2991,18 @@ def _main():
             except: pass
         if args.engine: engine = args.engine
 
+        if manifest_path.exists():
+            _require_active_agent_adapter(
+                target_dir,
+                requested_engine=engine,
+            )
+
         # 2. Construct Prompt
         # ACTIVE HYDRATION: Force the LLM state vector to align with the local ontology
         # OPTIMIZATION: Use a temporary boot file for long vectors
-        hydration_vector = get_hydration_vector(Path(target_dir), compact=True, full=True)
+        hydration_vector = get_hydration_vector(
+            Path(target_dir), compact=True, full=True, agent=engine
+        )
         boot_file = Path(target_dir) / ".etg" / "boot.json"
         with open(boot_file, "w") as f:
             f.write(hydration_vector)
@@ -3319,7 +3570,15 @@ RELATIONSHIPS:
         elif args.broker_command == "handoff":
             from entigram.governance.warden import Warden
             json_output = getattr(args, "json_output", False)
-            report = {}
+            adapter_status = broker.active_agent_adapter_status()
+            report = {"adapter_enforcement": adapter_status}
+            if not adapter_status["ok"]:
+                if json_output:
+                    print(json.dumps(report, indent=2, sort_keys=True))
+                else:
+                    print("Handoff refused: workspace-agent lifecycle enforcement is required.")
+                    print(adapter_status["next_action"])
+                sys.exit(1)
             warden = Warden(args.dir)
 
             if not json_output:
