@@ -15,6 +15,18 @@
 * harden SQLite ledger concurrency with WAL mode and busy timeouts
 * close warning-producing registry, broker, router, and hydration resources
 
+## [1.25.0](https://github.com/Entigram-AI/entigram/compare/v1.24.1...v1.25.0) (2026-08-13)
+
+
+### Features
+
+* publish complete MCP tool contracts ([#44](https://github.com/Entigram-AI/entigram/issues/44)) ([8d0b798](https://github.com/Entigram-AI/entigram/commit/8d0b798c0c86b19428e4e4ca8ea1c1a5705516e9))
+
+
+### Documentation
+
+* add M8ven verification badge ([#42](https://github.com/Entigram-AI/entigram/issues/42)) ([8f4e841](https://github.com/Entigram-AI/entigram/commit/8f4e8418c15e7358ed6044fc80333808766c1ba0))
+
 ## [1.24.1](https://github.com/Entigram-AI/entigram/compare/v1.24.0...v1.24.1) (2026-08-13)
 
 
