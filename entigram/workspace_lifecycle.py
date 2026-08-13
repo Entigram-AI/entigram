@@ -34,6 +34,8 @@ ACTIVE_CHANGE_BASELINE_VERSION = 1
 DEFAULT_ACTIVE_CHANGE_BUDGET_FILES = 5
 PAUSE_GIT_HOOK_START = "# >>> entigram paused change budget >>>"
 PAUSE_GIT_HOOK_END = "# <<< entigram paused change budget <<<"
+GIT_CHECKIN_GUARD_START = "# >>> entigram lifecycle check-in >>>"
+GIT_CHECKIN_GUARD_END = "# <<< entigram lifecycle check-in <<<"
 
 _MARKER_RE = re.compile(
     rf"{re.escape(ENTIGRAM_START)}.*?{re.escape(ENTIGRAM_END)}",
@@ -354,6 +356,109 @@ def enforce_paused_change_budget(target_dir: Path) -> Dict[str, Any]:
             details=status,
         )
     return status
+
+
+def install_workspace_git_checkin_guard(target_dir: Path) -> Dict[str, Any]:
+    """Install Entigram's portable commit-time lifecycle backstop.
+
+    Native agent adapters protect supported IDE/CLI agents at tool admission.
+    This guard covers every agent that works in a local Git repository: it
+    refuses a commit after the workspace's active or paused change budget
+    requires an Entigram check-in. It is deliberately a backstop, not a claim
+    to observe arbitrary filesystem I/O in real time.
+    """
+    root = Path(target_dir).expanduser().resolve()
+    git_dir = root / ".git"
+    if not git_dir.is_dir():
+        return {"installed": False, "reason": "not_a_local_git_repository"}
+
+    hook_path = git_dir / "hooks" / "pre-commit"
+    original_content = hook_path.read_text() if hook_path.is_file() else None
+    if original_content and GIT_CHECKIN_GUARD_START in original_content:
+        return {
+            "installed": True,
+            "changed": False,
+            "path": hook_path.relative_to(root).as_posix(),
+        }
+    original_mode = hook_path.stat().st_mode & 0o777 if hook_path.exists() else None
+    _atomic_write_text(
+        hook_path,
+        _build_workspace_git_checkin_guard(root, original_content),
+        mode=original_mode or 0o755,
+    )
+    return {
+        "installed": True,
+        "changed": True,
+        "path": hook_path.relative_to(root).as_posix(),
+    }
+
+
+def remove_workspace_git_checkin_guard(target_dir: Path) -> Dict[str, Any]:
+    """Remove only Entigram's permanent guard, preserving other Git hooks."""
+    root = Path(target_dir).expanduser().resolve()
+    hook_path = root / ".git" / "hooks" / "pre-commit"
+    if not hook_path.is_file():
+        return {"removed": False, "path": ".git/hooks/pre-commit"}
+    original = hook_path.read_text()
+    if GIT_CHECKIN_GUARD_START not in original:
+        return {"removed": False, "path": ".git/hooks/pre-commit"}
+    updated = re.sub(
+        rf"\n?{re.escape(GIT_CHECKIN_GUARD_START)}.*?{re.escape(GIT_CHECKIN_GUARD_END)}(?:\n){{1,2}}",
+        "\n",
+        original,
+        flags=re.DOTALL,
+    )
+    if updated.strip() in {"", "#!/bin/sh"}:
+        hook_path.unlink(missing_ok=True)
+        return {
+            "removed": True,
+            "path": ".git/hooks/pre-commit",
+            "removed_empty_hook": True,
+        }
+    _atomic_write_text(hook_path, updated, mode=hook_path.stat().st_mode & 0o777)
+    return {
+        "removed": True,
+        "path": ".git/hooks/pre-commit",
+        "removed_empty_hook": False,
+    }
+
+
+def workspace_git_checkin_guard_status(target_dir: Path) -> Dict[str, Any]:
+    root = Path(target_dir).expanduser().resolve()
+    hook_path = root / ".git" / "hooks" / "pre-commit"
+    return {
+        "installed": bool(
+            hook_path.is_file() and GIT_CHECKIN_GUARD_START in hook_path.read_text()
+        ),
+        "path": ".git/hooks/pre-commit",
+    }
+
+
+def _build_workspace_git_checkin_guard(
+    root: Path,
+    original_content: Optional[str],
+) -> str:
+    shebang = "#!/bin/sh"
+    remainder = original_content or ""
+    if original_content and original_content.startswith("#!"):
+        shebang, _, remainder = original_content.partition("\n")
+    quoted_root = shlex.quote(str(root))
+    guard = f"""{GIT_CHECKIN_GUARD_START}
+# Portable Entigram backstop for agents without a native lifecycle adapter.
+if ! command -v etg >/dev/null 2>&1; then
+  echo "Entigram lifecycle guard requires the etg command." >&2
+  exit 1
+fi
+etg change-status --dir {quoted_root} --enforce
+entigram_change_status=$?
+if [ $entigram_change_status -ne 0 ]; then
+  echo "Entigram requires a handoff and current status before this commit." >&2
+  exit $entigram_change_status
+fi
+{GIT_CHECKIN_GUARD_END}
+"""
+    suffix = remainder.lstrip("\n")
+    return f"{shebang}\n{guard}" + (f"\n{suffix}" if suffix else "")
 
 
 def _load_pause_backup(root: Path) -> Dict[str, Any]:
@@ -857,9 +962,13 @@ def plan_eject(target_dir: Path, *, archive: Optional[Path] = None) -> Dict[str,
         "archive": str(archive_path),
         "archive_includes": [".etg", "entigram-eject-manifest.json"],
         "instruction_files": [item["path"] for item in blocks],
-        "hook_config": ".agents/hooks.json",
+        "hook_configs": [".agents/hooks.json", ".codex/hooks.json", ".claude/settings.json"],
         "preserved_project_artifacts": _preserved_project_artifacts(root),
-        "will_remove": [".etg", "Entigram entry in .agents/hooks.json"],
+        "will_remove": [
+            ".etg",
+            "Entigram entries in native agent hook configuration",
+            "Entigram portable Git check-in guard",
+        ],
     }
 
 
@@ -896,8 +1005,15 @@ def eject_workspace(target_dir: Path, *, archive: Optional[Path] = None) -> Dict
         instruction_originals[path] = original
         instruction_updates[path] = remaining if remaining.strip() else None
 
-    hook_path = root / ".agents" / "hooks.json"
-    hook_original = hook_path.read_text() if hook_path.is_file() else None
+    hook_paths = [
+        root / ".agents" / "hooks.json",
+        root / ".codex" / "hooks.json",
+        root / ".claude" / "settings.json",
+        root / ".git" / "hooks" / "pre-commit",
+    ]
+    hook_originals = {
+        path: path.read_text() if path.is_file() else None for path in hook_paths
+    }
     hook_update = None
 
     detached_dir = root / f".etg.ejecting-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
@@ -913,9 +1029,11 @@ def eject_workspace(target_dir: Path, *, archive: Optional[Path] = None) -> Dict
                 path.unlink()
             else:
                 _atomic_write_text(path, content)
-        from .antigravity_hooks import remove_antigravity_hooks
+        from .agent_hooks import remove_agent_hooks
 
-        hook_update = remove_antigravity_hooks(root)
+        if workspace_state(root) == "paused":
+            _restore_pause_git_hook(root, _load_pause_backup(root).get("git_hook") or {})
+        hook_update = remove_agent_hooks(root)
         entigram_dir.rename(detached_dir)
         try:
             from entigram.project_history import remove_project_from_history
@@ -929,7 +1047,8 @@ def eject_workspace(target_dir: Path, *, archive: Optional[Path] = None) -> Dict
             detached_dir.rename(entigram_dir)
         for path, content in instruction_originals.items():
             _atomic_write_text(path, content)
-        _restore_path(hook_path, hook_original)
+        for path, content in hook_originals.items():
+            _restore_path(path, content)
         raise WorkspaceLifecycleError(
             "EJECT_FAILED",
             f"Archive was preserved, but workspace detach failed: {exc}",
@@ -952,7 +1071,12 @@ def eject_workspace(target_dir: Path, *, archive: Optional[Path] = None) -> Dict
             for path, content in instruction_updates.items()
             if content is not None
         ],
-        "removed_antigravity_hook": bool((hook_update or {}).get("removed")),
+        "removed_antigravity_hook": bool(
+            ((hook_update or {}).get("runtimes") or {})
+            .get("antigravity", {})
+            .get("removed")
+        ),
+        "removed_agent_hooks": hook_update or {},
         "preserved_project_artifacts": plan["preserved_project_artifacts"],
         "residual_references": _residual_entigram_references(root, archive_path),
         "reenroll_command": "etg init",

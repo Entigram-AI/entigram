@@ -126,9 +126,11 @@ etg change-status
 ```
 
 By default, after five changed files since the previous Entigram handoff, the
-next agent write is held until it checks in again. Antigravity workspaces also
-install a session hook that loads the policy and schema before the first turn.
-See [workspace lifecycle](docs/workspace-lifecycle.md).
+next admitted agent write is held until it checks in again. Entigram installs
+native lifecycle adapters for Antigravity, Codex, and Claude Code, plus a
+portable Git check-in guard for other local-Git agents. See
+[workspace lifecycle](docs/workspace-lifecycle.md) and the maintained
+[governance scorecard](docs/governance-scorecard.md).
 
 Inspect Entigram's estimated share of a session:
 

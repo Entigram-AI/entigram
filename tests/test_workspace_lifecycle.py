@@ -35,6 +35,7 @@ from entigram.workspace_lifecycle import (
     plan_eject,
     resume_workspace,
     workspace_state,
+    workspace_git_checkin_guard_status,
 )
 
 
@@ -231,9 +232,23 @@ class TestWorkspaceLifecycle(unittest.TestCase):
         )
 
         self.assertEqual(exit_code, 0)
-        self.assertIn("lifecycle hooks installed", output)
+        self.assertIn("lifecycle adapters installed", output)
         hooks = json.loads((self.root / ".agents" / "hooks.json").read_text())
         self.assertIn(ANTIGRAVITY_HOOK_NAME, hooks)
+        self.assertTrue((self.root / ".codex" / "hooks.json").is_file())
+        self.assertTrue((self.root / ".claude" / "settings.json").is_file())
+
+    def test_installing_adapters_adds_portable_git_checkin_guard(self):
+        (self.root / ".git" / "hooks").mkdir(parents=True)
+        exit_code, output, _ = self.run_cli(
+            ["agent-hooks", "install", "--dir", str(self.root)]
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertIn("portable Git check-in guard: installed", output)
+        hook = (self.root / ".git" / "hooks" / "pre-commit").read_text()
+        self.assertIn("entigram lifecycle check-in", hook)
+        self.assertIn("change-status --dir", hook)
+        self.assertTrue(workspace_git_checkin_guard_status(self.root)["installed"])
 
     def test_pause_installs_temporary_pre_commit_guard_and_resume_restores_hook(self):
         hook_path = self.root / ".git" / "hooks" / "pre-commit"
@@ -464,7 +479,7 @@ class TestWorkspaceLifecycle(unittest.TestCase):
 
     def test_eject_removes_only_entigram_antigravity_hook(self):
         hook_path = self.root / ".agents" / "hooks.json"
-        hook_path.parent.mkdir()
+        hook_path.parent.mkdir(exist_ok=True)
         hook_path.write_text(
             json.dumps({"user-hook": {"Stop": [{"type": "command", "command": "review"}]}})
         )
@@ -479,6 +494,21 @@ class TestWorkspaceLifecycle(unittest.TestCase):
             {"user-hook": {"Stop": [{"type": "command", "command": "review"}]}},
         )
         self.assertNotIn(ANTIGRAVITY_HOOK_NAME, preserved)
+
+    def test_eject_from_paused_workspace_restores_user_pre_commit_hook(self):
+        hook_path = self.root / ".git" / "hooks" / "pre-commit"
+        hook_path.parent.mkdir(parents=True)
+        original = "#!/bin/sh\necho user-hook\n"
+        hook_path.write_text(original)
+        hook_path.chmod(0o755)
+        from entigram.agent_hooks import install_agent_hooks
+
+        install_agent_hooks(self.root)
+        pause_workspace(self.root)
+
+        eject_workspace(self.root, archive=self.root / "paused-eject.tar.gz")
+
+        self.assertEqual(hook_path.read_text(), original)
 
     def test_eject_rejects_unsafe_or_existing_archive_paths(self):
         inside = self.root / ".etg" / "archive.tar.gz"

@@ -1,0 +1,23 @@
+{
+  "profile": "governance-benchmark-v1.json",
+  "implementation": {
+    "name": "Entigram",
+    "version": "working tree after all-agent lifecycle adapters",
+    "scope": "Local Entigram workspace standard and CLI"
+  },
+  "assessment": "self-assessed; evidence-linked",
+  "ratings": {
+    "closed_world_contract": {"score": 5, "evidence": ["docs/workspace-standard.md", "entigram/governance/warden.py"]},
+    "discovery_admission": {"score": 4, "evidence": ["docs/workspace-standard.md", "entigram/mcp_service.py"]},
+    "action_admission": {"score": 3, "evidence": ["entigram/agent_hooks.py", "entigram/antigravity_hooks.py"]},
+    "context_continuity": {"score": 3, "evidence": ["entigram/agent_hooks.py", "entigram/antigravity_hooks.py", ".etg/agent_policy.md (generated)"]},
+    "drift_checkpoints": {"score": 4, "evidence": ["entigram/workspace_lifecycle.py", "docs/workspace-lifecycle.md"]},
+    "evidence_ledger": {"score": 5, "evidence": ["entigram/sqlite_ledger", "entigram/broker.py"]},
+    "human_reversibility": {"score": 4, "evidence": ["entigram/workspace_lifecycle.py", "docs/workspace-lifecycle.md"]},
+    "validation_handoff": {"score": 5, "evidence": ["entigram/broker.py", "docs/workspace-standard.md"]},
+    "multi_agent_semantics": {"score": 4, "evidence": ["entigram/sqlite_ledger", "entigram/mcp_service.py"]},
+    "portability": {"score": 3, "evidence": ["entigram/agent_hooks.py", "docs/workspace-standard.md"]},
+    "security_privacy": {"score": 4, "evidence": ["entigram/governance/warden.py", "docs/security-resource-catalog.md"]},
+    "adoption": {"score": 3, "evidence": ["README.md", "docs/minimal-governed-workspace.md"]}
+  }
+}

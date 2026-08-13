@@ -1,0 +1,19 @@
+{
+  "id": "entigram-governance-benchmark",
+  "version": "v1",
+  "title": "Closed-world agent governance benchmark",
+  "dimensions": [
+    {"id": "closed_world_contract", "title": "Closed-world action contract", "weight": 14},
+    {"id": "discovery_admission", "title": "Discovery-to-admission separation", "weight": 10},
+    {"id": "action_admission", "title": "Action admission and least privilege", "weight": 12},
+    {"id": "context_continuity", "title": "Context hydration and continuity", "weight": 9},
+    {"id": "drift_checkpoints", "title": "Drift detection and bounded checkpoints", "weight": 10},
+    {"id": "evidence_ledger", "title": "Evidence, provenance, and ledger integrity", "weight": 10},
+    {"id": "human_reversibility", "title": "Human escalation and reversible exceptions", "weight": 8},
+    {"id": "validation_handoff", "title": "Validation and delivery handoff", "weight": 10},
+    {"id": "multi_agent_semantics", "title": "Multi-agent semantic coordination", "weight": 6},
+    {"id": "portability", "title": "Agent portability and interoperability", "weight": 5},
+    {"id": "security_privacy", "title": "Security, privacy, and resilience", "weight": 4},
+    {"id": "adoption", "title": "Adoption and progressive disclosure", "weight": 2}
+  ]
+}

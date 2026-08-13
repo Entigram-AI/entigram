@@ -182,15 +182,6 @@ Do not infer package capabilities from a catalog entry alone.
         with open(instruction_path, "w") as f:
             f.write(entigram_context)
 
-    if cli_engine == "Antigravity":
-        try:
-            from .antigravity_hooks import install_antigravity_hooks
-
-            install_antigravity_hooks(target_path)
-        except Exception as exc:
-            print(f"Error installing Antigravity hooks: {exc}")
-            return False
-
     # 1.6 Record in history
     try:
         add_project_to_history(target_dir)
@@ -252,6 +243,13 @@ Do not infer package capabilities from a catalog entry alone.
                 elif item.is_dir():
                     shutil.copytree(item, target_file, dirs_exist_ok=True)
 
+    try:
+        from .agent_hooks import install_agent_hooks
+
+        install_agent_hooks(target_path, engine="all")
+    except Exception as exc:
+        print(f"Error installing Entigram agent lifecycle adapters: {exc}")
+        return False
     try:
         from .workspace_lifecycle import establish_active_change_baseline
 

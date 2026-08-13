@@ -32,7 +32,10 @@ An initialized workspace uses these files and paths:
 | `.etg/state.db` | Yes | Local SQLite ledger for alignments, conflicts, resolutions, delivery evidence, delivery snapshots, and agent state. |
 | `.etg/agent_policy.md` | Recommended | Canonical agent instructions for hydration, impact analysis, and handoff. |
 | `AGENTS.md` or tool-specific instruction files | Recommended | Thin pointers that direct agents to `.etg/agent_policy.md`. |
-| `.agents/hooks.json` | Antigravity | Entigram's namespaced session gate, merged with any existing Antigravity hooks. |
+| `.agents/hooks.json` | When Antigravity is available | Entigram's namespaced Antigravity session gate, merged with existing hooks. |
+| `.codex/hooks.json` | When Codex hooks are trusted | Entigram-managed Codex session, write-admission, and stop entries. |
+| `.claude/settings.json` | When Claude Code hooks are enabled | Entigram-managed Claude Code session, write-admission, and stop entries. |
+| `.git/hooks/pre-commit` | Local Git workspace | Entigram-managed commit-time change-status backstop, merged with existing hook content. |
 | `.etg/lifecycle/pause-backup.json` | While paused | Private, exact backup of Entigram-owned context used for reversible resume. |
 | `.etg/lifecycle/check-in-baseline.json` | Recommended | Private active-workspace metadata baseline refreshed after a successful handoff. |
 

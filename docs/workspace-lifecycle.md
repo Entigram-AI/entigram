@@ -65,12 +65,21 @@ lifecycle:
     max_changed_files: 5
 ```
 
-## Antigravity lifecycle hooks
+## Agent lifecycle adapters and portable backstop
 
-When initialized with `--engine Antigravity`, Entigram adds only its namespaced
-`entigram-session-gate` entry to `.agents/hooks.json`. It does not replace other
-workspace hooks. The gate uses Antigravity's `PreInvocation`, `PreToolUse`,
-`PostToolUse`, and `Stop` events to:
+Entigram's lifecycle policy is provider-neutral; a host hook is an adapter, not
+the governance boundary. Initialization installs every currently supported
+native adapter without replacing user-owned entries:
+
+| Agent host | Workspace configuration | Native lifecycle events |
+| --- | --- | --- |
+| Antigravity | `.agents/hooks.json` namespaced `entigram-session-gate` | `PreInvocation`, `PreToolUse`, `PostToolUse`, `Stop` |
+| Codex | `.codex/hooks.json` Entigram command entries | `SessionStart`, `PreToolUse`, `PostToolUse`, `Stop` |
+| Claude Code | `.claude/settings.json` Entigram command entries | `SessionStart`, `PreToolUse`, `PostToolUse`, `Stop` |
+| Other agents | Instruction files and local Git `pre-commit` backstop | No assumed native enforcement |
+
+The native adapters merge their Entigram-managed entries with existing project
+configuration. They use their host's lifecycle events to:
 
 1. load the policy and authoritative schema before the first model turn, and
    reload them if either changes
@@ -80,15 +89,19 @@ workspace hooks. The gate uses Antigravity's `PreInvocation`, `PreToolUse`,
 4. request one final handoff when an agent attempts to stop with changes since
    the last accepted check-in
 
-The hooks inspect the workspace only when Antigravity invokes an event; they do
-not run a permanent background process or watch paths outside the workspace.
-Host-level filesystem controls remain necessary for a hard guarantee against a
-process that bypasses the host's tool hooks entirely.
+The Git guard runs `etg change-status --enforce` before a commit in a local Git
+repository. It covers any agent, editor, or script that reaches the normal Git
+commit path. The adapters and guard rescan workspace state at admission or
+commit time; Entigram does not run a permanent background watcher. This avoids
+ambient filesystem surveillance and still counts changes made outside an agent's
+own tool calls. Host-level filesystem controls remain necessary for a hard
+guarantee against a process that bypasses both native hooks and Git.
 
-To add the hooks to an existing workspace, run:
+To install or inspect adapters in an existing workspace, run:
 
 ```bash
-etg config --engine Antigravity
+etg agent-hooks install
+etg agent-hooks status
 ```
 
 ## Pause
@@ -186,9 +199,9 @@ etg eject --yes
 
 Eject creates and validates `entigram-eject-<UTC timestamp>.tar.gz`, sets its
 mode to `0600`, removes Entigram marker blocks from known instruction files,
-removes only Entigram's named Antigravity hook entry, and removes `.etg`. It
-preserves `schema.lds`, draft schemas, ontologies, application code, unmarked
-instruction content, and other agent hooks.
+removes only Entigram-managed native hook entries and its portable Git guard,
+and removes `.etg`. It preserves `schema.lds`, draft schemas, ontologies,
+application code, unmarked instruction content, and other agent hooks.
 
 The archive contains the complete `.etg` directory and an eject manifest. It
 may contain private signing keys and local governance evidence, so treat it as

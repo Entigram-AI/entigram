@@ -692,6 +692,7 @@ def _paused_command_allowed(args) -> bool:
     if args.command in {
         "usage",
         "antigravity-hook",
+        "agent-hook",
         "pause",
         "pause-status",
         "change-status",
@@ -702,6 +703,8 @@ def _paused_command_allowed(args) -> bool:
         "antigravity-hook",
     }:
         return True
+    if args.command == "agent-hooks":
+        return getattr(args, "agent_hooks_command", None) == "status"
     return args.command == "config" and bool(getattr(args, "list", False))
 
 
@@ -888,6 +891,59 @@ def _main():
         choices=["pre-invocation", "pre-tool-use", "post-tool-use", "stop"],
         help=argparse.SUPPRESS,
     )
+
+    agent_hook_parser = subparsers.add_parser(
+        "agent-hook",
+        help=argparse.SUPPRESS,
+    )
+    agent_hook_parser.add_argument("--dir", required=True, help=argparse.SUPPRESS)
+    agent_hook_parser.add_argument(
+        "--runtime",
+        required=True,
+        choices=["codex", "claude"],
+        help=argparse.SUPPRESS,
+    )
+    agent_hook_parser.add_argument(
+        "--event",
+        required=True,
+        choices=["session-start", "pre-tool-use", "post-tool-use", "stop"],
+        help=argparse.SUPPRESS,
+    )
+
+    agent_hooks_parser = subparsers.add_parser(
+        "agent-hooks",
+        help="Install or inspect Entigram lifecycle adapters for supported agents",
+    )
+    agent_hooks_subparsers = agent_hooks_parser.add_subparsers(
+        dest="agent_hooks_command", required=True
+    )
+    agent_hooks_install = agent_hooks_subparsers.add_parser(
+        "install", help="Install supported native adapters and the portable Git backstop"
+    )
+    agent_hooks_install.add_argument("--dir", help="Target directory (defaults to current workspace)")
+    agent_hooks_install.add_argument(
+        "--engine",
+        default="all",
+        choices=["all", "Antigravity", "Codex", "Claude Code", "antigravity", "codex", "claude"],
+        help="Adapter to install (default: all supported adapters)",
+    )
+    agent_hooks_install.add_argument("--json", action="store_true", dest="json_output")
+    agent_hooks_status = agent_hooks_subparsers.add_parser(
+        "status", help="Show installed native adapters and the portable Git backstop"
+    )
+    agent_hooks_status.add_argument("--dir", help="Target directory (defaults to current workspace)")
+    agent_hooks_status.add_argument("--json", action="store_true", dest="json_output")
+
+    benchmark_parser = subparsers.add_parser(
+        "benchmark",
+        help="Score a governance implementation against a versioned Entigram profile",
+    )
+    benchmark_parser.add_argument(
+        "--report",
+        required=True,
+        help="Path to an evidence-linked governance benchmark report",
+    )
+    benchmark_parser.add_argument("--json", action="store_true", dest="json_output")
 
     # config command
     config_parser = subparsers.add_parser("config", help="Manage workspace configuration")
@@ -1697,6 +1753,65 @@ def _main():
             payload,
         )
         print(json.dumps(result, sort_keys=True))
+    elif args.command == "agent-hook":
+        from entigram.agent_hooks import handle_agent_hook
+
+        try:
+            raw_payload = sys.stdin.read()
+            payload = json.loads(raw_payload) if raw_payload.strip() else {}
+        except (OSError, ValueError):
+            payload = {}
+        result = handle_agent_hook(
+            _resolve_workspace_dir(args.dir),
+            runtime=args.runtime,
+            event=args.event,
+            payload=payload,
+        )
+        print(json.dumps(result, sort_keys=True))
+    elif args.command == "agent-hooks":
+        from entigram.agent_hooks import agent_hook_status, install_agent_hooks
+        from entigram.workspace_lifecycle import WorkspaceLifecycleError
+
+        try:
+            target_path = _resolve_workspace_dir(args.dir)
+            if args.agent_hooks_command == "install":
+                result = install_agent_hooks(target_path, engine=args.engine)
+            elif args.agent_hooks_command == "status":
+                result = agent_hook_status(target_path)
+            else:
+                print("Use `etg agent-hooks install` or `etg agent-hooks status`.")
+                sys.exit(2)
+        except WorkspaceLifecycleError as exc:
+            _emit_lifecycle_error(exc, json_output=getattr(args, "json_output", False))
+            sys.exit(1)
+        if getattr(args, "json_output", False):
+            print(json.dumps(result, indent=2, sort_keys=True))
+        else:
+            print("Entigram agent lifecycle adapters")
+            for runtime, details in result.get("runtimes", {}).items():
+                installed = details.get("installed") if isinstance(details, dict) else details
+                print(f"  - {runtime}: {'installed' if installed else 'not installed'}")
+            git_guard = result.get("git_checkin_guard") or {}
+            print(
+                "  - portable Git check-in guard: "
+                + ("installed" if git_guard.get("installed") else git_guard.get("reason", "not installed"))
+            )
+    elif args.command == "benchmark":
+        from entigram.governance_benchmark import (
+            GovernanceBenchmarkError,
+            evaluate_governance_report,
+            format_governance_report,
+        )
+
+        try:
+            result = evaluate_governance_report(Path(args.report))
+        except GovernanceBenchmarkError as exc:
+            print(f"Benchmark error: {exc}")
+            sys.exit(2)
+        if args.json_output:
+            print(json.dumps(result, indent=2, sort_keys=True))
+        else:
+            print(format_governance_report(result))
     elif args.command == "usage":
         from contextlib import redirect_stderr, redirect_stdout
         from io import StringIO
@@ -1908,11 +2023,10 @@ def _main():
             with open(manifest_path, 'w') as f:
                 yaml.dump(config, f, default_flow_style=False)
             print(f"✅ Default engine updated to: {args.engine}")
-            if args.engine == "Antigravity":
-                from entigram.antigravity_hooks import install_antigravity_hooks
+            from entigram.agent_hooks import install_agent_hooks
 
-                install_antigravity_hooks(Path(target_dir))
-                print("✅ Entigram Antigravity lifecycle hooks installed.")
+            install_agent_hooks(Path(target_dir), engine="all")
+            print("✅ Entigram lifecycle adapters installed for supported agents.")
         else:
             print("No changes requested. Use --engine to update settings or --list to view them.")
 
@@ -3623,6 +3737,9 @@ def _track_cli_operation(operation: str, argv) -> bool:
     if not operation or operation in {
         "usage",
         "antigravity-hook",
+        "agent-hook",
+        "agent-hooks",
+        "benchmark",
         "eject",
         "serve",
         "panel-bridge",
