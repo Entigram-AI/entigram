@@ -15,6 +15,13 @@
 * harden SQLite ledger concurrency with WAL mode and busy timeouts
 * close warning-producing registry, broker, router, and hydration resources
 
+## [1.24.0](https://github.com/Entigram-AI/entigram/compare/v1.23.0...v1.24.0) (2026-08-13)
+
+
+### Features
+
+* enforce adapters for workspace agents ([#37](https://github.com/Entigram-AI/entigram/issues/37)) ([9d1302b](https://github.com/Entigram-AI/entigram/commit/9d1302be631ee8f648d774496c76be2831f3daf7))
+
 ## [1.23.0](https://github.com/Entigram-AI/entigram/compare/v1.22.0...v1.23.0) (2026-08-13)
 
 
