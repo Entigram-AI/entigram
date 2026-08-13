@@ -6,6 +6,7 @@ import re
 import shlex
 import shutil
 import sqlite3
+import subprocess
 import tarfile
 import tempfile
 from datetime import datetime, timezone
@@ -368,17 +369,16 @@ def install_workspace_git_checkin_guard(target_dir: Path) -> Dict[str, Any]:
     to observe arbitrary filesystem I/O in real time.
     """
     root = Path(target_dir).expanduser().resolve()
-    git_dir = root / ".git"
-    if not git_dir.is_dir():
+    hook_path = _git_pre_commit_hook_path(root)
+    if hook_path is None:
         return {"installed": False, "reason": "not_a_local_git_repository"}
 
-    hook_path = git_dir / "hooks" / "pre-commit"
     original_content = hook_path.read_text() if hook_path.is_file() else None
     if original_content and GIT_CHECKIN_GUARD_START in original_content:
         return {
             "installed": True,
             "changed": False,
-            "path": hook_path.relative_to(root).as_posix(),
+            "path": _display_git_hook_path(root, hook_path),
         }
     original_mode = hook_path.stat().st_mode & 0o777 if hook_path.exists() else None
     _atomic_write_text(
@@ -389,19 +389,20 @@ def install_workspace_git_checkin_guard(target_dir: Path) -> Dict[str, Any]:
     return {
         "installed": True,
         "changed": True,
-        "path": hook_path.relative_to(root).as_posix(),
+        "path": _display_git_hook_path(root, hook_path),
     }
 
 
 def remove_workspace_git_checkin_guard(target_dir: Path) -> Dict[str, Any]:
     """Remove only Entigram's permanent guard, preserving other Git hooks."""
     root = Path(target_dir).expanduser().resolve()
-    hook_path = root / ".git" / "hooks" / "pre-commit"
-    if not hook_path.is_file():
-        return {"removed": False, "path": ".git/hooks/pre-commit"}
+    hook_path = _git_pre_commit_hook_path(root)
+    display_path = _display_git_hook_path(root, hook_path)
+    if hook_path is None or not hook_path.is_file():
+        return {"removed": False, "path": display_path}
     original = hook_path.read_text()
     if GIT_CHECKIN_GUARD_START not in original:
-        return {"removed": False, "path": ".git/hooks/pre-commit"}
+        return {"removed": False, "path": display_path}
     updated = re.sub(
         rf"\n?{re.escape(GIT_CHECKIN_GUARD_START)}.*?{re.escape(GIT_CHECKIN_GUARD_END)}(?:\n){{1,2}}",
         "\n",
@@ -412,26 +413,58 @@ def remove_workspace_git_checkin_guard(target_dir: Path) -> Dict[str, Any]:
         hook_path.unlink(missing_ok=True)
         return {
             "removed": True,
-            "path": ".git/hooks/pre-commit",
+            "path": display_path,
             "removed_empty_hook": True,
         }
     _atomic_write_text(hook_path, updated, mode=hook_path.stat().st_mode & 0o777)
     return {
         "removed": True,
-        "path": ".git/hooks/pre-commit",
+        "path": display_path,
         "removed_empty_hook": False,
     }
 
 
 def workspace_git_checkin_guard_status(target_dir: Path) -> Dict[str, Any]:
     root = Path(target_dir).expanduser().resolve()
-    hook_path = root / ".git" / "hooks" / "pre-commit"
+    hook_path = _git_pre_commit_hook_path(root)
     return {
         "installed": bool(
-            hook_path.is_file() and GIT_CHECKIN_GUARD_START in hook_path.read_text()
+            hook_path is not None
+            and hook_path.is_file()
+            and GIT_CHECKIN_GUARD_START in hook_path.read_text()
         ),
-        "path": ".git/hooks/pre-commit",
+        "path": _display_git_hook_path(root, hook_path),
     }
+
+
+def _git_pre_commit_hook_path(root: Path) -> Optional[Path]:
+    """Return Git's resolved hook path, including linked worktrees."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--git-path", "hooks/pre-commit"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        result = None
+    if result is not None and result.returncode == 0 and result.stdout.strip():
+        hook_path = Path(result.stdout.strip())
+        return hook_path if hook_path.is_absolute() else root / hook_path
+
+    fallback_git_dir = root / ".git"
+    if fallback_git_dir.is_dir():
+        return fallback_git_dir / "hooks" / "pre-commit"
+    return None
+
+
+def _display_git_hook_path(root: Path, hook_path: Optional[Path]) -> str:
+    if hook_path is None:
+        return ".git/hooks/pre-commit"
+    try:
+        return hook_path.relative_to(root).as_posix()
+    except ValueError:
+        return str(hook_path)
 
 
 def _build_workspace_git_checkin_guard(
@@ -582,11 +615,10 @@ def _load_active_change_baseline(root: Path) -> Dict[str, Any]:
 
 def _prepare_pause_git_hook(root: Path, max_changed_files: int) -> Dict[str, Any]:
     """Prepare a temporary pre-commit guard without changing the repository yet."""
-    git_dir = root / ".git"
-    if not git_dir.is_dir():
+    hook_path = _git_pre_commit_hook_path(root)
+    if hook_path is None:
         return {"installed": False, "reason": "not_a_local_git_repository"}
 
-    hook_path = git_dir / "hooks" / "pre-commit"
     original_content = hook_path.read_text() if hook_path.is_file() else None
     if original_content and (
         PAUSE_GIT_HOOK_START in original_content
@@ -601,7 +633,7 @@ def _prepare_pause_git_hook(root: Path, max_changed_files: int) -> Dict[str, Any
     paused_content = _build_pause_git_hook(root, max_changed_files, original_content)
     return {
         "installed": True,
-        "path": hook_path.relative_to(root).as_posix(),
+        "path": str(hook_path),
         "original_content": original_content,
         "original_mode": original_mode,
         "paused_content": paused_content,
@@ -640,19 +672,24 @@ fi
 def _write_pause_git_hook(root: Path, hook: Dict[str, Any]) -> None:
     if not hook.get("installed"):
         return
-    path = root / hook["path"]
+    path = _pause_hook_path(root, hook)
     _atomic_write_text(path, hook["paused_content"], mode=0o755)
 
 
 def _restore_pause_git_hook(root: Path, hook: Dict[str, Any]) -> None:
     if not hook.get("installed"):
         return
-    path = root / hook["path"]
+    path = _pause_hook_path(root, hook)
     original_content = hook.get("original_content")
     if original_content is None:
         path.unlink(missing_ok=True)
         return
     _atomic_write_text(path, original_content, mode=hook.get("original_mode") or 0o755)
+
+
+def _pause_hook_path(root: Path, hook: Dict[str, Any]) -> Path:
+    path = Path(hook["path"])
+    return path if path.is_absolute() else root / path
 
 
 def load_manifest(target_dir: Path) -> Dict[str, Any]:
@@ -1009,8 +1046,10 @@ def eject_workspace(target_dir: Path, *, archive: Optional[Path] = None) -> Dict
         root / ".agents" / "hooks.json",
         root / ".codex" / "hooks.json",
         root / ".claude" / "settings.json",
-        root / ".git" / "hooks" / "pre-commit",
     ]
+    git_hook_path = _git_pre_commit_hook_path(root)
+    if git_hook_path is not None:
+        hook_paths.append(git_hook_path)
     hook_originals = {
         path: path.read_text() if path.is_file() else None for path in hook_paths
     }

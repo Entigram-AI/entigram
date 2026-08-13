@@ -17,7 +17,7 @@ class TestGovernanceBenchmark(unittest.TestCase):
         result = evaluate_governance_report(
             ROOT / "benchmarks" / "entigram-governance-baseline.json"
         )
-        self.assertEqual(result["summary"]["governance_score"], 81.2)
+        self.assertEqual(result["summary"]["governance_score"], 86.4)
         self.assertEqual(result["summary"]["evidence_coverage"], 100.0)
         self.assertEqual(len(result["dimensions"]), 12)
 

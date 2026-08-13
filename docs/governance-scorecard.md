@@ -55,27 +55,27 @@ the unchanged rubric, and replaces scores and evidence. A score of 3 or higher
 requires at least one inspectable artifact. The report output includes evidence
 coverage so an unsupported high score is visible.
 
-## Entigram v1 baseline: 81.2 / 100
+## Entigram v1 baseline: 86.4 / 100
 
 The current baseline is intentionally conservative. Entigram scores strongly on
-the closed-world contract, delivery evidence, and handoff validation. It does
-not score maximum points on action admission, context continuity, or portability
-because hosts can bypass local hooks and not every agent exposes a native
-interception surface. The portable Git guard makes unmanaged drift visible at
-commit time; it is a backstop, not a substitute for host-level enforcement.
+the closed-world contract, delivery evidence, and handoff validation. Native
+adapters now load the canonical policy and schema, gate MCP calls, and the
+portable Git guard supports standard linked worktrees. It does not score maximum
+points because hosts can bypass local hooks and not every agent exposes a native
+interception surface.
 
 | Dimension | Current rating | Principal limit to improve |
 | --- | ---: | --- |
 | Closed-world action contract | 5/5 | Maintain independent review evidence. |
 | Discovery-to-admission separation | 4/5 | Broaden formalized admission coverage. |
-| Action admission and least privilege | 3/5 | Cover more host tool surfaces without bypass. |
-| Context hydration and continuity | 3/5 | Prove restart, compaction, and sub-agent continuity. |
+| Action admission and least privilege | 4/5 | Cover hosted and other bypassing host tool surfaces. |
+| Context hydration and continuity | 4/5 | Prove restart, compaction, and sub-agent continuity. |
 | Drift detection and bounded checkpoints | 4/5 | Add independently reproducible drift fixtures. |
 | Evidence, provenance, and ledger integrity | 5/5 | Maintain independent audit evidence. |
 | Human escalation and reversible exceptions | 4/5 | Exercise more exception/recovery scenarios. |
 | Validation and delivery handoff | 5/5 | Maintain independent delivery evidence. |
 | Multi-agent semantic coordination | 4/5 | Measure coordination quality across real agent teams. |
-| Agent portability and interoperability | 3/5 | Add verified adapters; retain the generic backstop. |
+| Agent portability and interoperability | 4/5 | Add verified adapters; retain the generic backstop. |
 | Security, privacy, and resilience | 4/5 | Expand hostile-host and failure-mode testing. |
 | Adoption and progressive disclosure | 3/5 | Measure time-to-first-governed-work for new builders. |
 

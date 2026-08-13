@@ -81,9 +81,10 @@ native adapter without replacing user-owned entries:
 The native adapters merge their Entigram-managed entries with existing project
 configuration. They use their host's lifecycle events to:
 
-1. load the policy and authoritative schema before the first model turn, and
-   reload them if either changes
-2. deny write-capable tools until that session has loaded workspace context
+1. place the canonical policy and authoritative schema content in startup
+   context before the first model turn, and reload them if either changes
+2. deny write-capable shell, file-edit, and MCP tools until that session has
+   loaded workspace context
 3. rescan directory state before every admitted write and require a broker
    handoff when the active change budget is exhausted
 4. request one final handoff when an agent attempts to stop with changes since

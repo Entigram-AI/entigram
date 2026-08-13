@@ -250,6 +250,26 @@ class TestWorkspaceLifecycle(unittest.TestCase):
         self.assertIn("change-status --dir", hook)
         self.assertTrue(workspace_git_checkin_guard_status(self.root)["installed"])
 
+    def test_linked_worktree_metadata_uses_git_resolved_hook_path(self):
+        linked_hook = self.root / "shared-hooks" / "pre-commit"
+        (self.root / ".git").write_text("gitdir: elsewhere\n")
+        completed = type(
+            "CompletedProcess",
+            (),
+            {"returncode": 0, "stdout": str(linked_hook) + "\n"},
+        )()
+        with patch(
+            "entigram.workspace_lifecycle.subprocess.run",
+            return_value=completed,
+        ):
+            exit_code, output, _ = self.run_cli(
+                ["agent-hooks", "install", "--dir", str(self.root)]
+            )
+            self.assertEqual(exit_code, 0)
+            self.assertIn("portable Git check-in guard: installed", output)
+            self.assertTrue(linked_hook.is_file())
+            self.assertTrue(workspace_git_checkin_guard_status(self.root)["installed"])
+
     def test_pause_installs_temporary_pre_commit_guard_and_resume_restores_hook(self):
         hook_path = self.root / ".git" / "hooks" / "pre-commit"
         hook_path.parent.mkdir(parents=True)

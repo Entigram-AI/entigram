@@ -394,8 +394,9 @@ def _load_hook_config(path: Path) -> Dict[str, Any]:
     return value
 
 
-def _write_json(path: Path, value: Dict[str, Any], *, mode: int = 0o644) -> None:
+def _write_json(path: Path, value: Dict[str, Any], *, mode: Optional[int] = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    existing_mode = path.stat().st_mode & 0o777 if path.exists() else 0o644
     fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
     temporary_path = Path(temporary_name)
     try:
@@ -403,7 +404,7 @@ def _write_json(path: Path, value: Dict[str, Any], *, mode: int = 0o644) -> None
             handle.write(json.dumps(value, indent=2, sort_keys=True) + "\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.chmod(temporary_path, mode)
+        os.chmod(temporary_path, mode if mode is not None else existing_mode)
         os.replace(temporary_path, path)
     finally:
         temporary_path.unlink(missing_ok=True)

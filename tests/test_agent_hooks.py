@@ -40,6 +40,8 @@ class TestAgentHooks(unittest.TestCase):
         self.assertIn("PreToolUse", claude["hooks"])
         self.assertIn("--runtime codex", json.dumps(codex))
         self.assertIn("--runtime claude", json.dumps(claude))
+        self.assertIn("mcp__.*", json.dumps(codex))
+        self.assertIn("mcp__.*", json.dumps(claude))
 
         status = agent_hook_status(self.root)
         self.assertTrue(status["runtimes"]["antigravity"])
@@ -67,7 +69,8 @@ class TestAgentHooks(unittest.TestCase):
         context = started["hookSpecificOutput"]["additionalContext"]
         self.assertIn("Entigram lifecycle gate is active", context)
         self.assertIn("agent_policy.md", context)
-        self.assertIn("schema.lds", context)
+        self.assertIn("ENTITY: WorkItem", context)
+        self.assertIn("Pre-Handoff Gate", context)
 
         allowed = handle_agent_hook(
             self.root,
@@ -109,12 +112,49 @@ class TestAgentHooks(unittest.TestCase):
         )
         self.assertIn("broker handoff", denied["hookSpecificOutput"]["permissionDecisionReason"])
 
+    def test_mcp_write_requires_a_hydrated_session_and_check_in(self):
+        mcp_payload = self._payload(tool_name="mcp__workspace__write")
+        blocked = handle_agent_hook(
+            self.root,
+            runtime="codex",
+            event="pre-tool-use",
+            payload=mcp_payload,
+        )
+        self.assertEqual(
+            blocked["hookSpecificOutput"]["permissionDecision"], "deny"
+        )
+
+        handle_agent_hook(
+            self.root,
+            runtime="codex",
+            event="session-start",
+            payload={"session_id": "session-1"},
+        )
+        for number in range(5):
+            (self.root / f"mcp-drift-{number}.txt").write_text(f"{number}\n")
+        denied = handle_agent_hook(
+            self.root,
+            runtime="codex",
+            event="pre-tool-use",
+            payload=mcp_payload,
+        )
+        self.assertEqual(
+            denied["hookSpecificOutput"]["permissionDecision"], "deny"
+        )
+        self.assertIn(
+            "broker handoff",
+            denied["hookSpecificOutput"]["permissionDecisionReason"],
+        )
+
     def test_adapter_removal_preserves_user_owned_configuration(self):
         codex_path = self.root / ".codex" / "hooks.json"
         codex = json.loads(codex_path.read_text())
         codex["approval_policy"] = "untrusted"
         codex_path.write_text(json.dumps(codex))
+        codex_path.chmod(0o600)
         install_agent_hooks(self.root, engine="all")
+
+        self.assertEqual(codex_path.stat().st_mode & 0o777, 0o600)
 
         removed = remove_agent_hooks(self.root)
         self.assertTrue(removed["runtimes"]["codex"]["removed"])

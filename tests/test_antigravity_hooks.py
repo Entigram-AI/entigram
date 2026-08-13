@@ -56,7 +56,9 @@ class TestAntigravityHooks(unittest.TestCase):
 
         hooks["team-review"] = {"Stop": [{"type": "command", "command": "review"}]}
         hook_path.write_text(json.dumps(hooks))
+        hook_path.chmod(0o600)
         install_antigravity_hooks(self.root)
+        self.assertEqual(hook_path.stat().st_mode & 0o777, 0o600)
         removed = remove_antigravity_hooks(self.root)
         self.assertTrue(removed["removed"])
         preserved = json.loads(hook_path.read_text())

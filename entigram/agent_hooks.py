@@ -147,13 +147,23 @@ def _install_codex_hooks(root: Path) -> Dict[str, Any]:
         relative_path=CODEX_HOOK_PATH,
         event_groups={
             "SessionStart": _hook_group(
-                root, CODEX_RUNTIME, "session-start", matcher="startup|resume|clear|compact", context_limit=5000
+                root,
+                CODEX_RUNTIME,
+                "session-start",
+                matcher="startup|resume|clear|compact",
+                context_limit=0,
             ),
             "PreToolUse": _hook_group(
-                root, CODEX_RUNTIME, "pre-tool-use", matcher="Bash|apply_patch|Edit|Write"
+                root,
+                CODEX_RUNTIME,
+                "pre-tool-use",
+                matcher="Bash|apply_patch|Edit|Write|mcp__.*",
             ),
             "PostToolUse": _hook_group(
-                root, CODEX_RUNTIME, "post-tool-use", matcher="Bash|apply_patch|Edit|Write"
+                root,
+                CODEX_RUNTIME,
+                "post-tool-use",
+                matcher="Bash|apply_patch|Edit|Write|mcp__.*",
             ),
             "Stop": _hook_group(root, CODEX_RUNTIME, "stop"),
         },
@@ -170,10 +180,16 @@ def _install_claude_hooks(root: Path) -> Dict[str, Any]:
                 root, CLAUDE_RUNTIME, "session-start", matcher="startup|resume|clear|compact"
             ),
             "PreToolUse": _hook_group(
-                root, CLAUDE_RUNTIME, "pre-tool-use", matcher="Bash|Edit|Write|MultiEdit"
+                root,
+                CLAUDE_RUNTIME,
+                "pre-tool-use",
+                matcher="Bash|Edit|Write|MultiEdit|mcp__.*",
             ),
             "PostToolUse": _hook_group(
-                root, CLAUDE_RUNTIME, "post-tool-use", matcher="Bash|Edit|Write|MultiEdit"
+                root,
+                CLAUDE_RUNTIME,
+                "post-tool-use",
+                matcher="Bash|Edit|Write|MultiEdit|mcp__.*",
             ),
             "Stop": _hook_group(root, CLAUDE_RUNTIME, "stop"),
         },
@@ -394,27 +410,30 @@ def _claude_response(event: str, result: Dict[str, Any], target_dir: Path) -> Di
 
 def _startup_context(target_dir: Path, result: Dict[str, Any]) -> str:
     root = Path(target_dir).expanduser().resolve()
-    paths = []
+    schema_paths = []
     messages = []
     for step in result.get("injectSteps", []):
         tool_call = step.get("toolCall") if isinstance(step, dict) else None
         if isinstance(tool_call, dict):
             absolute_path = (tool_call.get("args") or {}).get("AbsolutePath")
-            if absolute_path:
-                paths.append(str(absolute_path))
+            if absolute_path and Path(absolute_path).resolve() != root / ".etg" / "agent_policy.md":
+                schema_paths.append(Path(absolute_path).resolve())
         if isinstance(step, dict) and step.get("ephemeralMessage"):
             messages.append(str(step["ephemeralMessage"]))
     policy_path = root / ".etg" / "agent_policy.md"
-    policy = policy_path.read_text()[:5000] if policy_path.is_file() else ""
+    policy = policy_path.read_text() if policy_path.is_file() else ""
+    schemas = []
+    for schema_path in schema_paths:
+        if schema_path.is_file() and (schema_path == root or root in schema_path.parents):
+            schemas.append(
+                f"Authoritative schema ({schema_path.relative_to(root)}):\n{schema_path.read_text()}"
+            )
     return "\n\n".join(
         [
             "Entigram lifecycle gate is active. Treat this as the startup context for this workspace.",
-            (
-                "Before modifying this workspace, read the complete authoritative files: "
-                + ", ".join(paths)
-            ),
-            "Canonical policy (included here for immediate session context):",
+            f"Canonical policy ({policy_path.relative_to(root)}):",
             policy,
+            *schemas,
             *messages,
         ]
     ).strip()
@@ -438,6 +457,7 @@ def _load_json_config(path: Path) -> Dict[str, Any]:
 
 def _write_json(path: Path, value: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    existing_mode = path.stat().st_mode & 0o777 if path.exists() else 0o644
     fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
     temporary_path = Path(temporary_name)
     try:
@@ -445,7 +465,7 @@ def _write_json(path: Path, value: Dict[str, Any]) -> None:
             handle.write(json.dumps(value, indent=2, sort_keys=True) + "\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.chmod(temporary_path, 0o644)
+        os.chmod(temporary_path, existing_mode)
         os.replace(temporary_path, path)
     finally:
         temporary_path.unlink(missing_ok=True)
