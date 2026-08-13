@@ -70,19 +70,26 @@ sequence; `hydrate` remains the canonical full agent boot command.
 
 ## Safety classification
 
-| Tool | Read-only | Writes `.etg/state.db` | Purpose |
-| --- | --- | --- | --- |
-| `etg_get_schemas` | Yes | No | Read authoritative LDS schemas. |
-| `etg_get_impact` | Yes | No | Analyze file change impact. |
-| `etg_get_workspace_context` | Yes | No | Read workspace boot context. |
-| `etg_get_capabilities` | Yes | No | Read the MCP capability catalog. |
-| `etg_get_assessment_capabilities` | Yes | No | Read signed assessment metadata and advisories. |
-| `etg_assess` | Yes | No | Run the fail-closed assessment boundary. |
-| `etg_propose_alignment` | No | Yes | Persist a proposed alignment. |
-| `etg_log_conflict` | No | Yes | Persist a conflict for review. |
+Every tool publishes all four MCP behavioral hints. All inputs are represented
+by an MCP `inputSchema`: discovery tools have an empty-object schema and
+parameterized tools expose their typed arguments.
 
-The read/write classification is also returned by `etg_get_capabilities` so
-clients can make tool-selection decisions without scraping prose.
+| Tool | Read-only | Writes `.etg/state.db` | Destructive | Idempotent | Open world | Purpose |
+| --- | --- | --- | --- | --- | --- | --- |
+| `etg_get_schemas` | Yes | No | No | Yes | No | Read authoritative LDS schemas. |
+| `etg_get_impact` | Yes | No | No | Yes | No | Analyze file change impact. |
+| `etg_get_workspace_context` | Yes | No | No | Yes | No | Read workspace boot context. |
+| `etg_get_capabilities` | Yes | No | No | Yes | No | Read the MCP capability catalog. |
+| `etg_get_assessment_capabilities` | Yes | No | No | Yes | No | Read signed assessment metadata and advisories. |
+| `etg_assess` | Yes | No | No | Yes | No | Run the fail-closed assessment boundary. |
+| `etg_propose_alignment` | No | Yes | No | No | No | Persist a proposed alignment. |
+| `etg_log_conflict` | No | Yes | Yes | No | No | Persist or replace a conflict for review. |
+
+`destructiveHint` is true only for `etg_log_conflict`: a repeated conflict ID
+replaces the prior local conflict record. `openWorldHint` is false for every
+tool because the MCP server is local-only and does not make network calls. The
+full machine-readable annotations, input shapes, and ledger-write behavior are
+returned by `etg_get_capabilities`.
 
 ## `etg_get_schemas`
 

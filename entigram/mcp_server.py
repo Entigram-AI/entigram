@@ -9,23 +9,37 @@ from entigram.usage import MCP_TOOL_DECLARATIONS
 
 def create_mcp_server(target_dir: str = ".", host: Optional[str] = None, port: Optional[int] = None):
     try:
-        from mcp.server.fastmcp import FastMCP
+        from mcp.server import MCPServer
+        from mcp.types import ToolAnnotations
     except ImportError as exc:
         raise RuntimeError(
             "The MCP SDK is required for `etg serve`. "
             "Install project dependencies, including `mcp`, and retry."
         ) from exc
 
-    kwargs = {}
-    if host is not None:
-        kwargs["host"] = host
-    if port is not None:
-        kwargs["port"] = port
-
-    mcp = FastMCP("entigram", **kwargs)
+    # Host and port are transport settings in MCP SDK v2.  They are retained in
+    # this factory's signature for callers of previous releases and applied by
+    # run_mcp_server below.
+    del host, port
+    mcp = MCPServer(
+        "entigram",
+        title="Entigram workspace governance",
+        description="Schema-first semantic governance for local agent workspaces.",
+        instructions=(
+            "Start with etg_get_workspace_context or etg_get_capabilities. "
+            "Use write tools only after reviewing the local schema and impact."
+        ),
+    )
     service = EntigramMCPService(target_dir)
 
-    @mcp.tool()
+    @mcp.tool(
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
+        )
+    )
     def etg_get_schemas() -> str:
         """Return local LDS schemas and parsed entity boundaries."""
         try:
@@ -33,7 +47,14 @@ def create_mcp_server(target_dir: str = ".", host: Optional[str] = None, port: O
         except Exception as exc:
             return _tool_error("SCHEMA_DISCOVERY_FAILED", f"Failed to read schemas - {exc}")
 
-    @mcp.tool()
+    @mcp.tool(
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
+        )
+    )
     def etg_get_impact(file_path: str) -> str:
         """Read the localized context and change-impact graph for a workspace file; does not write workspace state."""
         try:
@@ -41,7 +62,14 @@ def create_mcp_server(target_dir: str = ".", host: Optional[str] = None, port: O
         except Exception as exc:
             return _tool_error("IMPACT_ANALYSIS_FAILED", f"Failed to analyze impact - {exc}")
 
-    @mcp.tool()
+    @mcp.tool(
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
+        )
+    )
     def etg_get_workspace_context() -> str:
         """Read workspace lifecycle, manifest, schema, delivery, security, and instruction context."""
         try:
@@ -49,7 +77,14 @@ def create_mcp_server(target_dir: str = ".", host: Optional[str] = None, port: O
         except Exception as exc:
             return _tool_error("WORKSPACE_CONTEXT_DISCOVERY_FAILED", f"Failed to read workspace context - {exc}")
 
-    @mcp.tool()
+    @mcp.tool(
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
+        )
+    )
     def etg_get_capabilities() -> str:
         """Read the authoritative Entigram MCP capability catalog and safety boundaries."""
         try:
@@ -57,7 +92,14 @@ def create_mcp_server(target_dir: str = ".", host: Optional[str] = None, port: O
         except Exception as exc:
             return _tool_error("CAPABILITY_DISCOVERY_FAILED", f"Failed to read capability catalog - {exc}")
 
-    @mcp.tool()
+    @mcp.tool(
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
+        )
+    )
     def etg_get_assessment_capabilities() -> str:
         """Return non-executable assessment metadata and current capability advisories."""
         try:
@@ -68,7 +110,14 @@ def create_mcp_server(target_dir: str = ".", host: Optional[str] = None, port: O
                 f"Failed to inspect assessment capabilities - {exc}",
             )
 
-    @mcp.tool()
+    @mcp.tool(
+        annotations=ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
+        )
+    )
     def etg_assess(payload: str) -> str:
         """Request an assessment; installed executable adapters are disabled by default."""
         try:
@@ -76,7 +125,14 @@ def create_mcp_server(target_dir: str = ".", host: Optional[str] = None, port: O
         except Exception as exc:
             return _tool_error("ASSESSMENT_FAILED", f"Assessment failed - {exc}")
 
-    @mcp.tool()
+    @mcp.tool(
+        annotations=ToolAnnotations(
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=False,
+            openWorldHint=False,
+        )
+    )
     def etg_propose_alignment(payload: str) -> str:
         """Validate and record a proposed semantic alignment."""
         try:
@@ -84,7 +140,14 @@ def create_mcp_server(target_dir: str = ".", host: Optional[str] = None, port: O
         except Exception as exc:
             return _tool_error("INVALID_SCHEMA_ALIGNMENT", f"Invalid Schema Alignment - {exc}")
 
-    @mcp.tool()
+    @mcp.tool(
+        annotations=ToolAnnotations(
+            readOnlyHint=False,
+            destructiveHint=True,
+            idempotentHint=False,
+            openWorldHint=False,
+        )
+    )
     def etg_log_conflict(payload: str) -> str:
         """Validate and log a deterministic conflict for human review."""
         try:
@@ -143,13 +206,12 @@ def run_mcp_server(
             )
 
     try:
-        server = create_mcp_server(
-            target_dir,
-            host=host if transport == "sse" else None,
-            port=port if transport == "sse" else None,
-        )
+        server = create_mcp_server(target_dir)
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
         raise SystemExit(1) from exc
 
-    server.run(transport=transport)
+    if transport == "sse":
+        server.run(transport=transport, host=host, port=port)
+    else:
+        server.run(transport=transport)
