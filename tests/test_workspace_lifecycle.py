@@ -11,6 +11,7 @@ import yaml
 
 import entigram.workspace_lifecycle as lifecycle_module
 from entigram.cli_runner.etg_cli import get_hydration_vector, main
+from entigram.antigravity_hooks import ANTIGRAVITY_HOOK_NAME, install_antigravity_hooks
 from entigram.injector import inject_entigram_manifest
 from entigram.mcp_service import EntigramMCPService
 from entigram.sqlite_ledger.manager import LedgerManager
@@ -22,14 +23,19 @@ from entigram.usage import (
     record_workspace_usage,
 )
 from entigram.workspace_lifecycle import (
+    active_change_status,
     ENTIGRAM_END,
     ENTIGRAM_START,
     WorkspaceLifecycleError,
     eject_workspace,
+    enforce_paused_change_budget,
+    establish_active_change_baseline,
     pause_workspace,
+    paused_change_status,
     plan_eject,
     resume_workspace,
     workspace_state,
+    workspace_git_checkin_guard_status,
 )
 
 
@@ -173,6 +179,114 @@ class TestWorkspaceLifecycle(unittest.TestCase):
         mcp_result = json.loads(EntigramMCPService(str(self.root)).get_schemas())
         self.assertFalse(mcp_result["ok"])
         self.assertEqual(mcp_result["error"]["code"], "WORKSPACE_PAUSED")
+
+    def test_pause_change_budget_tracks_workspace_drift_and_allows_status_command(self):
+        result = pause_workspace(self.root, max_changed_files=2)
+        self.assertEqual(result["change_budget"]["max_changed_files"], 2)
+        self.assertEqual(paused_change_status(self.root)["budget"]["changed_files"], 0)
+
+        (self.root / "first.txt").write_text("first\n")
+        (self.root / "second.txt").write_text("second\n")
+        status = paused_change_status(self.root)
+        self.assertEqual(status["status"], "check_in_required")
+        self.assertEqual(status["budget"]["changed_files"], 2)
+        self.assertTrue(status["budget"]["exhausted"])
+        self.assertFalse(status["budget"]["over_budget"])
+
+        exit_code, output, _ = self.run_cli(
+            ["pause-status", "--dir", str(self.root), "--json"]
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(json.loads(output)["budget"]["changed_files"], 2)
+
+        (self.root / "third.txt").write_text("third\n")
+        with self.assertRaises(WorkspaceLifecycleError) as context:
+            enforce_paused_change_budget(self.root)
+        self.assertEqual(context.exception.code, "PAUSED_CHANGE_BUDGET_EXCEEDED")
+
+        exit_code, output, _ = self.run_cli(
+            ["pause-status", "--dir", str(self.root), "--enforce"]
+        )
+        self.assertEqual(exit_code, 2)
+        self.assertIn("PAUSED_CHANGE_BUDGET_EXCEEDED", output)
+
+    def test_active_change_budget_tracks_external_workspace_drift(self):
+        establish_active_change_baseline(self.root, reason="test")
+        for number in range(5):
+            (self.root / f"active-{number}.txt").write_text(f"{number}\n")
+
+        status = active_change_status(self.root)
+        self.assertEqual(status["status"], "check_in_required")
+        self.assertEqual(status["budget"]["changed_files"], 5)
+        self.assertTrue(status["budget"]["exhausted"])
+
+        exit_code, output, _ = self.run_cli(
+            ["change-status", "--dir", str(self.root), "--enforce"]
+        )
+        self.assertEqual(exit_code, 2)
+        self.assertIn("ACTIVE_CHANGE_CHECK_IN_REQUIRED", output)
+
+    def test_configuring_antigravity_installs_hooks_for_existing_workspace(self):
+        exit_code, output, _ = self.run_cli(
+            ["config", "--dir", str(self.root), "--engine", "Antigravity"]
+        )
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("lifecycle adapters installed", output)
+        hooks = json.loads((self.root / ".agents" / "hooks.json").read_text())
+        self.assertIn(ANTIGRAVITY_HOOK_NAME, hooks)
+        self.assertTrue((self.root / ".codex" / "hooks.json").is_file())
+        self.assertTrue((self.root / ".claude" / "settings.json").is_file())
+
+    def test_installing_adapters_adds_portable_git_checkin_guard(self):
+        (self.root / ".git" / "hooks").mkdir(parents=True)
+        exit_code, output, _ = self.run_cli(
+            ["agent-hooks", "install", "--dir", str(self.root)]
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertIn("portable Git check-in guard: installed", output)
+        hook = (self.root / ".git" / "hooks" / "pre-commit").read_text()
+        self.assertIn("entigram lifecycle check-in", hook)
+        self.assertIn("change-status --dir", hook)
+        self.assertTrue(workspace_git_checkin_guard_status(self.root)["installed"])
+
+    def test_linked_worktree_metadata_uses_git_resolved_hook_path(self):
+        linked_hook = self.root / "shared-hooks" / "pre-commit"
+        (self.root / ".git").write_text("gitdir: elsewhere\n")
+        completed = type(
+            "CompletedProcess",
+            (),
+            {"returncode": 0, "stdout": str(linked_hook) + "\n"},
+        )()
+        with patch(
+            "entigram.workspace_lifecycle.subprocess.run",
+            return_value=completed,
+        ):
+            exit_code, output, _ = self.run_cli(
+                ["agent-hooks", "install", "--dir", str(self.root)]
+            )
+            self.assertEqual(exit_code, 0)
+            self.assertIn("portable Git check-in guard: installed", output)
+            self.assertTrue(linked_hook.is_file())
+            self.assertTrue(workspace_git_checkin_guard_status(self.root)["installed"])
+
+    def test_pause_installs_temporary_pre_commit_guard_and_resume_restores_hook(self):
+        hook_path = self.root / ".git" / "hooks" / "pre-commit"
+        hook_path.parent.mkdir(parents=True)
+        original_hook = "#!/bin/sh\necho original hook\n"
+        hook_path.write_text(original_hook)
+        hook_path.chmod(0o755)
+
+        pause_result = pause_workspace(self.root, max_changed_files=3)
+        self.assertTrue(pause_result["git_pre_commit_guard"])
+        paused_hook = hook_path.read_text()
+        self.assertIn("entigram paused change budget", paused_hook)
+        self.assertIn("pause-status --dir", paused_hook)
+        self.assertIn("echo original hook", paused_hook)
+        self.assertTrue(hook_path.stat().st_mode & stat.S_IXUSR)
+
+        resume_workspace(self.root)
+        self.assertEqual(hook_path.read_text(), original_hook)
 
     def test_pause_write_failure_rolls_back_owned_context(self):
         policy_path = self.root / ".etg" / "agent_policy.md"
@@ -382,6 +496,39 @@ class TestWorkspaceLifecycle(unittest.TestCase):
 
         self.assertTrue((self.root / ".etg" / "entigram.yaml").is_file())
         self.assertEqual((self.root / "AGENTS.md").read_text(), original_agent)
+
+    def test_eject_removes_only_entigram_antigravity_hook(self):
+        hook_path = self.root / ".agents" / "hooks.json"
+        hook_path.parent.mkdir(exist_ok=True)
+        hook_path.write_text(
+            json.dumps({"user-hook": {"Stop": [{"type": "command", "command": "review"}]}})
+        )
+        install_antigravity_hooks(self.root)
+
+        result = eject_workspace(self.root, archive=self.root / "hooks-eject.tar.gz")
+
+        self.assertTrue(result["removed_antigravity_hook"])
+        preserved = json.loads(hook_path.read_text())
+        self.assertEqual(
+            preserved,
+            {"user-hook": {"Stop": [{"type": "command", "command": "review"}]}},
+        )
+        self.assertNotIn(ANTIGRAVITY_HOOK_NAME, preserved)
+
+    def test_eject_from_paused_workspace_restores_user_pre_commit_hook(self):
+        hook_path = self.root / ".git" / "hooks" / "pre-commit"
+        hook_path.parent.mkdir(parents=True)
+        original = "#!/bin/sh\necho user-hook\n"
+        hook_path.write_text(original)
+        hook_path.chmod(0o755)
+        from entigram.agent_hooks import install_agent_hooks
+
+        install_agent_hooks(self.root)
+        pause_workspace(self.root)
+
+        eject_workspace(self.root, archive=self.root / "paused-eject.tar.gz")
+
+        self.assertEqual(hook_path.read_text(), original)
 
     def test_eject_rejects_unsafe_or_existing_archive_paths(self):
         inside = self.root / ".etg" / "archive.tar.gz"

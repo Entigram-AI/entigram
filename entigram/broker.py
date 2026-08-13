@@ -671,6 +671,17 @@ class EntigramBroker:
             )
             checklist["snapshot_id"] = snapshot_id
             checklist["artifact_ids"] = artifact_ids
+            try:
+                from .workspace_lifecycle import establish_active_change_baseline
+
+                checklist["active_change_baseline"] = establish_active_change_baseline(
+                    self.target_dir,
+                    reason="broker_handoff",
+                    snapshot_id=snapshot_id,
+                )
+            except Exception as exc:
+                checklist["valid"] = False
+                checklist["active_change_baseline"] = {"ok": False, "error": str(exc)}
 
         return checklist
 

@@ -1,0 +1,50 @@
+{
+  "catalog_version": 1,
+  "purpose": "Future security-resource integrations for Entigram. This catalog is descriptive only; entries are not fetched, executed, or treated as active assessment providers.",
+  "resources": [
+    {
+      "id": "mitre-attack",
+      "name": "MITRE ATT&CK",
+      "url": "https://attack.mitre.org/",
+      "kind": "threat-behavior-knowledge-base",
+      "status": "cataloged-not-integrated",
+      "intended_use": [
+        "Map workspace technologies, controls, and detections to adversary tactics and techniques.",
+        "Support threat-informed assessment and detection-coverage advisories.",
+        "Preserve technique, mitigation, detection-strategy, and source-version provenance."
+      ],
+      "not_for": [
+        "Treating ATT&CK as a CVE or vulnerability-advisory feed.",
+        "Claiming security coverage from a technique mapping alone.",
+        "Allowing external ATT&CK content to execute as agent instructions."
+      ],
+      "preferred_access": [
+        "Pinned STIX 2.0 or STIX 2.1 snapshot",
+        "Official TAXII 2.1 access when a refresh workflow is implemented"
+      ],
+      "future_delivery": "Public community package with signed, versioned data and an offline assessment adapter"
+    },
+    {
+      "id": "osint-framework",
+      "name": "OSINT Framework",
+      "url": "https://osintframework.com/",
+      "kind": "osint-resource-directory",
+      "status": "cataloged-not-integrated",
+      "intended_use": [
+        "Help agents and operators discover candidate public-information resources.",
+        "Provide curated resource metadata and investigation starting points.",
+        "Record source review, access requirements, and operator-approved follow-up actions."
+      ],
+      "not_for": [
+        "Treating directory entries as authoritative security findings.",
+        "Automatically crawling or executing linked tools.",
+        "Assuming every listed resource is free, available, or safe to use."
+      ],
+      "preferred_access": [
+        "Curated metadata snapshot",
+        "Human-reviewed links with provenance and access notes"
+      ],
+      "future_delivery": "Public community resource catalog; no default network crawling"
+    }
+  ]
+}

@@ -61,6 +61,7 @@ form from the environment where Entigram's dependencies are installed.
 - **OpenCode users:** Follow the [OpenCode integration guide](docs/opencode.md).
 - **Package authors:** Read the [package contract](docs/workspace-standard.md#package-contract)
   and inspect the public [community packages](community-packages/).
+- **Security-resource roadmap:** See the [future security resource catalog](docs/security-resource-catalog.md).
 
 ### 1. Initialize a Governance Workspace
 
@@ -118,6 +119,19 @@ etg broker status
 
 `broker status` must report `Delivery status: current`.
 
+Keep active agent work in bounded, reviewable increments:
+
+```bash
+etg change-status
+```
+
+By default, after five changed files since the previous Entigram handoff, the
+next admitted agent write is held until it checks in again. Entigram installs
+native lifecycle adapters for Antigravity, Codex, and Claude Code, plus a
+portable Git check-in guard for other local-Git agents. See
+[workspace lifecycle](docs/workspace-lifecycle.md) and the maintained
+[governance scorecard](docs/governance-scorecard.md).
+
 Inspect Entigram's estimated share of a session:
 
 ```bash
@@ -129,8 +143,16 @@ Temporarily compact and disable workspace governance:
 
 ```bash
 etg pause --reason "Working without governed context"
+etg pause-status
 etg resume
 ```
+
+Paused work is deliberately bounded: Entigram snapshots the workspace and allows
+five changed files by default. Before a sixth change, resume governance and
+hydrate the agent again. Set a different limit when pausing with
+`--max-changed-files N`. In local Git repositories, pause also installs a
+temporary pre-commit guard so oversized paused work cannot be committed without
+that check-in.
 
 Archive and detach Entigram while preserving project schemas and code:
 

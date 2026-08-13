@@ -41,7 +41,7 @@ When workspace governance is paused, every Entigram MCP tool returns:
     "code": "WORKSPACE_PAUSED",
     "message": "Entigram workspace governance is paused.",
     "details": {
-      "allowed_commands": ["etg usage", "etg resume", "etg eject"],
+      "allowed_commands": ["etg usage", "etg pause-status", "etg resume", "etg eject"],
       "resume_command": "etg resume"
     }
   }
