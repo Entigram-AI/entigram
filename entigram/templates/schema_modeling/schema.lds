@@ -1,6 +1,6 @@
-/* 
- * Meta-Schema: "Schema for Schema"
- * Based on John Carlis - Chapter 23, Fragment 23-4
+/*
+ * Entigram meta-schema
+ * Canonical closed-world schema for an Entigram workspace.
  */
 
 ENTITY: kind_of_thing {

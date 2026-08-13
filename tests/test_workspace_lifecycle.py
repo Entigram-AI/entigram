@@ -78,6 +78,22 @@ class TestWorkspaceLifecycle(unittest.TestCase):
         manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False))
         self.assertEqual(workspace_state(self.root), "active")
 
+    def test_initialization_uses_the_entigram_meta_schema(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self.assertTrue(
+                inject_entigram_manifest(str(root), ["Entigram Schemas"], "Codex")
+            )
+            self.assertEqual(
+                (root / "schema.lds").read_text().splitlines()[:4],
+                [
+                    "/*",
+                    " * Entigram meta-schema",
+                    " * Canonical closed-world schema for an Entigram workspace.",
+                    " */",
+                ],
+            )
+
     def test_estimator_and_session_boundary_are_deterministic(self):
         self.assertEqual(estimate_tokens(0), 0)
         self.assertEqual(estimate_tokens(1), 1)
