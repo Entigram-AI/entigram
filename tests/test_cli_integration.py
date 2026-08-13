@@ -42,7 +42,13 @@ class TestCLIIntegration(unittest.TestCase):
 
     def run_cli(self, args):
         sys.stdout = StringIO()
-        with patch.object(sys, 'argv', ['etg'] + args):
+        with (
+            patch.object(sys, 'argv', ['etg'] + args),
+            patch(
+                "entigram.workspace_lifecycle.detect_current_agent_runtime",
+                return_value={"agent": None, "source": None},
+            ),
+        ):
             try:
                 main()
                 return True, sys.stdout.getvalue()
@@ -53,7 +59,13 @@ class TestCLIIntegration(unittest.TestCase):
 
     def run_executable(self, executable, args=None):
         sys.stdout = StringIO()
-        with patch.object(sys, 'argv', [executable] + (args or [])):
+        with (
+            patch.object(sys, 'argv', [executable] + (args or [])),
+            patch(
+                "entigram.workspace_lifecycle.detect_current_agent_runtime",
+                return_value={"agent": None, "source": None},
+            ),
+        ):
             try:
                 main()
                 return True, sys.stdout.getvalue()
