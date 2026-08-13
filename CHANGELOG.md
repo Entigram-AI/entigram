@@ -15,6 +15,13 @@
 * harden SQLite ledger concurrency with WAL mode and busy timeouts
 * close warning-producing registry, broker, router, and hydration resources
 
+## [1.24.1](https://github.com/Entigram-AI/entigram/compare/v1.24.0...v1.24.1) (2026-08-13)
+
+
+### Bug Fixes
+
+* name initialized schema for Entigram ([#40](https://github.com/Entigram-AI/entigram/issues/40)) ([4ae679d](https://github.com/Entigram-AI/entigram/commit/4ae679d97c60fcee1f2a432d21f904ff7de1152d))
+
 ## [1.24.0](https://github.com/Entigram-AI/entigram/compare/v1.23.0...v1.24.0) (2026-08-13)
 
 
