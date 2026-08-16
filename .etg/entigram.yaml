@@ -4,7 +4,7 @@ integrity_fingerprint:
   schema_checksum: 01696b8ac508f5da566dd5969f1b1e1ebceb70adda057747e8d870205df853e3
   schema_path_checksums:
     schema.lds: 01696b8ac508f5da566dd5969f1b1e1ebceb70adda057747e8d870205df853e3
-last_locked: '2026-08-01 20:44:44'
+last_locked: '2026-08-12 20:16:16'
 last_updated: '2026-06-01 17:54:25'
 packages:
   Entigram Schemas: 0.0.1

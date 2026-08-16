@@ -37,8 +37,8 @@ class HaltEvent:
 
 class Warden:
     """
-    Implements 'Semantic Governance' Integrity: Decouples schema contracts (Schema/Ontology) 
-    from agent execution by enforcing cryptographic immutability.
+    Implements semantic-governance integrity for schemas, ontologies, action
+    contracts, and shared project-trust registries by enforcing immutability.
     """
     def __init__(self, target_dir: str = "."):
         self.target_dir = Path(target_dir).expanduser().resolve()
@@ -54,7 +54,7 @@ class Warden:
         return sha256_hash.hexdigest()
 
     def generate_fingerprint(self) -> Dict[str, Any]:
-        """Generates a fingerprint of the current governed domain (Schema and Ontology)."""
+        """Generates a fingerprint of all current governed contracts."""
         fingerprint: Dict[str, Any] = {}
         schema_path = self.target_dir / "schema.lds"
         ttl_path = self.target_dir / "schema.ttl"
@@ -63,6 +63,12 @@ class Warden:
             fingerprint["schema_checksum"] = self.calculate_checksum(str(schema_path))
         if ttl_path.exists():
             fingerprint["ontology_checksum"] = self.calculate_checksum(str(ttl_path))
+        actions_path = self.target_dir / "actions.yaml"
+        if actions_path.exists():
+            fingerprint["actions_checksum"] = self.calculate_checksum(str(actions_path))
+        trust_path = self.target_dir / ".etg" / "trust.yaml"
+        if trust_path.exists():
+            fingerprint["trust_registry_checksum"] = self.calculate_checksum(str(trust_path))
 
         schema_checksums = {}
         for path in authoritative_schema_paths(self.target_dir, require_existing=False):
@@ -129,6 +135,44 @@ class Warden:
             )
             if emit_human:
                 print("🚨 [SCHEMA_GUARD_HALT] Authoritative package schemas are not locked.")
+            return False
+
+        if (
+            current_fingerprint.get("actions_checksum")
+            and "actions_checksum" not in stored_fingerprint
+        ):
+            self.last_halt_event = HaltEvent(
+                halt_code="ACTION_CONTRACT_INTEGRITY_COVERAGE_MISSING",
+                message="The action contract is not covered by the current Warden lock.",
+                expected_schema={"integrity_fingerprint": "actions_checksum"},
+                actual_payload={"actions_checksum": current_fingerprint["actions_checksum"]},
+                suggested_fix=(
+                    "Review actions.yaml, then run `etg warden unlock` and "
+                    "`etg broker handoff --accept-contract-change` to lock the new action contract."
+                ),
+                details={"target_dir": str(self.target_dir)},
+            )
+            if emit_human:
+                print("🚨 [SCHEMA_GUARD_HALT] Action contract is not covered by the Warden lock.")
+            return False
+
+        if (
+            current_fingerprint.get("trust_registry_checksum")
+            and "trust_registry_checksum" not in stored_fingerprint
+        ):
+            self.last_halt_event = HaltEvent(
+                halt_code="TRUST_REGISTRY_INTEGRITY_COVERAGE_MISSING",
+                message="The project trust registry is not covered by the current Warden lock.",
+                expected_schema={"integrity_fingerprint": "trust_registry_checksum"},
+                actual_payload={"trust_registry_checksum": current_fingerprint["trust_registry_checksum"]},
+                suggested_fix=(
+                    "Review .etg/trust.yaml, then run `etg warden unlock` and "
+                    "`etg broker handoff --accept-contract-change` to lock the trust change."
+                ),
+                details={"target_dir": str(self.target_dir)},
+            )
+            if emit_human:
+                print("🚨 [SCHEMA_GUARD_HALT] Project trust registry is not covered by the Warden lock.")
             return False
 
         if not stored_fingerprint:
@@ -212,6 +256,17 @@ class Warden:
 
         manifest = yaml.safe_load(self.manifest_path.read_text()) or {}
         return isinstance(manifest.get("integrity_unlock"), dict)
+
+    def is_locked(self) -> bool:
+        """Return whether the workspace currently has an active integrity lock."""
+        if not self.manifest_path.is_file():
+            return False
+        import yaml
+
+        manifest = yaml.safe_load(self.manifest_path.read_text()) or {}
+        return isinstance(manifest.get("integrity_fingerprint"), dict) and bool(
+            manifest.get("integrity_fingerprint")
+        )
 
     def unlock(self):
         """Removes the integrity fingerprint from the manifest, allowing modifications."""
