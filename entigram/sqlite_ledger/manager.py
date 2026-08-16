@@ -20,6 +20,11 @@ TASK_RISK_REQUIRED_SCORE = {
     "critical": 0.95,
 }
 
+
+class ActionAttestationReplayError(ValueError):
+    """Raised when an admitted shared-trust workload assertion was already consumed."""
+
+
 class LedgerManager:
     def __init__(self, db_path: str):
         self.db_path = self._normalize_db_path(db_path)
@@ -350,6 +355,70 @@ class LedgerManager:
                     UNIQUE(path, artifact_role, sha256)
                 )
             ''')
+            # Append-only action admission records. An action request may be
+            # revalidated many times; every decision receives a distinct ID so
+            # evidence and policy history remain replayable.
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS action_decisions (
+                    id INTEGER PRIMARY KEY,
+                    decision_id TEXT UNIQUE NOT NULL,
+                    request_id TEXT NOT NULL,
+                    action_name TEXT NOT NULL,
+                    contract_version TEXT,
+                    status TEXT NOT NULL,
+                    assurance TEXT,
+                    contract_digest TEXT,
+                    request_digest TEXT,
+                    evidence_digest TEXT,
+                    authority_grant_id TEXT,
+                    model_fingerprint TEXT NOT NULL DEFAULT '{}',
+                    decision_payload TEXT NOT NULL,
+                    observed_at DATETIME NOT NULL
+                )
+            ''')
+            # Revocations remain durable even though action grants themselves
+            # are portable signed artifacts. A revoked local grant can never be
+            # made valid again by editing the artifact.
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS action_authority_revocations (
+                    id INTEGER PRIMARY KEY,
+                    grant_id TEXT UNIQUE NOT NULL,
+                    revoked_by TEXT NOT NULL,
+                    rationale TEXT NOT NULL,
+                    revoked_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            # Public, signed trust-registry transitions are mirrored locally so
+            # they appear with action and delivery provenance. The canonical
+            # cross-clone record remains .etg/trust.yaml.
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS trust_registry_events (
+                    id INTEGER PRIMARY KEY,
+                    event_id TEXT UNIQUE NOT NULL,
+                    event_type TEXT NOT NULL,
+                    registry_digest TEXT NOT NULL,
+                    event_digest TEXT NOT NULL,
+                    approvers TEXT NOT NULL DEFAULT '[]',
+                    event_payload TEXT NOT NULL,
+                    observed_at DATETIME NOT NULL
+                )
+            ''')
+            # A shared-trust action attestation is a one-time admission token.
+            # The unique constraints make the consume-and-record step atomic
+            # across concurrent processes using the SQLite ledger.
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS action_attestation_consumptions (
+                    id INTEGER PRIMARY KEY,
+                    agent_id TEXT NOT NULL,
+                    attestation_id TEXT NOT NULL,
+                    nonce TEXT NOT NULL,
+                    request_digest TEXT NOT NULL,
+                    consumed_at DATETIME NOT NULL,
+                    decision_id TEXT NOT NULL UNIQUE,
+                    UNIQUE(agent_id, attestation_id),
+                    UNIQUE(agent_id, nonce)
+                )
+            ''')
             conn.execute('''
                 CREATE INDEX IF NOT EXISTS idx_delivery_evidence_expectation
                 ON delivery_evidence(expectation_name, observed_at)
@@ -361,6 +430,22 @@ class LedgerManager:
             conn.execute('''
                 CREATE INDEX IF NOT EXISTS idx_delivery_artifacts_hash
                 ON delivery_artifacts(sha256, artifact_role)
+            ''')
+            conn.execute('''
+                CREATE INDEX IF NOT EXISTS idx_action_decisions_request
+                ON action_decisions(request_id, id)
+            ''')
+            conn.execute('''
+                CREATE INDEX IF NOT EXISTS idx_action_decisions_action_status
+                ON action_decisions(action_name, status, id)
+            ''')
+            conn.execute('''
+                CREATE INDEX IF NOT EXISTS idx_trust_registry_events_observed
+                ON trust_registry_events(observed_at, id)
+            ''')
+            conn.execute('''
+                CREATE INDEX IF NOT EXISTS idx_action_attestation_request
+                ON action_attestation_consumptions(agent_id, request_digest)
             ''')
         if self.db_path != ":memory:":
             conn.close()
@@ -834,6 +919,342 @@ class LedgerManager:
             return None
         finally:
             if self.db_path != ":memory:": conn.close()
+
+    def record_action_decision(
+        self,
+        decision: Dict[str, Any],
+        *,
+        consume_attestation: bool = True,
+    ) -> Optional[int]:
+        """Append a complete action-admission decision to the local ledger."""
+        required = ("decision_id", "request_id", "action_name", "status", "observed_at")
+        missing = [key for key in required if not decision.get(key)]
+        if missing:
+            raise ValueError(f"action decision is missing required fields: {', '.join(missing)}")
+        conn = self._get_connection()
+        try:
+            with conn:
+                if consume_attestation and decision.get("status") == "admitted":
+                    identity = decision.get("agent_identity") or {}
+                    request = decision.get("request") or {}
+                    if identity.get("required") is True:
+                        attestation = (decision.get("provenance") or {}).get("agent_attestation") or {}
+                        claims = attestation.get("claims") if isinstance(attestation, dict) else None
+                        if not isinstance(claims, dict):
+                            raise ValueError("admitted shared-trust decision is missing its agent attestation")
+                        try:
+                            conn.execute(
+                                '''
+                                INSERT INTO action_attestation_consumptions
+                                    (agent_id, attestation_id, nonce, request_digest, consumed_at, decision_id)
+                                VALUES (?, ?, ?, ?, ?, ?)
+                                ''',
+                                (
+                                    request["agent_id"],
+                                    claims["attestation_id"],
+                                    claims["nonce"],
+                                    decision["request_digest"],
+                                    decision["observed_at"],
+                                    decision["decision_id"],
+                                ),
+                            )
+                        except (KeyError, TypeError) as exc:
+                            raise ValueError(
+                                "admitted shared-trust decision has an incomplete agent attestation"
+                            ) from exc
+                cursor = conn.execute('''
+                    INSERT INTO action_decisions
+                        (decision_id, request_id, action_name, contract_version,
+                         status, assurance, contract_digest, request_digest,
+                         evidence_digest, authority_grant_id, model_fingerprint,
+                         decision_payload, observed_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    decision["decision_id"],
+                    decision["request_id"],
+                    decision["action_name"],
+                    decision.get("contract_version"),
+                    decision["status"],
+                    decision.get("assurance"),
+                    decision.get("contract_digest"),
+                    decision.get("request_digest"),
+                    decision.get("evidence_digest"),
+                    (decision.get("authority") or {}).get("grant_id"),
+                    json.dumps((decision.get("model") or {}).get("warden_fingerprint", {}), sort_keys=True),
+                    json.dumps(decision, sort_keys=True),
+                    decision["observed_at"],
+                ))
+                return cursor.lastrowid
+        except sqlite3.IntegrityError as exc:
+            if decision.get("status") == "admitted":
+                raise ActionAttestationReplayError(
+                    "agent attestation or nonce has already been consumed for an admitted action"
+                ) from exc
+            raise ValueError(f"action decision ID already exists: {decision['decision_id']}") from exc
+        finally:
+            if self.db_path != ":memory:": conn.close()
+
+    def revoke_action_grant(self, grant_id: str, *, revoked_by: str, rationale: str) -> bool:
+        """Persist an irreversible local revocation for a signed authority grant."""
+        if not grant_id or not revoked_by or not rationale:
+            raise ValueError("grant_id, revoked_by, and rationale are required for revocation")
+        conn = self._get_connection()
+        try:
+            with conn:
+                conn.execute(
+                    "INSERT INTO action_authority_revocations (grant_id, revoked_by, rationale) VALUES (?, ?, ?)",
+                    (grant_id, revoked_by, rationale),
+                )
+            return True
+        except sqlite3.IntegrityError:
+            return False
+        finally:
+            if self.db_path != ":memory:": conn.close()
+
+    def get_action_grant_revocation(self, grant_id: str) -> Optional[Dict[str, Any]]:
+        """Return a local grant revocation, if one was recorded."""
+        conn = self._get_connection()
+        try:
+            row = conn.execute(
+                "SELECT grant_id, revoked_by, rationale, revoked_at "
+                "FROM action_authority_revocations WHERE grant_id = ?",
+                (grant_id,),
+            ).fetchone()
+            if not row:
+                return None
+            return {
+                "grant_id": row[0],
+                "revoked_by": row[1],
+                "rationale": row[2],
+                "revoked_at": row[3],
+            }
+        finally:
+            if self.db_path != ":memory:": conn.close()
+
+    def is_action_grant_revoked(self, grant_id: str) -> bool:
+        return self.get_action_grant_revocation(grant_id) is not None
+
+    def is_action_attestation_consumed(self, agent_id: str, attestation_id: str, nonce: str) -> bool:
+        conn = self._get_connection()
+        try:
+            return conn.execute(
+                """
+                SELECT 1 FROM action_attestation_consumptions
+                WHERE agent_id = ? AND (attestation_id = ? OR nonce = ?)
+                LIMIT 1
+                """,
+                (agent_id, attestation_id, nonce),
+            ).fetchone() is not None
+        finally:
+            if self.db_path != ":memory:": conn.close()
+
+    def record_trust_registry_event(self, event: Dict[str, Any], *, registry_digest: str) -> Optional[int]:
+        """Mirror a signed project-trust transition into the local provenance ledger."""
+        required = ("event_id", "event_type", "event_digest", "applied_at")
+        missing = [key for key in required if not event.get(key)]
+        if missing or not registry_digest:
+            if not registry_digest:
+                missing.append("registry_digest")
+            raise ValueError(f"trust registry event is missing required fields: {', '.join(missing)}")
+        conn = self._get_connection()
+        try:
+            with conn:
+                cursor = conn.execute('''
+                    INSERT INTO trust_registry_events
+                        (event_id, event_type, registry_digest, event_digest, approvers, event_payload, observed_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    event["event_id"],
+                    event["event_type"],
+                    registry_digest,
+                    event["event_digest"],
+                    json.dumps(event.get("approvers") or [], sort_keys=True),
+                    json.dumps(event, sort_keys=True),
+                    event["applied_at"],
+                ))
+                return cursor.lastrowid
+        except sqlite3.IntegrityError:
+            return None
+        finally:
+            if self.db_path != ":memory:": conn.close()
+
+    def get_action_decisions(
+        self,
+        *,
+        action_name: Optional[str] = None,
+        request_id: Optional[str] = None,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """Return append-only action decisions with their complete payloads."""
+        if limit <= 0:
+            raise ValueError("limit must be greater than zero")
+        conn = self._get_connection()
+        try:
+            conditions: List[str] = []
+            params: List[Any] = []
+            if action_name:
+                conditions.append("action_name = ?")
+                params.append(action_name)
+            if request_id:
+                conditions.append("request_id = ?")
+                params.append(request_id)
+            where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+            rows = conn.execute(
+                "SELECT id, decision_id, request_id, action_name, contract_version, status, "
+                "assurance, contract_digest, request_digest, evidence_digest, authority_grant_id, "
+                "model_fingerprint, decision_payload, observed_at "
+                f"FROM action_decisions {where} ORDER BY id DESC LIMIT ?",
+                params + [limit],
+            ).fetchall()
+            return [
+                {
+                    "id": row[0],
+                    "decision_id": row[1],
+                    "request_id": row[2],
+                    "action_name": row[3],
+                    "contract_version": row[4],
+                    "status": row[5],
+                    "assurance": row[6],
+                    "contract_digest": row[7],
+                    "request_digest": row[8],
+                    "evidence_digest": row[9],
+                    "authority_grant_id": row[10],
+                    "model_fingerprint": json.loads(row[11] or "{}"),
+                    "decision": json.loads(row[12]),
+                    "observed_at": row[13],
+                }
+                for row in rows
+            ]
+        finally:
+            if self.db_path != ":memory:": conn.close()
+
+    def get_trust_registry_events(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Return local mirrors of public, signed trust-registry transitions."""
+        if limit <= 0:
+            raise ValueError("limit must be greater than zero")
+        conn = self._get_connection()
+        try:
+            rows = conn.execute(
+                "SELECT id, event_id, event_type, registry_digest, event_digest, approvers, event_payload, observed_at "
+                "FROM trust_registry_events ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            return [
+                {
+                    "id": row[0],
+                    "event_id": row[1],
+                    "event_type": row[2],
+                    "registry_digest": row[3],
+                    "event_digest": row[4],
+                    "approvers": json.loads(row[5] or "[]"),
+                    "event": json.loads(row[6]),
+                    "observed_at": row[7],
+                }
+                for row in rows
+            ]
+        finally:
+            if self.db_path != ":memory:": conn.close()
+
+    def get_workspace_history(self, *, limit: int = 50, kind: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Return a compact, human-oriented timeline across governed records."""
+        if limit <= 0:
+            raise ValueError("limit must be greater than zero")
+        allowed = {"action", "trust", "delivery", "resolution", "improvement", "conflict"}
+        if kind and kind not in allowed:
+            raise ValueError(f"kind must be one of {', '.join(sorted(allowed))}")
+        selected = {kind} if kind else allowed
+        events: List[Dict[str, Any]] = []
+        conn = self._get_connection()
+        try:
+            if "action" in selected:
+                for row in conn.execute(
+                    "SELECT decision_id, action_name, request_id, status, assurance, decision_payload, observed_at "
+                    "FROM action_decisions ORDER BY id DESC LIMIT ?", (limit,)
+                ).fetchall():
+                    decision = json.loads(row[5])
+                    authority = decision.get("authority") or {}
+                    events.append({
+                        "event_id": f"action:{row[0]}", "kind": "action", "at": row[6],
+                        "actor": authority.get("signer_id") or (decision.get("request") or {}).get("principal"),
+                        "agent": (decision.get("request") or {}).get("agent_id"),
+                        "target": row[1], "outcome": row[3],
+                        "summary": f"{row[1]} request {row[2]}: {row[3]}",
+                        "details": decision,
+                    })
+            if "trust" in selected:
+                for row in conn.execute(
+                    "SELECT event_id, event_type, approvers, event_payload, observed_at "
+                    "FROM trust_registry_events ORDER BY id DESC LIMIT ?", (limit,)
+                ).fetchall():
+                    event = json.loads(row[3])
+                    change = event.get("change") or {}
+                    subject = change.get("signer_id") or change.get("agent_id") or "unknown subject"
+                    events.append({
+                        "event_id": f"trust:{row[0]}", "kind": "trust", "at": row[4],
+                        "actor": ", ".join(json.loads(row[2] or "[]")), "agent": None,
+                        "target": subject, "outcome": row[1],
+                        "summary": f"{row[1]} for {subject}",
+                        "details": event,
+                    })
+            if "delivery" in selected:
+                for row in conn.execute(
+                    "SELECT snapshot_id, expectation_count, missing_proof_count, agent_id, warden_status, metadata, snapped_at "
+                    "FROM delivery_snapshots ORDER BY id DESC LIMIT ?", (limit,)
+                ).fetchall():
+                    events.append({
+                        "event_id": f"delivery:{row[0]}", "kind": "delivery", "at": row[6],
+                        "actor": None, "agent": row[3], "target": row[0],
+                        "outcome": "current" if row[2] == 0 and row[4] == "intact" else "attention",
+                        "summary": f"Delivery snapshot: {row[1]} expectations, {row[2]} missing proofs",
+                        "details": {
+                            "snapshot_id": row[0], "expectation_count": row[1],
+                            "missing_proof_count": row[2], "warden_status": row[4],
+                            "metadata": json.loads(row[5] or "{}"),
+                        },
+                    })
+            if "resolution" in selected:
+                for row in conn.execute(
+                    "SELECT id, conflict_id, entity_type, resolved_state, rationale, version, timestamp "
+                    "FROM human_resolutions ORDER BY id DESC LIMIT ?", (limit,)
+                ).fetchall():
+                    events.append({
+                        "event_id": f"resolution:{row[0]}", "kind": "resolution", "at": row[6],
+                        "actor": None, "agent": None, "target": row[1], "outcome": "resolved",
+                        "summary": f"Resolved {row[1]} (v{row[5]})",
+                        "details": {"entity_type": row[2], "resolved_state": row[3], "rationale": row[4]},
+                    })
+            if "improvement" in selected:
+                for row in conn.execute(
+                    "SELECT id, title, affected_model, lifecycle_status, created_by, created_at "
+                    "FROM improvement_proposals ORDER BY id DESC LIMIT ?", (limit,)
+                ).fetchall():
+                    events.append({
+                        "event_id": f"improvement:{row[0]}", "kind": "improvement", "at": row[5],
+                        "actor": row[4], "agent": row[4], "target": row[2], "outcome": row[3],
+                        "summary": row[1], "details": {"affected_model": row[2]},
+                    })
+            if "conflict" in selected:
+                for row in conn.execute(
+                    "SELECT id, conflict_id, entity_type, proposed_states, source_agents, timestamp "
+                    "FROM conflicts ORDER BY id DESC LIMIT ?", (limit,)
+                ).fetchall():
+                    events.append({
+                        "event_id": f"conflict:{row[0]}", "kind": "conflict", "at": row[5],
+                        "actor": ", ".join(json.loads(row[4] or "[]")), "agent": None,
+                        "target": row[1], "outcome": "pending", "summary": f"Pending conflict: {row[1]}",
+                        "details": {"entity_type": row[2], "proposed_states": json.loads(row[3] or "{}")},
+                    })
+        finally:
+            if self.db_path != ":memory:": conn.close()
+        events.sort(key=lambda item: (item.get("at") or "", item["event_id"]), reverse=True)
+        return events[:limit]
+
+    def get_provenance_event(self, event_id: str) -> Optional[Dict[str, Any]]:
+        """Return the full evidence payload for one timeline event ID."""
+        for event in self.get_workspace_history(limit=10000):
+            if event["event_id"] == event_id:
+                return event
+        return None
 
     def get_delivery_evidence(
         self,

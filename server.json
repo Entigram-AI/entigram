@@ -7,12 +7,12 @@
     "url": "https://github.com/Entigram-AI/entigram",
     "source": "github"
   },
-  "version": "1.22.0",
+  "version": "2.0.0",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "entigram-ai",
-      "version": "1.22.0",
+      "version": "2.0.0",
       "transport": {
         "type": "stdio"
       }

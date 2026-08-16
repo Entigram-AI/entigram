@@ -22,6 +22,19 @@ duplicating handoff rules.
 - Unknown entities, invented attributes, unverified alignments, and schema drift
   must be rejected or escalated to the human operator.
 - Resolve conflicts through `.etg/state.db`.
+- Treat a declared `actions.yaml` as a governed action contract. Before a
+  consequential external effect, use `etg action validate`; do not treat an
+  `agent_id`, workspace hook, or delivery snapshot as authority to act.
+- An action marked `advisory` is observed only. Claim prevention only when its
+  scoped credential is held by a mediated or enforced action adapter.
+- When `.etg/trust.yaml` exists, use its public signer roles for action grants
+  and approvals, use a human-enrolled protected agent key to attest an exact
+  consequential request, and require an authorized evidence issuer to attest
+  evidence marked verified. Shared agent attestations are short-lived and
+  single-use in the broker ledger; an external executor must enforce the same
+  at its target boundary. Never request, store, or commit another person's or
+  an agent's private key. Do not claim an unapproved runtime version or another
+  agent's identity.
 - `etg pause` temporarily compacts Entigram-owned context and blocks workspace
   governance operations. `etg resume` restores that context. These workspace
   commands are separate from `etg broker hibernate` and `etg broker resume`,

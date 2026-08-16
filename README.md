@@ -58,6 +58,12 @@ form from the environment where Entigram's dependencies are installed.
   [Workspace Standard](docs/workspace-standard.md); use
   [Agent Orchestration](docs/agent-orchestration.md) when coordinating agents.
 - **MCP integrators:** Use the [MCP tool contract](docs/mcp-tools.md).
+- **Action authors:** Use [Action admission](docs/action-admission.md) for
+  versioned, evidence-backed consequential actions.
+- **Project owners:** Use [Shared project trust](docs/project-trust.md) for
+  personal keys, collaborator roles, rotation, and recovery.
+- **Auditors:** Use [Provenance and history](docs/provenance.md) for the
+  timeline and detailed evidence views.
 - **OpenCode users:** Follow the [OpenCode integration guide](docs/opencode.md).
 - **Package authors:** Read the [package contract](docs/workspace-standard.md#package-contract)
   and inspect the public [community packages](community-packages/).
@@ -118,6 +124,16 @@ etg broker status
 ```
 
 `broker status` must report `Delivery status: current`.
+
+For a consequential external action, define it in `actions.yaml` and validate
+the target, authority, evidence, policy, and any required approval before an
+executor is allowed to act. See [Action admission](docs/action-admission.md).
+
+For a shared workspace, keep private human and agent keys off-repository,
+compare and externally pin the signed project root on every collaborator host,
+and configure public collaborator roles plus enrolled agent runtimes and exact
+versions in `.etg/trust.yaml`. See
+[Shared project trust](docs/project-trust.md).
 
 Keep active agent work in bounded, reviewable increments:
 

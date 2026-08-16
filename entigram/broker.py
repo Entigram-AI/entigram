@@ -2,6 +2,7 @@ import os
 import json
 import sqlite3
 import hashlib
+import logging
 import mimetypes
 import platform
 import base64
@@ -21,6 +22,8 @@ from .workspace_contract import (
     governed_artifact_paths,
     workspace_relative_path,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class EntigramBroker:
@@ -67,7 +70,8 @@ class EntigramBroker:
                 for term, syns in _SYNONYMS.items():
                     for s in syns:
                         self.ledger.record_synonym(term, s, 0.95)
-        except: pass
+        except Exception:
+            logger.warning("Failed to seed default synonyms", exc_info=True)
 
     def check_decision(self, conflict_id: str) -> Optional[Dict[str, Any]]:
         """Checks if a decision has already been recorded for this conflict."""
@@ -126,7 +130,8 @@ class EntigramBroker:
             if not self.warden.validate_payload(entity_type, payload):
                 return False
         except json.JSONDecodeError:
-            pass # Not a JSON payload, skip attribute validation
+            logger.warning("propose_resolution: proposed_state is not valid JSON — rejecting unvalidated payload")
+            return False
 
         return self.ledger.record_resolution(conflict_id, entity_type, proposed_state, f"[AGENT] {rationale}")
 
@@ -333,6 +338,61 @@ class EntigramBroker:
 
         return ExpectationGuard(str(self.target_dir), ledger=self.ledger).format_result(result)
 
+    def validate_action(self, action_name: str, request: Dict[str, Any]) -> Dict[str, Any]:
+        """Evaluate and append an evidence-backed action-admission decision.
+
+        This method has no external side effect. It records the exact contract,
+        evidence, authority, and policy decision that a future mediated action
+        executor must verify again immediately before operating on a target.
+        """
+        from .governance.action_admission import ActionAdmissionEngine
+        from .sqlite_ledger.manager import ActionAttestationReplayError
+
+        decision = ActionAdmissionEngine(
+            self.target_dir,
+            revocation_checker=self.ledger.is_action_grant_revoked,
+            attestation_consumed_checker=self.ledger.is_action_attestation_consumed,
+        ).validate(action_name, request)
+        try:
+            decision["ledger_id"] = self.ledger.record_action_decision(decision)
+        except ActionAttestationReplayError:
+            decision["ok"] = False
+            decision["status"] = "preflight_denied"
+            decision.setdefault("reasons", []).append(
+                {
+                    "code": "agent_attestation_replayed",
+                    "message": "This agent attestation was consumed by another admission attempt.",
+                }
+            )
+            decision.setdefault("remediation", []).append(
+                "Create a fresh, short-lived agent attestation before retrying."
+            )
+            decision["ledger_id"] = self.ledger.record_action_decision(
+                decision, consume_attestation=False
+            )
+        return decision
+
+    @staticmethod
+    def format_action_decision(decision: Dict[str, Any]) -> str:
+        lines = [
+            f"Action admission: {decision.get('action_name', 'unknown')}",
+            f"Request: {decision.get('request_id', 'unknown')}",
+            f"Status: {decision.get('status', 'unknown')}",
+            f"Assurance: {decision.get('assurance', 'unknown')}",
+        ]
+        authority = decision.get("authority") or {}
+        if authority:
+            lines.append(f"Authority: {authority.get('code', 'unknown')} ({authority.get('message', '')})")
+        reasons = decision.get("reasons") or []
+        if reasons:
+            lines.append("Reasons:")
+            lines.extend(f"  - [{reason.get('code', 'unknown')}] {reason.get('message', '')}" for reason in reasons)
+        remediation = decision.get("remediation") or []
+        if remediation:
+            lines.append("Next steps:")
+            lines.extend(f"  - {item}" for item in remediation)
+        return "\n".join(lines)
+
     def _artifact_path_for_storage(self, path: Path) -> str:
         try:
             return path.resolve().relative_to(self.target_dir).as_posix()
@@ -363,6 +423,7 @@ class EntigramBroker:
             ("schema.ttl", "ontology_contract"),
             ("draft_schema.lds", "draft_schema_contract"),
             ("draft_schema.ttl", "draft_ontology_contract"),
+            ("actions.yaml", "action_contract"),
             ("ontology/schema.ttl", "ontology_contract"),
             (".etg/entigram.yaml", "workspace_manifest"),
         }
@@ -552,6 +613,8 @@ class EntigramBroker:
             "semantic_alignments": self.ledger.get_alignments(trusted_only=False),
             "pending_conflicts": self.ledger.get_pending_conflicts(),
             "resolutions": self.ledger.get_all_resolutions(),
+            "action_decisions": self.ledger.get_action_decisions(limit=500),
+            "trust_registry_events": self.ledger.get_trust_registry_events(limit=500),
         }
         canonical_payload = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         digest = hashlib.sha256(canonical_payload).hexdigest()

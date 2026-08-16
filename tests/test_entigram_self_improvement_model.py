@@ -156,7 +156,7 @@ class TestEntigramSelfImprovementModel(unittest.TestCase):
         self.assertIn("export_audit_bundle", demo)
         self.assertIn("[project.optional-dependencies]", pyproject)
         self.assertRegex(pyproject, r'version = "\d+\.\d+\.\d+"')
-        self.assertIn('"cryptography>=42.0.0"', pyproject)
+        self.assertIn('"cryptography>=42.0.4"', pyproject)
 
 
 if __name__ == "__main__":

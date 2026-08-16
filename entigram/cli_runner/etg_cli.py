@@ -149,6 +149,64 @@ def _parse_json_arg(value, *, default=None):
     return parsed
 
 
+def _read_workspace_json(workspace: Path, path_value: str) -> dict:
+    path = _confined_workspace_path(workspace, path_value, must_exist=True)
+    try:
+        payload = json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{path_value} must contain a JSON object: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"{path_value} must contain a JSON object")
+    return payload
+
+
+def _write_workspace_json(workspace: Path, path_value: str, payload: dict) -> Path:
+    path = _confined_workspace_path(workspace, path_value)
+    if path == workspace:
+        raise ValueError("output path must identify a file inside the target workspace")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+    return path
+
+
+def _personal_identity(workspace: Path, signer_id: str, key_path: str | None, key_name: str = "default"):
+    """Load a person-owned key and refuse to place it inside the shared checkout."""
+    from entigram.governance.trust import PersonalIdentity, default_identity_path
+
+    resolved = Path(key_path).expanduser().resolve() if key_path else default_identity_path(signer_id, key_name).resolve()
+    try:
+        resolved.relative_to(workspace.resolve())
+    except ValueError:
+        return PersonalIdentity(signer_id, resolved)
+    raise ValueError("personal identity keys must be stored outside the shared workspace")
+
+
+def _agent_identity(
+    workspace: Path,
+    agent_id: str,
+    runtime: str,
+    key_path: str | None,
+    key_name: str = "default",
+):
+    """Load a protected workload key without allowing it in the checkout."""
+    from entigram.governance.trust import AgentIdentity, default_agent_identity_path
+
+    resolved = (
+        Path(key_path).expanduser().resolve()
+        if key_path
+        else default_agent_identity_path(agent_id, key_name).resolve()
+    )
+    try:
+        resolved.relative_to(workspace.resolve())
+    except ValueError:
+        return AgentIdentity(agent_id, runtime, resolved)
+    raise ValueError("agent identity keys must be stored outside the shared workspace")
+
+
 def _agent_instructions_text():
     return """Entigram agent instructions
 
@@ -534,6 +592,8 @@ def _concise_hydration_payload(full_payload: dict, schema_content: str) -> dict:
                 default=0,
             ),
             "blocked_count": status.get("blocked_count", 0),
+            "action_admission": boot.get("action_admission", {}),
+            "project_trust": boot.get("project_trust", {}),
             "next_commands": [
                 "etg broker preflight --file <path>",
                 "etg broker impact --file <path>",
@@ -565,7 +625,78 @@ def _concise_hydration_payload(full_payload: dict, schema_content: str) -> dict:
         summary["ENTIGRAM_BOOT_SUMMARY"]["next_commands"].append(
             "etg assess --adapter <name> --adapter-module <path> --allow-executable-adapter --subject-type sha256 --subject-file <path>"
         )
+    if (boot.get("action_admission") or {}).get("status") == "valid":
+        summary["ENTIGRAM_BOOT_SUMMARY"]["next_commands"].append(
+            "etg action validate --name <action> --request <request.json> --grant <grant.json> --json"
+        )
+    if (boot.get("project_trust") or {}).get("status") == "valid":
+        summary["ENTIGRAM_BOOT_SUMMARY"]["next_commands"].append("etg trust show --dir .")
     return summary
+
+
+def _action_admission_summary(target_path: Path) -> dict:
+    """Expose action-contract shape at boot without exposing credentials or evidence."""
+    actions_path = target_path / "actions.yaml"
+    if not actions_path.is_file():
+        return {"path": "actions.yaml", "status": "not_configured", "actions": []}
+    try:
+        from entigram.governance.action_admission import ActionAdmissionEngine
+
+        contracts = ActionAdmissionEngine(target_path).load_contracts()
+        return {
+            "path": "actions.yaml",
+            "status": "valid",
+            "actions": [
+                {
+                    "name": name,
+                    "version": str(contract["version"]),
+                    "assurance": contract["assurance"],
+                    "authority_scopes": contract["authority"]["scopes"],
+                    "approval_required": bool(contract.get("approval", {}).get("required", False)),
+                }
+                for name, contract in sorted(contracts.items())
+            ],
+        }
+    except Exception as exc:
+        return {"path": "actions.yaml", "status": "invalid", "actions": [], "error": str(exc)}
+
+
+def _project_trust_summary(target_path: Path) -> dict:
+    """Expose public collaboration roles at boot without exposing private keys."""
+    trust_path = target_path / ".etg" / "trust.yaml"
+    if not trust_path.is_file():
+        return {"path": ".etg/trust.yaml", "status": "not_configured", "signers": [], "agents": []}
+    try:
+        from entigram.governance.trust import ProjectTrustRegistry
+
+        registry = ProjectTrustRegistry(target_path)
+        document = registry.load()
+        return {
+            "path": ".etg/trust.yaml",
+            "status": "valid",
+            "project_id": document["project_id"],
+            "recovery_quorum": document["quorum"]["recovery"]["minimum"],
+            "signers": [
+                {
+                    "signer_id": signer["signer_id"],
+                    "roles": signer["roles"],
+                    "active_key_count": sum(1 for key in signer["keys"] if key["state"] == "active"),
+                }
+                for signer in document["signers"]
+            ],
+            "agents": [
+                {
+                    "agent_id": agent["agent_id"],
+                    "owner_id": agent["owner_id"],
+                    "runtime": agent["runtime"],
+                    "allowed_versions": agent["allowed_versions"],
+                    "active_key_count": sum(1 for key in agent["keys"] if key["state"] == "active"),
+                }
+                for agent in document.get("agents", [])
+            ],
+        }
+    except Exception as exc:
+        return {"path": ".etg/trust.yaml", "status": "invalid", "signers": [], "agents": [], "error": str(exc)}
 
 
 def get_hydration_vector(target_path: Path, compact: bool = False, full: bool = False) -> str:
@@ -647,6 +778,8 @@ def get_hydration_vector(target_path: Path, compact: bool = False, full: bool = 
     if schema_content:
         from entigram.governance.commissioner import Commissioner
         commissioner_checklist = Commissioner(schema_content).build_checklist()
+    action_admission = _action_admission_summary(target_path)
+    project_trust = _project_trust_summary(target_path)
 
     # 4. Flatten to High-Density String
     workspace_schema_version = manifest.get(
@@ -673,6 +806,8 @@ def get_hydration_vector(target_path: Path, compact: bool = False, full: bool = 
             "latest_delivery_snapshot": latest_delivery_snapshot,
             "current_delivery_status": current_delivery_status,
             "security_posture": security_posture,
+            "action_admission": action_admission,
+            "project_trust": project_trust,
             "timestamp": datetime.now().isoformat()
         }
     }
@@ -1315,6 +1450,275 @@ def _main():
     sync_cloud_parser.add_argument("--endpoint", default="https://api.entigram.ai/v1", help="Cloud endpoint")
 
     # broker command
+    identity_parser = subparsers.add_parser(
+        "identity",
+        help="Create or export a personal signing identity stored outside the workspace",
+    )
+    identity_subparsers = identity_parser.add_subparsers(dest="identity_command", required=True)
+    identity_create_parser = identity_subparsers.add_parser("create", help="Create a personal Ed25519 identity key")
+    identity_create_parser.add_argument("--signer", required=True, help="Stable personal signer ID")
+    identity_create_parser.add_argument("--key", help="Private key path outside a workspace")
+    identity_create_parser.add_argument("--name", default="default", help="Local key name used only for the default path")
+    identity_create_parser.add_argument("--json", action="store_true", dest="json_output")
+    identity_export_parser = identity_subparsers.add_parser("export", help="Export a public identity record; never exports the private key")
+    identity_export_parser.add_argument("--signer", required=True, help="Stable personal signer ID")
+    identity_export_parser.add_argument("--key", help="Private key path outside a workspace")
+    identity_export_parser.add_argument("--name", default="default", help="Local key name used only for the default path")
+    identity_export_parser.add_argument("--out", help="Optional path for the public JSON record")
+    identity_export_parser.add_argument("--json", action="store_true", dest="json_output")
+    identity_agent_create_parser = identity_subparsers.add_parser(
+        "create-agent",
+        help="Create a host-controlled agent signing key outside the workspace",
+    )
+    identity_agent_create_parser.add_argument("--agent", required=True, help="Stable workload agent ID")
+    identity_agent_create_parser.add_argument("--runtime", required=True, help="Agent runtime, e.g. codex or claude_code")
+    identity_agent_create_parser.add_argument("--key", help="Protected agent private-key path outside a workspace")
+    identity_agent_create_parser.add_argument("--name", default="default", help="Local key name used only for the default path")
+    identity_agent_create_parser.add_argument("--json", action="store_true", dest="json_output")
+    identity_agent_export_parser = identity_subparsers.add_parser(
+        "export-agent",
+        help="Export a public agent record; never exports the protected private key",
+    )
+    identity_agent_export_parser.add_argument("--agent", required=True, help="Stable workload agent ID")
+    identity_agent_export_parser.add_argument("--runtime", required=True, help="Agent runtime, e.g. codex or claude_code")
+    identity_agent_export_parser.add_argument("--key", help="Protected agent private-key path outside a workspace")
+    identity_agent_export_parser.add_argument("--name", default="default", help="Local key name used only for the default path")
+    identity_agent_export_parser.add_argument("--out", help="Optional path for the public JSON record")
+    identity_agent_export_parser.add_argument("--json", action="store_true", dest="json_output")
+
+    trust_parser = subparsers.add_parser(
+        "trust",
+        help="Manage public project trust records without sharing private keys",
+    )
+    trust_parser.add_argument("--dir", default=".", help="Target workspace directory")
+    trust_subparsers = trust_parser.add_subparsers(dest="trust_command", required=True)
+    trust_init_parser = trust_subparsers.add_parser("init", help="Initialize a public project trust registry")
+    trust_init_parser.add_argument("--project", required=True, help="Stable project ID")
+    trust_init_parser.add_argument("--owner", required=True, help="Initial owner signer ID")
+    trust_init_parser.add_argument("--identity-key", help="Owner private key outside the workspace")
+    trust_init_parser.add_argument("--role", action="append", default=["trust_admin", "recovery_admin", "authority_issuer"], help="Initial owner role; may be repeated")
+    trust_init_parser.add_argument("--recovery-quorum", type=int, default=1, help="Independent recovery_admin approvals required")
+    trust_init_parser.add_argument("--json", action="store_true", dest="json_output")
+    trust_show_parser = trust_subparsers.add_parser("show", help="Show public trust configuration and key state")
+    trust_show_parser.add_argument("--json", action="store_true", dest="json_output")
+    trust_root_parser = trust_subparsers.add_parser(
+        "root",
+        help="Show the signed root fingerprint for out-of-band comparison before pinning",
+    )
+    trust_root_parser.add_argument("--json", action="store_true", dest="json_output")
+    trust_pin_root_parser = trust_subparsers.add_parser(
+        "pin-root",
+        help="Pin the verified signed trust root outside the workspace on this host",
+    )
+    trust_pin_root_parser.add_argument(
+        "--root-digest",
+        required=True,
+        help="Root digest independently confirmed with a trusted collaborator",
+    )
+    trust_pin_root_parser.add_argument("--json", action="store_true", dest="json_output")
+    trust_add_parser = trust_subparsers.add_parser("add-signer", help="Add a collaborator public key after a trust-admin signature")
+    trust_add_parser.add_argument("--signer", required=True, help="Collaborator signer ID")
+    trust_add_parser.add_argument("--public-key", required=True, help="Collaborator public identity JSON inside the workspace")
+    trust_add_parser.add_argument("--role", action="append", required=True, help="Collaborator role; may be repeated")
+    trust_add_parser.add_argument("--authorized-by", required=True, help="Current trust-admin signer ID")
+    trust_add_parser.add_argument("--identity-key", help="Trust-admin private key outside the workspace")
+    trust_add_parser.add_argument("--json", action="store_true", dest="json_output")
+    trust_rotate_parser = trust_subparsers.add_parser("rotate-key", help="Replace your active key with a new public key")
+    trust_rotate_parser.add_argument("--signer", required=True, help="Signer whose key is rotating")
+    trust_rotate_parser.add_argument("--public-key", required=True, help="New public identity JSON inside the workspace")
+    trust_rotate_parser.add_argument("--identity-key", help="Current private key outside the workspace")
+    trust_rotate_parser.add_argument("--json", action="store_true", dest="json_output")
+    trust_recovery_request_parser = trust_subparsers.add_parser("recovery-request", help="Create a recovery request for a lost or compromised signer key")
+    trust_recovery_request_parser.add_argument("--signer", required=True, help="Signer whose key is being recovered")
+    trust_recovery_request_parser.add_argument("--public-key", required=True, help="Replacement public identity JSON inside the workspace")
+    trust_recovery_request_parser.add_argument("--out", required=True, help="Recovery request JSON to write inside the workspace")
+    trust_recovery_request_parser.add_argument("--json", action="store_true", dest="json_output")
+    trust_approve_parser = trust_subparsers.add_parser("approve-change", help="Sign a trust change using your personal identity")
+    trust_approve_parser.add_argument("--change", required=True, help="Trust change JSON inside the workspace")
+    trust_approve_parser.add_argument("--signer", required=True, help="Approving signer ID")
+    trust_approve_parser.add_argument("--identity-key", help="Approver private key outside the workspace")
+    trust_approve_parser.add_argument("--out", required=True, help="Approval JSON to write inside the workspace")
+    trust_approve_parser.add_argument("--json", action="store_true", dest="json_output")
+    trust_apply_parser = trust_subparsers.add_parser("apply-change", help="Apply a signed trust change after quorum verification")
+    trust_apply_parser.add_argument("--change", required=True, help="Trust change JSON inside the workspace")
+    trust_apply_parser.add_argument("--approval", action="append", required=True, help="Signed approval JSON inside the workspace; may be repeated")
+    trust_apply_parser.add_argument("--json", action="store_true", dest="json_output")
+    trust_revoke_parser = trust_subparsers.add_parser("revoke-key", help="Revoke a compromised signer key after trust-admin approval")
+    trust_revoke_parser.add_argument("--signer", required=True, help="Signer whose key is being revoked")
+    trust_revoke_parser.add_argument("--key-id", required=True, help="Registered public key ID to revoke")
+    trust_revoke_parser.add_argument("--authorized-by", required=True, help="Current trust-admin signer ID")
+    trust_revoke_parser.add_argument("--identity-key", help="Trust-admin private key outside the workspace")
+    trust_revoke_parser.add_argument("--json", action="store_true", dest="json_output")
+    trust_revoke_grant_parser = trust_subparsers.add_parser(
+        "revoke-grant",
+        help="Project-wide revoke a grant using the issuing authority signer",
+    )
+    trust_revoke_grant_parser.add_argument("--grant-id", required=True, help="Shared authority grant ID to revoke")
+    trust_revoke_grant_parser.add_argument(
+        "--grant",
+        required=True,
+        help="The original signed authority grant JSON inside the workspace",
+    )
+    trust_revoke_grant_parser.add_argument("--issuer", required=True, help="Authority issuer who signed the grant")
+    trust_revoke_grant_parser.add_argument("--identity-key", help="Issuing signer private key outside the workspace")
+    trust_revoke_grant_parser.add_argument("--json", action="store_true", dest="json_output")
+    trust_enroll_agent_parser = trust_subparsers.add_parser(
+        "enroll-agent",
+        help="Enroll a human-owned agent public key, runtime, and initial allowed version",
+    )
+    trust_enroll_agent_parser.add_argument("--agent", required=True, help="Workload agent ID to enroll")
+    trust_enroll_agent_parser.add_argument("--owner", required=True, help="Enrolled human signer who owns this workload")
+    trust_enroll_agent_parser.add_argument("--runtime", required=True, help="Runtime recorded for this workload")
+    trust_enroll_agent_parser.add_argument("--version", required=True, help="Initial explicitly allowed runtime version")
+    trust_enroll_agent_parser.add_argument("--public-key", required=True, help="Agent public identity JSON inside the workspace")
+    trust_enroll_agent_parser.add_argument("--authorized-by", required=True, help="Current trust-admin signer ID")
+    trust_enroll_agent_parser.add_argument("--identity-key", help="Trust-admin private key outside the workspace")
+    trust_enroll_agent_parser.add_argument("--json", action="store_true", dest="json_output")
+    trust_add_agent_version_parser = trust_subparsers.add_parser(
+        "add-agent-version",
+        help="Allow one additional exact version for an enrolled agent runtime",
+    )
+    trust_add_agent_version_parser.add_argument("--agent", required=True, help="Enrolled workload agent ID")
+    trust_add_agent_version_parser.add_argument("--version", required=True, help="Exact additional version to allow")
+    trust_add_agent_version_parser.add_argument("--authorized-by", required=True, help="Current trust-admin signer ID")
+    trust_add_agent_version_parser.add_argument("--identity-key", help="Trust-admin private key outside the workspace")
+    trust_add_agent_version_parser.add_argument("--json", action="store_true", dest="json_output")
+    trust_remove_agent_version_parser = trust_subparsers.add_parser(
+        "remove-agent-version",
+        help="Remove a retired exact version from an enrolled agent runtime",
+    )
+    trust_remove_agent_version_parser.add_argument("--agent", required=True, help="Enrolled workload agent ID")
+    trust_remove_agent_version_parser.add_argument("--version", required=True, help="Exact version to remove")
+    trust_remove_agent_version_parser.add_argument("--authorized-by", required=True, help="Current trust-admin signer ID")
+    trust_remove_agent_version_parser.add_argument("--identity-key", help="Trust-admin private key outside the workspace")
+    trust_remove_agent_version_parser.add_argument("--json", action="store_true", dest="json_output")
+    trust_rotate_agent_parser = trust_subparsers.add_parser(
+        "rotate-agent-key",
+        help="Retire an enrolled agent key and enroll a replacement after trust-admin approval",
+    )
+    trust_rotate_agent_parser.add_argument("--agent", required=True, help="Enrolled workload agent ID")
+    trust_rotate_agent_parser.add_argument("--public-key", required=True, help="Replacement agent public identity JSON inside the workspace")
+    trust_rotate_agent_parser.add_argument("--authorized-by", required=True, help="Current trust-admin signer ID")
+    trust_rotate_agent_parser.add_argument("--identity-key", help="Trust-admin private key outside the workspace")
+    trust_rotate_agent_parser.add_argument("--json", action="store_true", dest="json_output")
+    trust_revoke_agent_parser = trust_subparsers.add_parser(
+        "revoke-agent-key",
+        help="Revoke a compromised enrolled agent key after trust-admin approval",
+    )
+    trust_revoke_agent_parser.add_argument("--agent", required=True, help="Enrolled workload agent ID")
+    trust_revoke_agent_parser.add_argument("--key-id", required=True, help="Registered agent public key ID to revoke")
+    trust_revoke_agent_parser.add_argument("--authorized-by", required=True, help="Current trust-admin signer ID")
+    trust_revoke_agent_parser.add_argument("--identity-key", help="Trust-admin private key outside the workspace")
+    trust_revoke_agent_parser.add_argument("--json", action="store_true", dest="json_output")
+
+    history_parser = subparsers.add_parser("history", help="Show a compact Entigram provenance timeline")
+    history_parser.add_argument("--dir", default=".", help="Target workspace directory")
+    history_parser.add_argument("--limit", type=int, default=25, help="Maximum timeline events")
+    history_parser.add_argument("--kind", choices=["action", "trust", "delivery", "resolution", "improvement", "conflict"], help="Filter a timeline event kind")
+    history_parser.add_argument("--json", action="store_true", dest="json_output")
+    provenance_parser = subparsers.add_parser("provenance", help="Show full evidence for one Entigram history event")
+    provenance_parser.add_argument("--dir", default=".", help="Target workspace directory")
+    provenance_parser.add_argument("--event", required=True, help="Timeline event ID from `etg history`")
+    provenance_parser.add_argument("--json", action="store_true", dest="json_output")
+
+    action_parser = subparsers.add_parser(
+        "action",
+        help="Define, authorize, and validate versioned consequential action contracts",
+    )
+    action_parser.add_argument("--dir", default=".", help="Target workspace directory")
+    action_subparsers = action_parser.add_subparsers(dest="action_command", required=True)
+
+    action_authority_parser = action_subparsers.add_parser(
+        "init-authority",
+        help="Create the local Ed25519 authority root for development action grants",
+    )
+    action_authority_parser.add_argument("--json", action="store_true", dest="json_output")
+
+    action_grant_parser = action_subparsers.add_parser(
+        "grant",
+        help="Issue a local signed, scoped authority grant",
+    )
+    action_grant_parser.add_argument("--principal", required=True, help="Delegating principal identifier")
+    action_grant_parser.add_argument("--agent", required=True, help="Authorized agent workload identifier")
+    action_grant_parser.add_argument("--scope", action="append", required=True, help="Granted scope; may be repeated")
+    action_grant_parser.add_argument("--expires-at", required=True, help="RFC 3339 expiration timestamp")
+    action_grant_parser.add_argument("--id", dest="grant_id", help="Optional stable grant ID")
+    action_grant_parser.add_argument("--audience", help="Optional action-contract audience")
+    action_grant_parser.add_argument("--issuer", help="Trusted personal signer issuing the grant")
+    action_grant_parser.add_argument("--identity-key", help="Personal issuer key outside the workspace when trust.yaml exists")
+    action_grant_parser.add_argument("--out", help="Write grant JSON within the workspace")
+    action_grant_parser.add_argument("--json", action="store_true", dest="json_output")
+
+    action_approve_parser = action_subparsers.add_parser(
+        "approve",
+        help="Issue a signed local approval bound to one action request and evidence digest",
+    )
+    action_approve_parser.add_argument("--name", required=True, help="Action contract name")
+    action_approve_parser.add_argument("--request", required=True, help="Action request JSON inside the workspace")
+    action_approve_parser.add_argument("--approver", required=True, help="Approver identifier")
+    action_approve_parser.add_argument("--role", required=True, help="Approver role required by the contract")
+    action_approve_parser.add_argument("--expires-at", required=True, help="RFC 3339 expiration timestamp")
+    action_approve_parser.add_argument("--identity-key", help="Personal approver key outside the workspace when trust.yaml exists")
+    action_approve_parser.add_argument("--out", help="Write approval JSON within the workspace")
+    action_approve_parser.add_argument("--json", action="store_true", dest="json_output")
+
+    action_attest_parser = action_subparsers.add_parser(
+        "attest",
+        help="Sign an exact action request with an enrolled agent host key",
+    )
+    action_attest_parser.add_argument("--name", required=True, help="Action contract name")
+    action_attest_parser.add_argument("--request", required=True, help="Action request JSON inside the workspace")
+    action_attest_parser.add_argument("--agent", required=True, help="Enrolled workload agent ID")
+    action_attest_parser.add_argument("--runtime", required=True, help="Enrolled agent runtime")
+    action_attest_parser.add_argument("--version", required=True, help="Exact enrolled agent runtime version")
+    action_attest_parser.add_argument("--expires-at", required=True, help="RFC 3339 expiration timestamp")
+    action_attest_parser.add_argument("--nonce", help="Optional unique workload nonce")
+    action_attest_parser.add_argument("--identity-key", help="Protected agent key outside the workspace")
+    action_attest_parser.add_argument("--out", help="Write attestation JSON within the workspace")
+    action_attest_parser.add_argument("--json", action="store_true", dest="json_output")
+    action_evidence_attest_parser = action_subparsers.add_parser(
+        "attest-evidence",
+        help="Sign one evidence record with a trusted evidence-issuer identity",
+    )
+    action_evidence_attest_parser.add_argument("--request", required=True, help="Action request JSON inside the workspace")
+    action_evidence_attest_parser.add_argument("--evidence", required=True, help="Evidence ID to attest")
+    action_evidence_attest_parser.add_argument("--issuer", required=True, help="Trusted evidence issuer signer ID")
+    action_evidence_attest_parser.add_argument("--source-kind", required=True, help="Evidence source kind, e.g. ci or target_api")
+    action_evidence_attest_parser.add_argument("--source-uri", help="Optional immutable evidence or receipt location")
+    action_evidence_attest_parser.add_argument("--identity-key", help="Evidence issuer private key outside the workspace")
+    action_evidence_attest_parser.add_argument("--out", help="Write evidence attestation JSON within the workspace")
+    action_evidence_attest_parser.add_argument("--json", action="store_true", dest="json_output")
+
+    action_validate_parser = action_subparsers.add_parser(
+        "validate",
+        help="Evaluate an action contract without executing an external effect",
+    )
+    action_validate_parser.add_argument("--name", required=True, help="Action contract name")
+    action_validate_parser.add_argument("--request", required=True, help="Action request JSON inside the workspace")
+    action_validate_parser.add_argument("--grant", help="Signed authority grant JSON inside the workspace")
+    action_validate_parser.add_argument("--approval", action="append", default=[], help="Signed approval JSON inside the workspace; may be repeated")
+    action_validate_parser.add_argument("--agent-attestation", help="Signed enrolled-agent attestation JSON inside the workspace")
+    action_validate_parser.add_argument("--evidence-attestation", action="append", default=[], help="Signed evidence attestation JSON inside the workspace; may be repeated")
+    action_validate_parser.add_argument("--json", action="store_true", dest="json_output")
+
+    action_revoke_parser = action_subparsers.add_parser(
+        "revoke",
+        help="Durably revoke a local authority grant so future validations deny it",
+    )
+    action_revoke_parser.add_argument("--grant-id", required=True, help="Authority grant ID to revoke")
+    action_revoke_parser.add_argument("--by", required=True, help="Principal recording the revocation")
+    action_revoke_parser.add_argument("--reason", required=True, help="Why the grant is being revoked")
+    action_revoke_parser.add_argument("--json", action="store_true", dest="json_output")
+
+    action_decisions_parser = action_subparsers.add_parser(
+        "decisions",
+        help="List append-only action-admission decisions from the local ledger",
+    )
+    action_decisions_parser.add_argument("--name", help="Filter by action contract name")
+    action_decisions_parser.add_argument("--request-id", help="Filter by action request ID")
+    action_decisions_parser.add_argument("--limit", type=int, default=20, help="Maximum decisions to return")
+    action_decisions_parser.add_argument("--json", action="store_true", dest="json_output")
+
     broker_parser = subparsers.add_parser("broker", help="Agent orchestration broker")
     broker_subparsers = broker_parser.add_subparsers(dest="broker_command", help="Broker commands")
     broker_parser.add_argument("--dir", default=".", help="Target directory")
@@ -2884,6 +3288,533 @@ RELATIONSHIPS:
             if not broker.ledger.sync_with_cloud(args.endpoint, token or ""):
                 sys.exit(1)
 
+    elif args.command == "identity":
+        workspace = _resolve_workspace_dir(getattr(args, "dir", None))
+        try:
+            is_agent_identity = args.identity_command in {"create-agent", "export-agent"}
+            if is_agent_identity:
+                identity = _agent_identity(
+                    workspace,
+                    args.agent,
+                    args.runtime,
+                    args.key,
+                    args.name,
+                )
+            else:
+                identity = _personal_identity(
+                    workspace,
+                    args.signer,
+                    args.key,
+                    args.name,
+                )
+            if args.identity_command in {"create", "create-agent"}:
+                result = {"ok": True, "identity": identity.create(), "private_key_path": str(identity.key_path)}
+            else:
+                result = {"ok": True, "identity": identity.public_record()}
+                if args.out:
+                    destination = Path(args.out).expanduser().resolve()
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    destination.write_text(json.dumps(result["identity"], indent=2, sort_keys=True) + "\n")
+                    result["path"] = str(destination)
+            if args.json_output or args.identity_command in {"export", "export-agent"}:
+                print(json.dumps(result, indent=2, sort_keys=True))
+            else:
+                identity_label = result["identity"].get("signer_id") or result["identity"]["agent_id"]
+                identity_type = "Agent" if is_agent_identity else "Personal"
+                print(f"✅ {identity_type} identity created: {identity_label}")
+                print(f"   Key ID: {result['identity']['key_id']}")
+                print(f"   Private key: {result['private_key_path']}")
+        except (ValueError, OSError) as exc:
+            if getattr(args, "json_output", False):
+                print(json.dumps({"ok": False, "error": str(exc)}, indent=2, sort_keys=True))
+            else:
+                print(f"❌ Identity error: {exc}")
+            sys.exit(1)
+
+    elif args.command == "trust":
+        from entigram.broker import EntigramBroker
+        from entigram.governance.trust import ProjectTrustRegistry, TrustRegistryError
+        from entigram.governance.warden import Warden
+
+        workspace = _resolve_workspace_dir(args.dir)
+        registry = ProjectTrustRegistry(workspace)
+        try:
+            mutating_commands = {
+                "init", "add-signer", "rotate-key", "apply-change", "revoke-key", "revoke-grant",
+                "enroll-agent", "add-agent-version", "remove-agent-version", "rotate-agent-key", "revoke-agent-key",
+            }
+            if args.trust_command in mutating_commands and Warden(str(workspace)).is_locked():
+                raise TrustRegistryError(
+                    "workspace is Warden-locked; run `etg warden --dir . unlock`, review the trust change, "
+                    "then run `etg broker --dir . handoff --accept-contract-change`"
+                )
+            if args.trust_command == "init":
+                identity = _personal_identity(workspace, args.owner, args.identity_key)
+                result = {
+                    "ok": True,
+                    "registry": registry.initialize(
+                        project_id=args.project,
+                        owner_public_key=identity.public_record(),
+                        owner_roles=args.role,
+                        owner_identity=identity,
+                        recovery_quorum=args.recovery_quorum,
+                    ),
+                }
+                result["next_step"] = "Review .etg/trust.yaml, then run `etg warden lock` before action admission."
+            elif args.trust_command == "show":
+                document = registry.load()
+                result = {
+                    "ok": True,
+                    "registry": document,
+                    "registry_digest": registry.registry_digest(document),
+                }
+            elif args.trust_command == "root":
+                result = {
+                    "ok": True,
+                    "root": registry.root_summary(),
+                    "next_step": "Compare root_digest over an independent channel, then pin that exact digest on this host.",
+                }
+            elif args.trust_command == "pin-root":
+                path = registry.pin_root(expected_root_digest=args.root_digest)
+                result = {
+                    "ok": True,
+                    "anchor_path": str(path),
+                    "next_step": "Shared trust history is now anchored on this host and can be verified.",
+                }
+            elif args.trust_command in {
+                "add-signer", "rotate-key", "revoke-key", "revoke-grant", "enroll-agent", "add-agent-version", "remove-agent-version",
+                "rotate-agent-key", "revoke-agent-key",
+            }:
+                if args.trust_command == "add-signer":
+                    change = registry.make_change(
+                        operation="add_signer",
+                        signer_id=args.signer,
+                        public_key=_read_workspace_json(workspace, args.public_key),
+                        roles=args.role,
+                    )
+                    authorizer = _personal_identity(workspace, args.authorized_by, args.identity_key)
+                elif args.trust_command == "rotate-key":
+                    change = registry.make_change(
+                        operation="rotate_key",
+                        signer_id=args.signer,
+                        public_key=_read_workspace_json(workspace, args.public_key),
+                    )
+                    authorizer = _personal_identity(workspace, args.signer, args.identity_key)
+                elif args.trust_command == "revoke-key":
+                    change = registry.make_change(
+                        operation="revoke_key",
+                        signer_id=args.signer,
+                        key_id_to_revoke=args.key_id,
+                    )
+                    authorizer = _personal_identity(workspace, args.authorized_by, args.identity_key)
+                elif args.trust_command == "revoke-grant":
+                    change = registry.make_change(
+                        operation="revoke_grant",
+                        signer_id=args.issuer,
+                        grant_id=args.grant_id,
+                        grant=_read_workspace_json(workspace, args.grant),
+                    )
+                    authorizer = _personal_identity(workspace, args.issuer, args.identity_key)
+                elif args.trust_command == "enroll-agent":
+                    change = registry.make_change(
+                        operation="enroll_agent",
+                        agent_id=args.agent,
+                        owner_id=args.owner,
+                        runtime=args.runtime,
+                        version=args.version,
+                        public_key=_read_workspace_json(workspace, args.public_key),
+                    )
+                    authorizer = _personal_identity(workspace, args.authorized_by, args.identity_key)
+                elif args.trust_command == "add-agent-version":
+                    change = registry.make_change(
+                        operation="add_agent_version",
+                        agent_id=args.agent,
+                        version=args.version,
+                    )
+                    authorizer = _personal_identity(workspace, args.authorized_by, args.identity_key)
+                elif args.trust_command == "remove-agent-version":
+                    change = registry.make_change(
+                        operation="remove_agent_version",
+                        agent_id=args.agent,
+                        version=args.version,
+                    )
+                    authorizer = _personal_identity(workspace, args.authorized_by, args.identity_key)
+                elif args.trust_command == "rotate-agent-key":
+                    change = registry.make_change(
+                        operation="rotate_agent_key",
+                        agent_id=args.agent,
+                        public_key=_read_workspace_json(workspace, args.public_key),
+                    )
+                    authorizer = _personal_identity(workspace, args.authorized_by, args.identity_key)
+                else:
+                    change = registry.make_change(
+                        operation="revoke_agent_key",
+                        agent_id=args.agent,
+                        key_id_to_revoke=args.key_id,
+                    )
+                    authorizer = _personal_identity(workspace, args.authorized_by, args.identity_key)
+                approval = registry.approve_change(change, authorizer)
+                event = registry.apply_change(change, [approval])
+                with EntigramBroker(workspace) as broker:
+                    ledger_id = broker.ledger.record_trust_registry_event(
+                        event,
+                        registry_digest=registry.registry_digest(),
+                    )
+                result = {
+                    "ok": True,
+                    "change": change,
+                    "event": event,
+                    "ledger_id": ledger_id,
+                    "next_step": "Review .etg/trust.yaml, then run `etg broker --dir . handoff --accept-contract-change` to lock this already-unlocked change.",
+                }
+            elif args.trust_command == "recovery-request":
+                change = registry.make_change(
+                    operation="recover_key",
+                    signer_id=args.signer,
+                    public_key=_read_workspace_json(workspace, args.public_key),
+                )
+                path = _write_workspace_json(workspace, args.out, change)
+                result = {"ok": True, "change": change, "path": str(path)}
+            elif args.trust_command == "approve-change":
+                change = _read_workspace_json(workspace, args.change)
+                identity = _personal_identity(workspace, args.signer, args.identity_key)
+                approval = registry.approve_change(change, identity)
+                path = _write_workspace_json(workspace, args.out, approval)
+                result = {"ok": True, "approval": approval, "path": str(path)}
+            elif args.trust_command == "apply-change":
+                change = _read_workspace_json(workspace, args.change)
+                approvals = [_read_workspace_json(workspace, path) for path in args.approval]
+                event = registry.apply_change(change, approvals)
+                with EntigramBroker(workspace) as broker:
+                    ledger_id = broker.ledger.record_trust_registry_event(
+                        event,
+                        registry_digest=registry.registry_digest(),
+                    )
+                result = {
+                    "ok": True,
+                    "event": event,
+                    "ledger_id": ledger_id,
+                    "next_step": "Review .etg/trust.yaml, then run `etg broker --dir . handoff --accept-contract-change` to lock this already-unlocked change.",
+                }
+            else:
+                trust_parser.print_help()
+                return
+            if getattr(args, "json_output", False):
+                print(json.dumps(result, indent=2, sort_keys=True))
+            elif args.trust_command == "show":
+                print(f"Project trust: {result['registry']['project_id']} ({result['registry_digest'][:12]})")
+                for signer in result["registry"]["signers"]:
+                    active = sum(1 for key in signer["keys"] if key["state"] == "active")
+                    print(f"  {signer['signer_id']} | roles: {', '.join(signer['roles'])} | active keys: {active}")
+                for agent in result["registry"].get("agents", []):
+                    active = sum(1 for key in agent["keys"] if key["state"] == "active")
+                    print(
+                        f"  {agent['agent_id']} | runtime: {agent['runtime']} | "
+                        f"versions: {', '.join(agent['allowed_versions'])} | active keys: {active}"
+                    )
+            elif args.trust_command == "root":
+                root = result["root"]
+                print(f"Signed trust root: {root['project_id']} ({root['root_digest']})")
+                print("   Compare this digest independently before running `etg trust pin-root`.")
+            else:
+                print("✅ Project trust updated.")
+                if result.get("next_step"):
+                    print(f"   Next: {result['next_step']}")
+        except (TrustRegistryError, ValueError, OSError) as exc:
+            if getattr(args, "json_output", False):
+                print(json.dumps({"ok": False, "error": str(exc)}, indent=2, sort_keys=True))
+            else:
+                print(f"❌ Trust error: {exc}")
+            sys.exit(1)
+
+    elif args.command == "history":
+        from entigram.sqlite_ledger.manager import LedgerManager
+
+        workspace = _resolve_workspace_dir(args.dir)
+        from entigram.sqlite_ledger.paths import resolve_ledger_path
+        manager = LedgerManager(str(resolve_ledger_path(str(workspace))))
+        try:
+            events = manager.get_workspace_history(limit=args.limit, kind=args.kind)
+        finally:
+            manager.close()
+        if args.json_output:
+            print(json.dumps(events, indent=2, sort_keys=True))
+        elif not events:
+            print("No Entigram provenance events recorded.")
+        else:
+            print(f"Entigram history — {workspace.name}")
+            for event in events:
+                actor = event.get("actor") or event.get("agent") or "system"
+                print(f"{event['at']} | {event['kind']} | {event['outcome']} | {actor} | {event['summary']}")
+                print(f"  {event['event_id']}")
+
+    elif args.command == "provenance":
+        from entigram.sqlite_ledger.manager import LedgerManager
+
+        workspace = _resolve_workspace_dir(args.dir)
+        from entigram.sqlite_ledger.paths import resolve_ledger_path
+        manager = LedgerManager(str(resolve_ledger_path(str(workspace))))
+        try:
+            event = manager.get_provenance_event(args.event)
+        finally:
+            manager.close()
+        if event is None:
+            payload = {"ok": False, "error": f"unknown provenance event: {args.event}"}
+            if args.json_output:
+                print(json.dumps(payload, indent=2, sort_keys=True))
+            else:
+                print(f"❌ {payload['error']}")
+            sys.exit(1)
+        if args.json_output:
+            print(json.dumps({"ok": True, "event": event}, indent=2, sort_keys=True))
+        else:
+            print(f"Provenance: {event['event_id']}")
+            print(f"Time: {event['at']}")
+            print(f"Kind: {event['kind']}")
+            print(f"Actor: {event.get('actor') or 'system'}")
+            print(f"Outcome: {event['outcome']}")
+            print(json.dumps(event["details"], indent=2, sort_keys=True))
+
+    elif args.command == "action":
+        from entigram.broker import EntigramBroker
+        from entigram.governance.action_admission import (
+            ActionAdmissionEngine,
+            ActionContractError,
+            LocalActionAuthority,
+            agent_attestation_claims,
+            action_approval_claims,
+            evidence_attestation_claims,
+            authority_grant_claims,
+        )
+        from entigram.governance.trust import ProjectTrustRegistry
+
+        workspace = _resolve_workspace_dir(args.dir)
+        authority = LocalActionAuthority(workspace)
+        project_trust = ProjectTrustRegistry(workspace)
+        try:
+            if args.action_command == "init-authority":
+                result = authority.initialize()
+                if args.json_output:
+                    print(json.dumps({"ok": True, "authority": result}, indent=2, sort_keys=True))
+                else:
+                    print("✅ Local action authority initialized.")
+                    print(f"   Key ID: {result['key_id']}")
+                    print(f"   Private key: {result['private_key_path']}")
+            elif args.action_command == "grant":
+                if project_trust.exists():
+                    if not args.issuer:
+                        raise ValueError("--issuer is required when .etg/trust.yaml is configured")
+                    identity = _personal_identity(workspace, args.issuer, args.identity_key)
+                    grant = identity.sign(
+                        "authority_grant",
+                        authority_grant_claims(
+                            principal=args.principal,
+                            agent_id=args.agent,
+                            scopes=args.scope,
+                            expires_at=args.expires_at,
+                            grant_id=args.grant_id,
+                            audience=args.audience,
+                            issuer_id=args.issuer,
+                        ),
+                    )
+                else:
+                    grant = authority.issue_grant(
+                        principal=args.principal,
+                        agent_id=args.agent,
+                        scopes=args.scope,
+                        expires_at=args.expires_at,
+                        grant_id=args.grant_id,
+                        audience=args.audience,
+                    )
+                if args.out:
+                    path = _write_workspace_json(workspace, args.out, grant)
+                    result = {"ok": True, "path": str(path), "grant": grant}
+                else:
+                    result = {"ok": True, "grant": grant}
+                if args.json_output or not args.out:
+                    print(json.dumps(result, indent=2, sort_keys=True))
+                else:
+                    print(f"✅ Authority grant written: {result['path']}")
+            elif args.action_command == "approve":
+                request = _read_workspace_json(workspace, args.request)
+                digests = ActionAdmissionEngine(workspace).action_digests(args.name, request)
+                if project_trust.exists():
+                    identity = _personal_identity(workspace, args.approver, args.identity_key)
+                    approval = identity.sign(
+                        "action_approval",
+                        action_approval_claims(
+                            action_name=args.name,
+                            request_id=request["request_id"],
+                            approver_id=args.approver,
+                            role=args.role,
+                            action_digest=digests["request_digest"],
+                            evidence_digest=digests["evidence_digest"],
+                            expires_at=args.expires_at,
+                        ),
+                    )
+                else:
+                    approval = authority.issue_approval(
+                        action_name=args.name,
+                        request_id=request["request_id"],
+                        approver_id=args.approver,
+                        role=args.role,
+                        action_digest=digests["request_digest"],
+                        evidence_digest=digests["evidence_digest"],
+                        expires_at=args.expires_at,
+                    )
+                if args.out:
+                    path = _write_workspace_json(workspace, args.out, approval)
+                    result = {"ok": True, "path": str(path), "approval": approval}
+                else:
+                    result = {"ok": True, "approval": approval}
+                if args.json_output or not args.out:
+                    print(json.dumps(result, indent=2, sort_keys=True))
+                else:
+                    print(f"✅ Bound action approval written: {result['path']}")
+            elif args.action_command == "attest":
+                if not project_trust.exists():
+                    raise ValueError("agent attest requires .etg/trust.yaml and a human-approved agent enrollment")
+                request = _read_workspace_json(workspace, args.request)
+                if request.get("agent_id") != args.agent:
+                    raise ValueError("--agent must match request.agent_id")
+                engine = ActionAdmissionEngine(workspace)
+                digests = engine.action_digests(args.name, request)
+                identity = _agent_identity(workspace, args.agent, args.runtime, args.identity_key)
+                attestation = identity.sign(
+                    "action_request",
+                    agent_attestation_claims(
+                        action_name=args.name,
+                        request_id=request["request_id"],
+                        request_digest=digests["request_digest"],
+                        agent_id=args.agent,
+                        runtime=args.runtime,
+                        version=args.version,
+                        expires_at=args.expires_at,
+                        nonce=args.nonce,
+                    ),
+                )
+                if args.out:
+                    path = _write_workspace_json(workspace, args.out, attestation)
+                    result = {"ok": True, "path": str(path), "attestation": attestation}
+                else:
+                    result = {"ok": True, "attestation": attestation}
+                if args.json_output or not args.out:
+                    print(json.dumps(result, indent=2, sort_keys=True))
+                else:
+                    print(f"✅ Agent request attestation written: {result['path']}")
+            elif args.action_command == "attest-evidence":
+                if not project_trust.exists():
+                    raise ValueError("evidence attest requires .etg/trust.yaml and a trusted evidence issuer")
+                request = _read_workspace_json(workspace, args.request)
+                evidence = next(
+                    (item for item in request.get("evidence", []) if item.get("id") == args.evidence),
+                    None,
+                )
+                if evidence is None:
+                    raise ValueError("--evidence must identify an evidence record in the request")
+                source = {"kind": args.source_kind}
+                if args.source_uri:
+                    source["uri"] = args.source_uri
+                identity = _personal_identity(workspace, args.issuer, args.identity_key)
+                attestation = identity.sign(
+                    "evidence_attestation",
+                    evidence_attestation_claims(
+                        evidence_id=evidence["id"],
+                        sha256=evidence["sha256"],
+                        observed_at=evidence["observed_at"],
+                        source=source,
+                    ),
+                )
+                if args.out:
+                    path = _write_workspace_json(workspace, args.out, attestation)
+                    result = {"ok": True, "path": str(path), "attestation": attestation}
+                else:
+                    result = {"ok": True, "attestation": attestation}
+                if args.json_output or not args.out:
+                    print(json.dumps(result, indent=2, sort_keys=True))
+                else:
+                    print(f"✅ Evidence attestation written: {result['path']}")
+            elif args.action_command == "validate":
+                request = _read_workspace_json(workspace, args.request)
+                if args.grant:
+                    request["authority"] = _read_workspace_json(workspace, args.grant)
+                if args.approval:
+                    request["approvals"] = [
+                        _read_workspace_json(workspace, path)
+                        for path in args.approval
+                    ]
+                if args.agent_attestation:
+                    request["agent_attestation"] = _read_workspace_json(workspace, args.agent_attestation)
+                for path in args.evidence_attestation:
+                    attestation = _read_workspace_json(workspace, path)
+                    claims = attestation.get("claims") if isinstance(attestation, dict) else None
+                    evidence_id = claims.get("evidence_id") if isinstance(claims, dict) else None
+                    matched = next(
+                        (item for item in request.get("evidence", []) if item.get("id") == evidence_id),
+                        None,
+                    )
+                    if matched is None:
+                        raise ValueError(f"evidence attestation does not match an evidence record: {path}")
+                    if "attestation" in matched:
+                        raise ValueError(f"multiple attestations supplied for evidence: {evidence_id}")
+                    matched["attestation"] = attestation
+                with EntigramBroker(workspace) as broker:
+                    result = broker.validate_action(args.name, request)
+                if args.json_output:
+                    print(json.dumps(result, indent=2, sort_keys=True))
+                else:
+                    print(EntigramBroker.format_action_decision(result))
+                if not result.get("ok"):
+                    sys.exit(1)
+            elif args.action_command == "revoke":
+                if project_trust.exists():
+                    raise ValueError(
+                        "shared grants must be revoked through the trust revoke-grant command so every clone verifies it"
+                    )
+                with EntigramBroker(workspace) as broker:
+                    created = broker.ledger.revoke_action_grant(
+                        args.grant_id,
+                        revoked_by=args.by,
+                        rationale=args.reason,
+                    )
+                    revocation = broker.ledger.get_action_grant_revocation(args.grant_id)
+                result = {
+                    "ok": True,
+                    "created": created,
+                    "revocation": revocation,
+                }
+                if args.json_output:
+                    print(json.dumps(result, indent=2, sort_keys=True))
+                elif created:
+                    print(f"✅ Authority grant revoked: {args.grant_id}")
+                else:
+                    print(f"Authority grant was already revoked: {args.grant_id}")
+            elif args.action_command == "decisions":
+                with EntigramBroker(workspace) as broker:
+                    result = broker.ledger.get_action_decisions(
+                        action_name=args.name,
+                        request_id=args.request_id,
+                        limit=args.limit,
+                    )
+                if args.json_output:
+                    print(json.dumps(result, indent=2, sort_keys=True))
+                elif not result:
+                    print("No action-admission decisions recorded.")
+                else:
+                    for item in result:
+                        print(
+                            f"{item['observed_at']} | {item['action_name']} | "
+                            f"{item['request_id']} | {item['status']} | {item.get('assurance') or '-'}"
+                        )
+            else:
+                action_parser.print_help()
+        except (ActionContractError, ValueError, OSError) as exc:
+            if getattr(args, "json_output", False):
+                print(json.dumps({"ok": False, "error": str(exc)}, indent=2, sort_keys=True))
+            else:
+                print(f"❌ Action admission error: {exc}")
+            sys.exit(1)
+
     elif args.command == "broker":
         from entigram.broker import EntigramBroker
         broker = EntigramBroker(args.dir)
@@ -3648,12 +4579,12 @@ RELATIONSHIPS:
             proposals = broker.ledger.get_improvement_proposals(
                 lifecycle_status=getattr(args, "status", None)
             )
-            if not proposals:
+            if getattr(args, "json_output", False):
+                print(json.dumps(proposals, indent=2))
+            elif not proposals:
                 status_filter = getattr(args, "status", None)
                 label = f" (status: {status_filter})" if status_filter else ""
                 print(f"No improvement proposals found{label}.")
-            elif getattr(args, "json_output", False):
-                print(json.dumps(proposals, indent=2))
             else:
                 print(f"Improvement Proposals ({len(proposals)} found):")
                 for p in proposals:
@@ -3692,10 +4623,10 @@ RELATIONSHIPS:
             lessons = broker.ledger.get_lessons(
                 lifecycle_status=getattr(args, "status", None)
             )
-            if not lessons:
-                print("No lessons recorded yet.")
-            elif getattr(args, "json_output", False):
+            if getattr(args, "json_output", False):
                 print(json.dumps(lessons, indent=2))
+            elif not lessons:
+                print("No lessons recorded yet.")
             else:
                 print(f"Lessons ({len(lessons)} found):")
                 for l in lessons:
