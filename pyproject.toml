@@ -22,7 +22,7 @@ dependencies = [
     "inflect>=7.0.0,<7.3.0",
     "protobuf>=5.28.2",
     "requests>=2.32.2",
-    "mcp>=1.0.0,<3",
+    "mcp>=2.0.0,<3",
     "cryptography>=42.0.4"
 ]
 

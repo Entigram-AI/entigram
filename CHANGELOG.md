@@ -15,6 +15,39 @@
 * harden SQLite ledger concurrency with WAL mode and busy timeouts
 * close warning-producing registry, broker, router, and hydration resources
 
+## [1.25.0](https://github.com/Entigram-AI/entigram/compare/v1.24.1...v1.25.0) (2026-08-13)
+
+
+### Features
+
+* publish complete MCP tool contracts ([#44](https://github.com/Entigram-AI/entigram/issues/44)) ([8d0b798](https://github.com/Entigram-AI/entigram/commit/8d0b798c0c86b19428e4e4ca8ea1c1a5705516e9))
+
+
+### Documentation
+
+* add M8ven verification badge ([#42](https://github.com/Entigram-AI/entigram/issues/42)) ([8f4e841](https://github.com/Entigram-AI/entigram/commit/8f4e8418c15e7358ed6044fc80333808766c1ba0))
+
+## [1.24.1](https://github.com/Entigram-AI/entigram/compare/v1.24.0...v1.24.1) (2026-08-13)
+
+
+### Bug Fixes
+
+* name initialized schema for Entigram ([#40](https://github.com/Entigram-AI/entigram/issues/40)) ([4ae679d](https://github.com/Entigram-AI/entigram/commit/4ae679d97c60fcee1f2a432d21f904ff7de1152d))
+
+## [1.24.0](https://github.com/Entigram-AI/entigram/compare/v1.23.0...v1.24.0) (2026-08-13)
+
+
+### Features
+
+* enforce adapters for workspace agents ([#37](https://github.com/Entigram-AI/entigram/issues/37)) ([9d1302b](https://github.com/Entigram-AI/entigram/commit/9d1302be631ee8f648d774496c76be2831f3daf7))
+
+## [1.23.0](https://github.com/Entigram-AI/entigram/compare/v1.22.0...v1.23.0) (2026-08-13)
+
+
+### Features
+
+* enforce agent lifecycle check-ins ([#35](https://github.com/Entigram-AI/entigram/issues/35)) ([8320e21](https://github.com/Entigram-AI/entigram/commit/8320e2154dc1c8cf868e4c3182e405e7595332d3))
+
 ## [1.22.0](https://github.com/Entigram-AI/entigram/compare/v1.21.1...v1.22.0) (2026-08-03)
 
 

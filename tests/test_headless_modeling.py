@@ -4,6 +4,7 @@ import os
 import sys
 from pathlib import Path
 from entigram.cli_runner.etg_cli import main
+from entigram.antigravity_hooks import install_antigravity_hooks
 
 class TestHeadlessModeling(unittest.TestCase):
     def setUp(self):
@@ -11,7 +12,12 @@ class TestHeadlessModeling(unittest.TestCase):
         self.test_dir.mkdir(exist_ok=True)
         (self.test_dir / ".etg").mkdir(exist_ok=True)
         with open(self.test_dir / ".etg" / "entigram.yaml", "w") as f:
-            f.write("cli_engine: Antigravity\n")
+            f.write(
+                "cli_engine: Antigravity\n"
+                "agent_governance:\n"
+                "  active_agents: [antigravity]\n"
+            )
+        install_antigravity_hooks(self.test_dir)
         
         self.draft_path = self.test_dir / "draft_schema.lds"
         with open(self.draft_path, "w") as f:

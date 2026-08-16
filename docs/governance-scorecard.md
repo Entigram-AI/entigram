@@ -58,21 +58,22 @@ coverage so an unsupported high score is visible.
 ## Entigram v1 baseline: 86.4 / 100
 
 The current baseline is intentionally conservative. Entigram scores strongly on
-the closed-world contract, delivery evidence, and handoff validation. Native
-adapters now load the canonical policy and schema, gate MCP calls, and the
-portable Git guard supports standard linked worktrees. It does not score maximum
-points because hosts can bypass local hooks and not every agent exposes a native
-interception surface.
+the closed-world contract, delivery evidence, and handoff validation. A
+workspace now declares its permitted agents: the operating supported agent must
+have its native adapter configured before hydration, delivery, or handoff;
+adapter-free work needs per-agent manifest-and-ledger evidence. It does not
+score maximum points because hosts can bypass local hooks, host trust cannot be
+verified portably, and not every agent exposes a native interception surface.
 
 | Dimension | Current rating | Principal limit to improve |
 | --- | ---: | --- |
 | Closed-world action contract | 5/5 | Maintain independent review evidence. |
 | Discovery-to-admission separation | 4/5 | Broaden formalized admission coverage. |
-| Action admission and least privilege | 4/5 | Cover hosted and other bypassing host tool surfaces. |
+| Action admission and least privilege | 4/5 | Prove host activation and cover hosted/bypassing tool surfaces. |
 | Context hydration and continuity | 4/5 | Prove restart, compaction, and sub-agent continuity. |
 | Drift detection and bounded checkpoints | 4/5 | Add independently reproducible drift fixtures. |
 | Evidence, provenance, and ledger integrity | 5/5 | Maintain independent audit evidence. |
-| Human escalation and reversible exceptions | 4/5 | Exercise more exception/recovery scenarios. |
+| Human escalation and reversible exceptions | 4/5 | Exercise exception expiration and recovery scenarios. |
 | Validation and delivery handoff | 5/5 | Maintain independent delivery evidence. |
 | Multi-agent semantic coordination | 4/5 | Measure coordination quality across real agent teams. |
 | Agent portability and interoperability | 4/5 | Add verified adapters; retain the generic backstop. |

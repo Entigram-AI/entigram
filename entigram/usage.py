@@ -21,6 +21,12 @@ MCP_TOOL_DECLARATIONS = (
         "description": "Read the authoritative local LDS schemas and parsed entity boundaries; does not write workspace state.",
         "read_only": True,
         "writes_ledger": False,
+        "annotations": {
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
     },
     {
         "name": "etg_get_impact",
@@ -28,6 +34,12 @@ MCP_TOOL_DECLARATIONS = (
         "description": "Read the localized context and change-impact graph for a workspace file; does not write workspace state.",
         "read_only": True,
         "writes_ledger": False,
+        "annotations": {
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
     },
     {
         "name": "etg_get_workspace_context",
@@ -35,6 +47,12 @@ MCP_TOOL_DECLARATIONS = (
         "description": "Read the workspace lifecycle, manifest, schema summary, delivery status, security posture, and agent instruction paths.",
         "read_only": True,
         "writes_ledger": False,
+        "annotations": {
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
     },
     {
         "name": "etg_get_capabilities",
@@ -42,6 +60,12 @@ MCP_TOOL_DECLARATIONS = (
         "description": "Read the authoritative Entigram MCP capability catalog, including inputs, side effects, and safety boundaries.",
         "read_only": True,
         "writes_ledger": False,
+        "annotations": {
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
     },
     {
         "name": "etg_get_assessment_capabilities",
@@ -49,6 +73,12 @@ MCP_TOOL_DECLARATIONS = (
         "description": "Read signed installed assessment metadata and current workspace security advisories; does not execute adapters or write workspace state.",
         "read_only": True,
         "writes_ledger": False,
+        "annotations": {
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
     },
     {
         "name": "etg_assess",
@@ -56,6 +86,12 @@ MCP_TOOL_DECLARATIONS = (
         "description": "Run a strict assessment request through the fail-closed MCP boundary; does not accept module paths or write governed state.",
         "read_only": True,
         "writes_ledger": False,
+        "annotations": {
+            "readOnlyHint": True,
+            "destructiveHint": False,
+            "idempotentHint": True,
+            "openWorldHint": False,
+        },
     },
     {
         "name": "etg_propose_alignment",
@@ -63,13 +99,25 @@ MCP_TOOL_DECLARATIONS = (
         "description": "Validate and persist a proposed semantic alignment in the local ledger; the proposal is not an approved operational fact.",
         "read_only": False,
         "writes_ledger": True,
+        "annotations": {
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "idempotentHint": False,
+            "openWorldHint": False,
+        },
     },
     {
         "name": "etg_log_conflict",
         "input": {"payload": "json-string"},
-        "description": "Validate and persist a deterministic conflict in the local ledger for human review.",
+        "description": "Validate and persist a deterministic conflict in the local ledger for human review; an existing conflict with the same ID is replaced.",
         "read_only": False,
         "writes_ledger": True,
+        "annotations": {
+            "readOnlyHint": False,
+            "destructiveHint": True,
+            "idempotentHint": False,
+            "openWorldHint": False,
+        },
     },
 )
 

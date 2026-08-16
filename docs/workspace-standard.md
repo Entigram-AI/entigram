@@ -31,7 +31,6 @@ An initialized workspace uses these files and paths:
 | `schema.lds` | Yes | Authoritative closed-world schema contract for entities, attributes, relationships, and expectations. |
 | `.etg/state.db` | Yes | Local SQLite ledger for alignments, conflicts, resolutions, delivery evidence, delivery snapshots, and agent state. |
 | `.etg/agent_policy.md` | Recommended | Canonical agent instructions for hydration, impact analysis, and handoff. |
-| `.etg/trust.yaml` | When shared action authority is configured | Public collaborator and human-owned agent keys, roles, approved agent runtime versions, recovery quorum, and signed trust-transition history. Never contains a private key. Its signed root is pinned outside the repository on each participant host. |
 | `AGENTS.md` or tool-specific instruction files | Recommended | Thin pointers that direct agents to `.etg/agent_policy.md`. |
 | `.agents/hooks.json` | When Antigravity is available | Entigram's namespaced Antigravity session gate, merged with existing hooks. |
 | `.codex/hooks.json` | When Codex hooks are trusted | Entigram-managed Codex session, write-admission, and stop entries. |
@@ -82,6 +81,8 @@ lifecycle:
   state: active
   change_budget:
     max_changed_files: 5
+agent_governance:
+  active_agents: [codex]
 external_artifacts:
   modalities: [image, pdf]
   trust: untrusted
@@ -92,20 +93,11 @@ external_artifacts:
 status: initialized
 ```
 
-The manifest may also include schema, ontology, action-contract, and
-project-trust-registry checksums written by Warden.
+The manifest may also include schema and ontology checksums written by Warden.
 Agents must not edit these checksum values manually. Use the broker handoff flow
-or `etg warden lock` when a governed schema, ontology, `actions.yaml`, or
-`.etg/trust.yaml` change requires a new lock. Warden fingerprints every file in
-`schema_paths`, an existing root `actions.yaml`, and `.etg/trust.yaml`; adding
-any governing artifact requires a new lock before it can authorize alignments
-or action admission.
-
-Shared trust has a second, independent integrity boundary: the initial signed
-root is pinned in each participant's local Entigram configuration and each
-checkout state is replayed from that root. A new participant compares the root
-digest out of band before pinning it. Neither the repository nor Warden alone
-is a substitute for that external root pin.
+or `etg warden lock` when a governed schema or ontology change requires a new
+lock. Warden fingerprints every file in `schema_paths`; adding an authoritative
+schema requires a new lock before it can authorize alignments or state changes.
 
 `governed_artifact_globs` is optional. It selects project files that delivery
 snapshots must anchor and compare in both directions, including newly added
@@ -204,12 +196,21 @@ Automation should branch on the JSON fields, not on surrounding prose.
 ## Workspace Lifecycle Contract
 
 Workspaces without a `lifecycle` block are treated as active for compatibility.
-New workspaces declare:
+New workspaces also declare the selected agent for lifecycle enforcement:
 
 ```yaml
 lifecycle:
   state: active
+agent_governance:
+  active_agents: [codex]
 ```
+
+Workspaces may declare more than one agent. The operating supported agent
+requires its matching native adapter; Entigram detects it from the adapter or
+known host signals, and otherwise uses the configured default. When the
+operating adapter is absent, Entigram withholds governed hydration context and
+refuses delivery or handoff. CI, scripts, and unsupported agents need a
+recorded per-agent exception; see `workspace-lifecycle.md`.
 
 `etg pause` changes the state to `paused` only after backing up and compacting
 Entigram-owned policy and marked agent instruction blocks. While paused,

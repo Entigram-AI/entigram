@@ -8,6 +8,7 @@ snapshot builds such as 0.0.1.dev20260602183000.
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import subprocess
 import sys
@@ -50,6 +51,22 @@ def set_version(version: str) -> dict[Path, str]:
             raise SystemExit(f"Could not update version in {path}")
         originals[path] = text
         path.write_text(updated)
+
+    metadata_path = Path("server.json")
+    if metadata_path.exists():
+        text = metadata_path.read_text()
+        try:
+            metadata = json.loads(text)
+        except json.JSONDecodeError as error:
+            raise SystemExit(f"Could not parse {metadata_path}: {error}") from error
+
+        metadata["version"] = version
+        for package in metadata.get("packages", []):
+            if isinstance(package, dict) and "version" in package:
+                package["version"] = version
+
+        originals[metadata_path] = text
+        metadata_path.write_text(json.dumps(metadata, indent=2) + "\n")
 
     setup_path = Path("setup.py")
     if setup_path.exists():

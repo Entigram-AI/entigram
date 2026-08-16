@@ -6,6 +6,9 @@
 
 <!-- mcp-name: io.github.entigram-ai/entigram -->
 
+[![M8ven Verified](https://m8ven.ai/badge/mcp/entigram-ai-entigram-2fzem6)](https://m8ven.ai/mcp/entigram-ai-entigram-2fzem6)
+<!-- m8ven-verify: edc3592a94786ccd5ba9725301dc70a5 -->
+
 **Entigram** is a schema-first control plane for enterprise agents that grounds agent behavior in verified domain models, approved semantic alignments, and auditable state transitions.
 
 It provides the infrastructure to build **constrained autonomy**, ensuring that agents operate across fragmented enterprise systems without inventing fields, joins, entities, or state transitions.

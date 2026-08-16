@@ -23,8 +23,9 @@ jobs:
       - uses: googleapis/release-please-action@v4
         id: release
         with:
-          # Standard release type for Python projects
-          release-type: python
+          # Manifest mode keeps MCP registry metadata in lockstep with releases.
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
           # Use the organization PAT when configured, otherwise the workflow token.
           token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
 

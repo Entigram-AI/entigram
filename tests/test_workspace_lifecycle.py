@@ -78,6 +78,22 @@ class TestWorkspaceLifecycle(unittest.TestCase):
         manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False))
         self.assertEqual(workspace_state(self.root), "active")
 
+    def test_initialization_uses_the_entigram_meta_schema(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self.assertTrue(
+                inject_entigram_manifest(str(root), ["Entigram Schemas"], "Codex")
+            )
+            self.assertEqual(
+                (root / "schema.lds").read_text().splitlines()[:4],
+                [
+                    "/*",
+                    " * Entigram meta-schema",
+                    " * Canonical closed-world schema for an Entigram workspace.",
+                    " */",
+                ],
+            )
+
     def test_estimator_and_session_boundary_are_deterministic(self):
         self.assertEqual(estimate_tokens(0), 0)
         self.assertEqual(estimate_tokens(1), 1)
@@ -227,16 +243,55 @@ class TestWorkspaceLifecycle(unittest.TestCase):
         self.assertIn("ACTIVE_CHANGE_CHECK_IN_REQUIRED", output)
 
     def test_configuring_antigravity_installs_hooks_for_existing_workspace(self):
+        from entigram.agent_hooks import remove_agent_hooks
+
+        remove_agent_hooks(self.root)
         exit_code, output, _ = self.run_cli(
             ["config", "--dir", str(self.root), "--engine", "Antigravity"]
         )
 
         self.assertEqual(exit_code, 0)
-        self.assertIn("lifecycle adapters installed", output)
+        self.assertIn("adapter installed for workspace agent", output)
         hooks = json.loads((self.root / ".agents" / "hooks.json").read_text())
         self.assertIn(ANTIGRAVITY_HOOK_NAME, hooks)
-        self.assertTrue((self.root / ".codex" / "hooks.json").is_file())
-        self.assertTrue((self.root / ".claude" / "settings.json").is_file())
+        self.assertFalse((self.root / ".codex" / "hooks.json").exists())
+        self.assertFalse((self.root / ".claude" / "settings.json").exists())
+
+    def test_config_adds_a_second_workspace_agent_without_replacing_default(self):
+        exit_code, output, _ = self.run_cli(
+            ["config", "--dir", str(self.root), "--add-agent", "Claude Code"]
+        )
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("workspace agent: claude", output)
+        manifest = yaml.safe_load((self.root / ".etg" / "entigram.yaml").read_text())
+        self.assertEqual(["codex", "claude"], manifest["agent_governance"]["active_agents"])
+        self.assertEqual("Codex", manifest["cli_engine"])
+        self.assertTrue((self.root / ".codex" / "hooks.json").exists())
+        self.assertTrue((self.root / ".claude" / "settings.json").exists())
+
+    def test_config_records_auditable_adapter_exception(self):
+        from entigram.agent_hooks import remove_agent_hooks
+        from entigram.workspace_lifecycle import active_agent_adapter_status
+
+        remove_agent_hooks(self.root)
+        exit_code, output, _ = self.run_cli(
+            [
+                "config",
+                "--dir",
+                str(self.root),
+                "--adapter-exception",
+                "CI runner has no native hook protocol.",
+                "--approved-by",
+                "Release Engineering",
+            ]
+        )
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("exception recorded", output)
+        status = active_agent_adapter_status(self.root)
+        self.assertTrue(status["ok"])
+        self.assertEqual("exception", status["status"])
 
     def test_installing_adapters_adds_portable_git_checkin_guard(self):
         (self.root / ".git" / "hooks").mkdir(parents=True)

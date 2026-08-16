@@ -61,6 +61,52 @@ class EntigramBroker:
         except Exception:
             pass
 
+    def active_agent_adapter_status(self) -> Dict[str, Any]:
+        """Return the workspace-agent enforcement state."""
+        from .workspace_lifecycle import active_agent_adapter_status
+
+        return active_agent_adapter_status(self.target_dir)
+
+    def _adapter_enforcement_blocked_delivery(
+        self, status: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        return {
+            "valid": False,
+            "error": (
+                "Delivery refused: workspace-agent lifecycle enforcement is required. "
+                + status.get("next_action", "Install the configured agent adapter.")
+            ),
+            "adapter_enforcement": status,
+            "expectation_count": 0,
+            "items": [],
+            "missing_proof_count": 0,
+            "blocked_count": 0,
+            "evidence_ids": [],
+            "trust_score": {
+                "score": 0.0,
+                "grade": "F",
+                "breakdown": {"active_agent_adapter": 0.0},
+            },
+        }
+
+    def _with_adapter_enforcement(self, status: Dict[str, Any]) -> Dict[str, Any]:
+        enforcement = self.active_agent_adapter_status()
+        status["adapter_enforcement"] = enforcement
+        if enforcement["ok"]:
+            return status
+
+        status["valid"] = False
+        status["needs_recommission"] = True
+        status["status"] = "degraded"
+        recommendations = status.setdefault("recommendations", [])
+        requirement = (
+            "Install each missing workspace-agent adapter before handoff. "
+            + enforcement.get("next_action", "")
+        )
+        if requirement not in recommendations:
+            recommendations.insert(0, requirement)
+        return status
+
     def _seed_synonyms(self):
         """Seeds the ledger with default synonyms if empty."""
         try:
@@ -662,6 +708,10 @@ class EntigramBroker:
         the current schema state. This is the 'last known good' baseline.
         Attaches a trust score to every delivery.
         """
+        adapter_status = self.active_agent_adapter_status()
+        if not adapter_status["ok"]:
+            return self._adapter_enforcement_blocked_delivery(adapter_status)
+
         checklist = self.commission(
             proofs=proofs,
             blocked_checks=blocked_checks,
@@ -760,7 +810,7 @@ class EntigramBroker:
         """
         snapshot = self.ledger.get_latest_snapshot()
         if not snapshot:
-            return {
+            return self._with_adapter_enforcement({
                 "valid": False,
                 "needs_recommission": True,
                 "status": "no_snapshot",
@@ -770,7 +820,7 @@ class EntigramBroker:
                 "recommendations": [
                     "Run `etg broker deliver --proof ...` after proof is available.",
                 ],
-            }
+            })
 
         from .governance.commissioner import Commissioner
 
@@ -886,7 +936,7 @@ class EntigramBroker:
         if not recommendations:
             recommendations.append("No recommission needed; latest delivery snapshot still matches.")
 
-        return {
+        return self._with_adapter_enforcement({
             "valid": not needs_recommission,
             "needs_recommission": needs_recommission,
             "status": "needs_recommission" if needs_recommission else "current",
@@ -900,7 +950,7 @@ class EntigramBroker:
             "artifact_changes": artifact_changes,
             "unanchored_artifacts": unanchored_artifacts,
             "recommendations": recommendations,
-        }
+        })
 
     def format_delivery_status(self, status: Dict[str, Any]) -> str:
         if status.get("status") == "no_snapshot":
@@ -911,9 +961,15 @@ class EntigramBroker:
 
         snapshot = status.get("snapshot") or {}
         lines = [
-            "Delivery status: current"
-            if status.get("valid")
-            else "Delivery status: recommission required",
+            (
+                "Delivery status: current"
+                if status.get("valid")
+                else (
+                    "Delivery status: governance enforcement required"
+                    if status.get("status") == "degraded"
+                    else "Delivery status: recommission required"
+                )
+            ),
             f"Snapshot: {snapshot.get('snapshot_id', 'unknown')}",
             f"Warden: {status.get('warden_status', 'unknown')}",
             (
@@ -929,6 +985,19 @@ class EntigramBroker:
                 f"{len(status.get('unanchored_artifacts', []))} unanchored"
             ),
         ]
+
+        enforcement = status.get("adapter_enforcement") or {}
+        if enforcement:
+            lines.append(
+                "Workspace agents: "
+                f"{', '.join(enforcement.get('active_agents') or ['unconfigured'])} "
+                f"({enforcement.get('status', 'unknown')})"
+            )
+            lines.append(
+                "Operating agent: "
+                f"{enforcement.get('operating_agent') or 'unresolved'} "
+                f"({enforcement.get('operating_agent_source') or 'unresolved'})"
+            )
 
         for change in status.get("artifact_changes", []):
             path = change.get("path") or f"artifact_id={change.get('artifact_id')}"
