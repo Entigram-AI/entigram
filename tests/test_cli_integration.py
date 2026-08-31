@@ -289,6 +289,31 @@ class TestCLIIntegration(unittest.TestCase):
         self.assertFalse(success)
         self.assertIn("contract change while handoff validations ran", output)
 
+    def test_recommission_recovers_unlocked_action_contract_drift(self):
+        self.run_cli(['init', '--dir', '.', '--force'])
+        self.run_cli(['warden', 'lock'])
+        self.run_cli(['warden', 'unlock'])
+        # Simulate a contract introduced during the explicit unlock window.
+        Path("actions.yaml").write_text(
+            "format: entigram.action-contract.v1\nactions: {}\n"
+        )
+
+        success, output = self.run_cli(['warden', 'unlock'])
+        self.assertTrue(success)
+        self.assertIn("already unlocked", output)
+        self.assertIn("recommission", output)
+
+        success, output = self.run_cli([
+            'broker', 'recommission', '--accept-contract-change'
+        ])
+        self.assertTrue(success)
+        self.assertIn("Delivery status: current", output)
+        self.assertIn("Warden: intact", output)
+
+        success, output = self.run_cli(['broker', 'status'])
+        self.assertTrue(success)
+        self.assertIn("Delivery status: current", output)
+
     def test_broker_deliver_refuses_pending_unlocked_contract_change(self):
         self.run_cli(['init', '--dir', '.', '--force'])
         self.run_cli(['warden', 'lock'])
