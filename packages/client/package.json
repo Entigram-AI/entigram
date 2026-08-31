@@ -1,0 +1,37 @@
+{
+  "name": "@entigram/client",
+  "version": "0.1.0",
+  "description": "Typed Node client for Entigram's local MCP governance server",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "import": "./src/index.js",
+      "default": "./src/index.js"
+    }
+  },
+  "types": "./src/index.d.ts",
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test test/client.test.mjs"
+  },
+  "keywords": [
+    "entigram",
+    "mcp",
+    "agent-governance",
+    "semantic-governance"
+  ],
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Entigram-AI/entigram.git",
+    "directory": "packages/client"
+  },
+  "homepage": "https://entigram.ai"
+}

@@ -3,7 +3,7 @@ import os
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Optional, Any
+from typing import Dict, Optional, Any, List
 
 from ..workspace_contract import (
     authoritative_schema_paths,
@@ -81,7 +81,12 @@ class Warden:
 
         return fingerprint
 
-    def verify_integrity(self, emit_human: bool = True) -> bool:
+    def verify_integrity(
+        self,
+        emit_human: bool = True,
+        *,
+        allow_unlocked: bool = False,
+    ) -> bool:
         """
         Validates the current files against the hashes stored in the manifest.
         Triggers SCHEMA_GUARD_HALT if a mismatch is detected.
@@ -95,6 +100,17 @@ class Warden:
             manifest = yaml.safe_load(f) or {}
 
         stored_fingerprint = manifest.get("integrity_fingerprint", {})
+        unlock_record = manifest.get("integrity_unlock")
+        explicitly_unlocked = isinstance(unlock_record, dict)
+        if not stored_fingerprint and explicitly_unlocked:
+            # An explicit unlock is an authorized contract-change window.  The
+            # old fingerprint remains available in integrity_unlock for the
+            # recommission diff, but it must not be reported as tampering.
+            return True
+        if not stored_fingerprint and allow_unlocked:
+            # A legacy/unlocked workspace may have no prior unlock marker.  An
+            # accepting handoff can establish its first current lock.
+            return True
         if not isinstance(stored_fingerprint, dict):
             self.last_halt_event = HaltEvent(
                 halt_code="SCHEMA_MANIFEST_INVALID",
@@ -150,7 +166,12 @@ class Warden:
                     "Review actions.yaml, then run `etg warden unlock` and "
                     "`etg broker handoff --accept-contract-change` to lock the new action contract."
                 ),
-                details={"target_dir": str(self.target_dir)},
+                details={
+                    "target_dir": str(self.target_dir),
+                    "differences": self.fingerprint_differences(
+                        stored_fingerprint, current_fingerprint
+                    ),
+                },
             )
             if emit_human:
                 print("🚨 [SCHEMA_GUARD_HALT] Action contract is not covered by the Warden lock.")
@@ -169,7 +190,12 @@ class Warden:
                     "Review .etg/trust.yaml, then run `etg warden unlock` and "
                     "`etg broker handoff --accept-contract-change` to lock the trust change."
                 ),
-                details={"target_dir": str(self.target_dir)},
+                details={
+                    "target_dir": str(self.target_dir),
+                    "differences": self.fingerprint_differences(
+                        stored_fingerprint, current_fingerprint
+                    ),
+                },
             )
             if emit_human:
                 print("🚨 [SCHEMA_GUARD_HALT] Project trust registry is not covered by the Warden lock.")
@@ -196,7 +222,12 @@ class Warden:
                         "Restore the governed schema/ontology files, or run "
                         "`etg warden lock` only after an authorized contract change."
                     ),
-                    details={"target_dir": str(self.target_dir)},
+                    details={
+                        "target_dir": str(self.target_dir),
+                        "differences": self.fingerprint_differences(
+                            stored_fingerprint, current_fingerprint
+                        ),
+                    },
                 )
                 if emit_human:
                     print(f"🚨 [SCHEMA_GUARD_HALT] Warden Integrity Violation Detected in {key}!")
@@ -206,6 +237,64 @@ class Warden:
                 return False
 
         return True
+
+    @staticmethod
+    def fingerprint_differences(
+        expected: Optional[Dict[str, Any]],
+        actual: Optional[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Return stable, human-readable checksum differences."""
+        expected = expected if isinstance(expected, dict) else {}
+        actual = actual if isinstance(actual, dict) else {}
+        differences = []
+        for key in sorted(set(expected) | set(actual)):
+            old = expected.get(key)
+            new = actual.get(key)
+            if isinstance(old, dict) or isinstance(new, dict):
+                old_map = old if isinstance(old, dict) else {}
+                new_map = new if isinstance(new, dict) else {}
+                for path in sorted(set(old_map) | set(new_map)):
+                    before = old_map.get(path)
+                    after = new_map.get(path)
+                    if before != after:
+                        differences.append({
+                            "key": key,
+                            "path": path,
+                            "expected_checksum": before,
+                            "actual_checksum": after,
+                        })
+            elif old != new:
+                differences.append({
+                    "key": key,
+                    "path": key,
+                    "expected_checksum": old,
+                    "actual_checksum": new,
+                })
+        return differences
+
+    def integrity_state(self) -> Dict[str, Any]:
+        """Describe lock state and current-vs-baseline contract checksums."""
+        import yaml
+
+        manifest = (
+            yaml.safe_load(self.manifest_path.read_text()) or {}
+            if self.manifest_path.exists()
+            else {}
+        )
+        stored = manifest.get("integrity_fingerprint")
+        unlock = manifest.get("integrity_unlock")
+        baseline = stored
+        if not isinstance(baseline, dict) and isinstance(unlock, dict):
+            baseline = unlock.get("previous_fingerprint")
+        current = self.generate_fingerprint()
+        return {
+            "locked": isinstance(stored, dict) and bool(stored),
+            "unlocked": not (isinstance(stored, dict) and bool(stored)),
+            "pending_contract_change": isinstance(unlock, dict),
+            "expected_fingerprint": baseline if isinstance(baseline, dict) else {},
+            "current_fingerprint": current,
+            "differences": self.fingerprint_differences(baseline, current),
+        }
 
     def lock_fingerprint(
         self,
@@ -293,7 +382,18 @@ class Warden:
             
             print(f"🔓 [WARDEN] Schema contracts UNLOCKED. The domain can now be modified.")
         else:
-            print(f"ℹ️  [WARDEN] Domain was not locked.")
+            pending = isinstance(manifest.get("integrity_unlock"), dict)
+            if pending:
+                print(
+                    "ℹ️  [WARDEN] Domain is already unlocked; an authorized contract "
+                    "change is pending. Next: `etg broker recommission "
+                    "--accept-contract-change`."
+                )
+            else:
+                print(
+                    "ℹ️  [WARDEN] Domain is already unlocked. Next: run `etg broker "
+                    "handoff --accept-contract-change` to establish a current lock."
+                )
 
     def validate_payload(self, entity_name: str, payload: Dict[str, Any], emit_human: bool = True) -> bool:
         """

@@ -2095,6 +2095,27 @@ def _main():
     )
     handoff_parser.add_argument("--json", action="store_true", dest="json_output", help="Print result as JSON")
 
+    recommission_parser = broker_subparsers.add_parser(
+        "recommission",
+        help="Recompute governed fingerprints and create a current delivery snapshot",
+    )
+    recommission_parser.add_argument(
+        "--accept-contract-change",
+        action="store_true",
+        help="Explicitly authorize the current contract as the new governed baseline",
+    )
+    recommission_parser.add_argument(
+        "--proof",
+        action="append",
+        default=[],
+        help="Proof text or artifact reference",
+    )
+    recommission_parser.add_argument("--blocked", action="append", default=[], metavar="CHECK")
+    recommission_parser.add_argument("--artifact", action="append", default=[])
+    recommission_parser.add_argument("--artifact-role", default="delivery_artifact")
+    recommission_parser.add_argument("--agent", help="Agent ID to attribute evidence to")
+    recommission_parser.add_argument("--json", action="store_true", dest="json_output", help="Print result as JSON")
+
     add_package_parser = broker_subparsers.add_parser("add-package", help="Add a package to the manifest")
     add_package_parser.add_argument("--name", required=True, help="Package name")
 
@@ -4515,9 +4536,21 @@ RELATIONSHIPS:
                         print(f"  TODO {item['name']}: {item['validation_check']}")
                     print("\nRun with --run-missing-proofs to execute and record them.")
                     sys.exit(1)
-        elif args.broker_command == "handoff":
+        elif args.broker_command in {"handoff", "recommission"}:
             from entigram.governance.warden import Warden
             json_output = getattr(args, "json_output", False)
+            is_recommission = args.broker_command == "recommission"
+            accepted_contract_change = bool(getattr(args, "accept_contract_change", False))
+            if is_recommission and not accepted_contract_change:
+                message = (
+                    "Recommission refused: explicitly pass "
+                    "--accept-contract-change after reviewing the governed contract diff."
+                )
+                if json_output:
+                    print(json.dumps({"ok": False, "error": message}, indent=2))
+                else:
+                    print(message)
+                sys.exit(1)
             adapter_status = broker.active_agent_adapter_status()
             report = {"adapter_enforcement": adapter_status}
             if not adapter_status["ok"]:
@@ -4531,7 +4564,10 @@ RELATIONSHIPS:
 
             if not json_output:
                 print("Step 1/5: warden verify")
-            warden_valid = warden.verify_integrity(emit_human=not json_output)
+            warden_valid = warden.verify_integrity(
+                emit_human=not json_output,
+                allow_unlocked=(accepted_contract_change and not warden.is_locked()),
+            )
             report["warden_verify"] = {
                 "ok": warden_valid,
                 "halt_event": (
@@ -4554,9 +4590,10 @@ RELATIONSHIPS:
             pending_contract_change = warden.has_pending_contract_change()
             report["contract_change"] = {
                 "pending": pending_contract_change,
-                "accepted": bool(getattr(args, "accept_contract_change", False)),
+                "accepted": accepted_contract_change,
+                "differences": warden.integrity_state().get("differences", []),
             }
-            if pending_contract_change and not getattr(args, "accept_contract_change", False):
+            if pending_contract_change and not accepted_contract_change:
                 if json_output:
                     print(json.dumps(report, indent=2, sort_keys=True))
                 else:
@@ -4571,6 +4608,11 @@ RELATIONSHIPS:
             # needed even after an authorized unlock, when no stored lock exists
             # to catch a validation command that mutates the schema.
             pre_guard_fingerprint = warden.generate_fingerprint()
+            manifest_backup = (
+                warden.manifest_path.read_bytes()
+                if warden.manifest_path.exists()
+                else None
+            )
 
             if not json_output:
                 print("\nStep 2/5: broker guard")
@@ -4632,6 +4674,11 @@ RELATIONSHIPS:
                 else:
                     print("\nHandoff gate: FAILED. Resolve missing proofs before delivering.")
             if not deliver_result["valid"]:
+                # Locking is part of the handoff transaction.  If delivery or
+                # its proof gate fails, restore the pre-handoff manifest so a
+                # retry sees the same authorized/unlocked state.
+                if manifest_backup is not None:
+                    warden.manifest_path.write_bytes(manifest_backup)
                 if json_output:
                     print(json.dumps(report, indent=2, sort_keys=True))
                 sys.exit(1)

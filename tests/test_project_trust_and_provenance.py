@@ -177,6 +177,7 @@ class ProjectTrustTestCase(unittest.TestCase):
                 agent_id="agent:codex",
                 runtime="codex",
                 version="2026.08.16",
+                issued_at=NOW.isoformat().replace("+00:00", "Z"),
                 expires_at=ATTESTATION_EXPIRY,
             ),
         )
@@ -207,6 +208,7 @@ class ProjectTrustTestCase(unittest.TestCase):
                 agent_id="agent:codex",
                 runtime="codex",
                 version="2026.08.17",
+                issued_at=NOW.isoformat().replace("+00:00", "Z"),
                 expires_at=ATTESTATION_EXPIRY,
             ),
         )
@@ -240,6 +242,7 @@ class ProjectTrustTestCase(unittest.TestCase):
                 agent_id="agent:codex",
                 runtime="codex",
                 version="2026.08.16",
+                issued_at=NOW.isoformat().replace("+00:00", "Z"),
                 expires_at=ATTESTATION_EXPIRY,
             ),
         )
@@ -307,6 +310,7 @@ class ProjectTrustTestCase(unittest.TestCase):
                 agent_id="agent:codex",
                 runtime="codex",
                 version="2026.08.16",
+                issued_at=NOW.isoformat().replace("+00:00", "Z"),
                 expires_at=(NOW + timedelta(minutes=16)).isoformat().replace("+00:00", "Z"),
             ),
         )

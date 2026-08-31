@@ -829,13 +829,17 @@ class EntigramBroker:
         )
         checklist = commissioner.build_checklist(persist_evidence=False)
         warden_ok = self.warden.verify_integrity()
-        warden_status = "intact" if warden_ok else "tampered"
+        pending_contract_change = self.warden.has_pending_contract_change()
+        warden_status = (
+            "unlocked" if pending_contract_change else ("intact" if warden_ok else "tampered")
+        )
         current_schema_hash = None
         schema_path = self.target_dir / "schema.lds"
         if schema_path.exists():
             current_schema_hash = hashlib.sha256(schema_path.read_bytes()).hexdigest()[:16]
 
         artifact_changes = []
+        generated_metadata_changes = []
         anchored_artifacts = self.ledger.get_delivery_artifacts_by_ids(
             snapshot.get("artifact_ids", [])
         )
@@ -855,13 +859,20 @@ class EntigramBroker:
                     "current_sha256": None,
                 })
             elif current.get("sha256") != artifact.get("sha256"):
-                artifact_changes.append({
+                change = {
                     "path": path,
                     "artifact_role": role,
-                    "status": "changed",
+                    "status": (
+                        "generated_metadata_changed"
+                        if path == ".etg/entigram.yaml"
+                        else "changed"
+                    ),
                     "previous_sha256": artifact.get("sha256"),
                     "current_sha256": current.get("sha256"),
-                })
+                }
+                artifact_changes.append(change)
+                if path == ".etg/entigram.yaml":
+                    generated_metadata_changes.append(change)
 
         missing_artifact_records = [
             artifact_id for artifact_id in snapshot.get("artifact_ids", [])
@@ -910,13 +921,18 @@ class EntigramBroker:
             bool(snapshot.get("schema_hash"))
             and current_schema_hash != snapshot.get("schema_hash")
         )
+        governed_artifact_changes = [
+            change for change in artifact_changes
+            if change.get("status") != "generated_metadata_changed"
+        ]
         needs_recommission = any([
             not checklist.get("valid", False),
             warden_status != snapshot.get("warden_status"),
             warden_status != "intact",
+            pending_contract_change,
             expectation_count_changed,
             schema_changed,
-            bool(artifact_changes),
+            bool(governed_artifact_changes),
             bool(unanchored_artifacts),
         ])
 
@@ -924,13 +940,23 @@ class EntigramBroker:
         if not checklist.get("valid", False):
             recommendations.append("Resolve missing or blocked expectation proof.")
         if warden_status != "intact":
-            recommendations.append("Inspect schema contract integrity before handoff.")
+            if pending_contract_change:
+                recommendations.append(
+                    "Review the checksum differences, then run `etg broker recommission "
+                    "--accept-contract-change`."
+                )
+            else:
+                recommendations.append("Inspect schema contract integrity before handoff.")
         if expectation_count_changed:
             recommendations.append("Recommission because modeled expectations changed.")
         if schema_changed:
             recommendations.append("Recommission because the schema contract hash changed.")
-        if artifact_changes:
+        if governed_artifact_changes:
             recommendations.append("Recommission because anchored artifacts drifted.")
+        if generated_metadata_changes:
+            recommendations.append(
+                "Generated Entigram metadata changed; it will be refreshed by recommission."
+            )
         if unanchored_artifacts:
             recommendations.append("Include new local artifacts with `etg broker deliver --artifact PATH`.")
         if not recommendations:
@@ -942,12 +968,16 @@ class EntigramBroker:
             "status": "needs_recommission" if needs_recommission else "current",
             "snapshot": snapshot,
             "warden_status": warden_status,
+            "contract_change_pending": pending_contract_change,
+            "contract_differences": self.warden.integrity_state().get("differences", []),
             "current_schema_hash": current_schema_hash,
             "expectation_count": checklist.get("expectation_count", 0),
             "missing_proof_count": checklist.get("missing_proof_count", 0),
             "blocked_count": checklist.get("blocked_count", 0),
             "artifact_count": len(anchored_artifacts),
             "artifact_changes": artifact_changes,
+            "governed_artifact_changes": governed_artifact_changes,
+            "generated_metadata_changes": generated_metadata_changes,
             "unanchored_artifacts": unanchored_artifacts,
             "recommendations": recommendations,
         })
@@ -1002,6 +1032,13 @@ class EntigramBroker:
         for change in status.get("artifact_changes", []):
             path = change.get("path") or f"artifact_id={change.get('artifact_id')}"
             lines.append(f"  {change.get('status')}: {path}")
+        for difference in status.get("contract_differences", []):
+            path = difference.get("path") or difference.get("key") or "unknown"
+            lines.append(
+                "  checksum: "
+                f"{path} expected={difference.get('expected_checksum')} "
+                f"actual={difference.get('actual_checksum')}"
+            )
         for artifact in status.get("unanchored_artifacts", []):
             lines.append(f"  {artifact.get('status')}: {artifact.get('path')}")
 

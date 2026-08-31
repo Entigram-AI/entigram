@@ -662,6 +662,37 @@ class TestBrokerDeliverySnapshots(unittest.TestCase):
                 ledger.close()
             shutil.rmtree(test_dir)
 
+    def test_delivery_status_ignores_generated_manifest_metadata_drift(self):
+        import tempfile
+        import shutil
+        from pathlib import Path
+
+        from entigram.broker import EntigramBroker
+        from entigram.injector import inject_entigram_manifest
+
+        test_dir = tempfile.mkdtemp()
+        ledger = None
+        try:
+            inject_entigram_manifest(test_dir, ["Entigram Schemas"], "Codex")
+            Path(test_dir, "schema.lds").write_text(self.SCHEMA)
+            ledger = LedgerManager(":memory:")
+            broker = EntigramBroker(test_dir, ledger=ledger)
+            broker.commission_and_record(
+                proofs=["tests/test_loop.py passed"], agent_id="TestAgent"
+            )
+
+            manifest_path = Path(test_dir, ".etg", "entigram.yaml")
+            manifest_path.write_text(manifest_path.read_text() + "\nlast_locked: generated\n")
+
+            status = broker.delivery_status()
+            self.assertTrue(status["valid"])
+            self.assertEqual(status["governed_artifact_changes"], [])
+            self.assertEqual(status["generated_metadata_changes"][0]["path"], ".etg/entigram.yaml")
+        finally:
+            if ledger is not None:
+                ledger.close()
+            shutil.rmtree(test_dir)
+
     def test_delivery_status_reports_unanchored_requested_artifact(self):
         import tempfile
         import shutil
