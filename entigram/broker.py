@@ -921,6 +921,10 @@ class EntigramBroker:
             bool(snapshot.get("schema_hash"))
             and current_schema_hash != snapshot.get("schema_hash")
         )
+        governed_artifact_changes = [
+            change for change in artifact_changes
+            if change.get("status") != "generated_metadata_changed"
+        ]
         needs_recommission = any([
             not checklist.get("valid", False),
             warden_status != snapshot.get("warden_status"),
@@ -928,7 +932,7 @@ class EntigramBroker:
             pending_contract_change,
             expectation_count_changed,
             schema_changed,
-            bool(artifact_changes),
+            bool(governed_artifact_changes),
             bool(unanchored_artifacts),
         ])
 
@@ -947,7 +951,7 @@ class EntigramBroker:
             recommendations.append("Recommission because modeled expectations changed.")
         if schema_changed:
             recommendations.append("Recommission because the schema contract hash changed.")
-        if artifact_changes:
+        if governed_artifact_changes:
             recommendations.append("Recommission because anchored artifacts drifted.")
         if generated_metadata_changes:
             recommendations.append(
@@ -972,6 +976,7 @@ class EntigramBroker:
             "blocked_count": checklist.get("blocked_count", 0),
             "artifact_count": len(anchored_artifacts),
             "artifact_changes": artifact_changes,
+            "governed_artifact_changes": governed_artifact_changes,
             "generated_metadata_changes": generated_metadata_changes,
             "unanchored_artifacts": unanchored_artifacts,
             "recommendations": recommendations,
