@@ -85,6 +85,7 @@ jobs:
         run: |
           TAG_NAME="${{ needs.release-please.outputs.tag_name }}"
           VERSION=${TAG_NAME#v}
+          npm pack --dry-run
           # Release Please owns the Entigram release version. Apply that
           # version to the npm package in the publish workspace so npm and
           # PyPI receive the same release number without a second tag.
