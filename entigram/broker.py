@@ -463,6 +463,28 @@ class EntigramBroker:
             "source_ref": self._artifact_path_for_storage(path),
         }
 
+    def _manifest_semantic_fingerprint(self) -> Optional[str]:
+        """Hash governed manifest content while ignoring Entigram timestamps."""
+        manifest_path = self.etg_dir / "entigram.yaml"
+        if not manifest_path.is_file():
+            return None
+        try:
+            import yaml
+
+            manifest = yaml.safe_load(manifest_path.read_text()) or {}
+            if not isinstance(manifest, dict):
+                return None
+            semantic = dict(manifest)
+            # These fields are rewritten by lock/handoff bookkeeping. All
+            # policy, lifecycle, schema, agent, and artifact settings remain
+            # part of the semantic fingerprint.
+            semantic.pop("last_locked", None)
+            semantic.pop("last_updated", None)
+            payload = json.dumps(semantic, sort_keys=True, separators=(",", ":"))
+            return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        except (OSError, TypeError, ValueError):
+            return None
+
     def _default_delivery_artifacts(self) -> List[Tuple[str, str]]:
         artifacts = {
             ("schema.lds", "schema_contract"),
@@ -780,6 +802,7 @@ class EntigramBroker:
                     "expectation_name": expectation_name,
                     "artifact_count": len(artifact_ids),
                     "trust_score": checklist["trust_score"]["score"],
+                    "manifest_semantic_sha256": self._manifest_semantic_fingerprint(),
                 },
             )
             checklist["snapshot_id"] = snapshot_id
@@ -829,6 +852,7 @@ class EntigramBroker:
         )
         checklist = commissioner.build_checklist(persist_evidence=False)
         warden_ok = self.warden.verify_integrity()
+        integrity_state = self.warden.integrity_state()
         pending_contract_change = self.warden.has_pending_contract_change()
         warden_status = (
             "unlocked" if pending_contract_change else ("intact" if warden_ok else "tampered")
@@ -840,6 +864,9 @@ class EntigramBroker:
 
         artifact_changes = []
         generated_metadata_changes = []
+        snapshot_manifest_semantic = (snapshot.get("metadata") or {}).get(
+            "manifest_semantic_sha256"
+        )
         anchored_artifacts = self.ledger.get_delivery_artifacts_by_ids(
             snapshot.get("artifact_ids", [])
         )
@@ -859,19 +886,24 @@ class EntigramBroker:
                     "current_sha256": None,
                 })
             elif current.get("sha256") != artifact.get("sha256"):
+                generated_manifest_metadata = (
+                    path == ".etg/entigram.yaml"
+                    and snapshot_manifest_semantic is not None
+                    and self._manifest_semantic_fingerprint() == snapshot_manifest_semantic
+                )
                 change = {
                     "path": path,
                     "artifact_role": role,
                     "status": (
                         "generated_metadata_changed"
-                        if path == ".etg/entigram.yaml"
+                        if generated_manifest_metadata
                         else "changed"
                     ),
                     "previous_sha256": artifact.get("sha256"),
                     "current_sha256": current.get("sha256"),
                 }
                 artifact_changes.append(change)
-                if path == ".etg/entigram.yaml":
+                if generated_manifest_metadata:
                     generated_metadata_changes.append(change)
 
         missing_artifact_records = [
@@ -887,7 +919,14 @@ class EntigramBroker:
             })
 
         unanchored_artifacts = []
-        current_candidates = list(self._default_delivery_artifacts())
+        try:
+            current_candidates = list(self._default_delivery_artifacts())
+            artifact_configuration_error = None
+        except (OSError, TypeError, ValueError) as exc:
+            # A malformed manifest must produce a structured recommission
+            # result, not a traceback while calculating artifact candidates.
+            current_candidates = []
+            artifact_configuration_error = str(exc)
         current_candidates.extend(
             (path, artifact_role) for path in (artifact_paths or [])
         )
@@ -947,6 +986,11 @@ class EntigramBroker:
                 )
             else:
                 recommendations.append("Inspect schema contract integrity before handoff.")
+        if integrity_state.get("error") or artifact_configuration_error:
+            recommendations.append(
+                "Correct the workspace manifest schema_paths/artifact configuration, "
+                "then rerun `etg broker recommission --accept-contract-change`."
+            )
         if expectation_count_changed:
             recommendations.append("Recommission because modeled expectations changed.")
         if schema_changed:
@@ -969,7 +1013,8 @@ class EntigramBroker:
             "snapshot": snapshot,
             "warden_status": warden_status,
             "contract_change_pending": pending_contract_change,
-            "contract_differences": self.warden.integrity_state().get("differences", []),
+            "contract_differences": integrity_state.get("differences", []),
+            "integrity_error": integrity_state.get("error") or artifact_configuration_error,
             "current_schema_hash": current_schema_hash,
             "expectation_count": checklist.get("expectation_count", 0),
             "missing_proof_count": checklist.get("missing_proof_count", 0),
@@ -1015,6 +1060,9 @@ class EntigramBroker:
                 f"{len(status.get('unanchored_artifacts', []))} unanchored"
             ),
         ]
+
+        if status.get("integrity_error"):
+            lines.append(f"Integrity error: {status['integrity_error']}")
 
         enforcement = status.get("adapter_enforcement") or {}
         if enforcement:

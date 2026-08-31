@@ -693,6 +693,74 @@ class TestBrokerDeliverySnapshots(unittest.TestCase):
                 ledger.close()
             shutil.rmtree(test_dir)
 
+    def test_delivery_status_treats_governed_manifest_drift_as_blocking(self):
+        import tempfile
+        import shutil
+        from pathlib import Path
+        import yaml
+
+        from entigram.broker import EntigramBroker
+        from entigram.injector import inject_entigram_manifest
+
+        test_dir = tempfile.mkdtemp()
+        ledger = None
+        try:
+            inject_entigram_manifest(test_dir, ["Entigram Schemas"], "Codex")
+            Path(test_dir, "schema.lds").write_text(self.SCHEMA)
+            ledger = LedgerManager(":memory:")
+            broker = EntigramBroker(test_dir, ledger=ledger)
+            broker.commission_and_record(
+                proofs=["tests/test_loop.py passed"], agent_id="TestAgent"
+            )
+
+            manifest_path = Path(test_dir, ".etg", "entigram.yaml")
+            manifest = yaml.safe_load(manifest_path.read_text())
+            manifest["lifecycle"]["state"] = "paused"
+            manifest_path.write_text(yaml.safe_dump(manifest))
+
+            status = broker.delivery_status()
+            self.assertFalse(status["valid"])
+            self.assertEqual(status["governed_artifact_changes"][0]["path"], ".etg/entigram.yaml")
+            self.assertEqual(status["generated_metadata_changes"], [])
+        finally:
+            if ledger is not None:
+                ledger.close()
+            shutil.rmtree(test_dir)
+
+    def test_delivery_status_returns_structured_error_for_invalid_schema_paths(self):
+        import tempfile
+        import shutil
+        from pathlib import Path
+        import yaml
+
+        from entigram.broker import EntigramBroker
+        from entigram.injector import inject_entigram_manifest
+
+        test_dir = tempfile.mkdtemp()
+        ledger = None
+        try:
+            inject_entigram_manifest(test_dir, ["Entigram Schemas"], "Codex")
+            Path(test_dir, "schema.lds").write_text(self.SCHEMA)
+            ledger = LedgerManager(":memory:")
+            broker = EntigramBroker(test_dir, ledger=ledger)
+            broker.commission_and_record(
+                proofs=["tests/test_loop.py passed"], agent_id="TestAgent"
+            )
+
+            manifest_path = Path(test_dir, ".etg", "entigram.yaml")
+            manifest = yaml.safe_load(manifest_path.read_text())
+            manifest["schema_paths"] = ["../outside.lds"]
+            manifest_path.write_text(yaml.safe_dump(manifest))
+
+            status = broker.delivery_status()
+            self.assertFalse(status["valid"])
+            self.assertTrue(status["integrity_error"])
+            self.assertEqual(status["warden_status"], "tampered")
+        finally:
+            if ledger is not None:
+                ledger.close()
+            shutil.rmtree(test_dir)
+
     def test_delivery_status_reports_unanchored_requested_artifact(self):
         import tempfile
         import shutil
