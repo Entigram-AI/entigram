@@ -17,6 +17,11 @@ The `etg` command must already be installed and available on `PATH`:
 pipx install entigram-ai
 ```
 
+The package is published automatically with Entigram releases. Maintainers
+should configure the repository's `NPM_TOKEN` secret with publish access to the
+`@entigram` npm scope; the release workflow applies the release tag version
+before publishing.
+
 ## Example
 
 ```js

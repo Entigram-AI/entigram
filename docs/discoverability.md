@@ -46,7 +46,8 @@ ownership marker below:
 
 Before publication:
 
-1. Build and publish the matching `entigram-ai` version to PyPI.
+1. Build and publish the matching `entigram-ai` version to PyPI; the release
+   workflow publishes `@entigram/client` to npm using the same release tag.
 2. Confirm the package README contains the matching `mcp-name` marker.
 3. Install the MCP publisher using the official registry instructions.
 4. Authenticate with the Entigram-AI GitHub organization and publish from the
