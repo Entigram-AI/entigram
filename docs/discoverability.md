@@ -11,6 +11,7 @@ trying to understand or install Entigram.
 | Agent Skill | Skill-aware agent hosts | [`skills/entigram-workspace/SKILL.md`](../skills/entigram-workspace/SKILL.md) |
 | MCP server metadata | MCP registries and clients | [`server.json`](../server.json) |
 | MCP capability contract | MCP clients and tool authors | [`docs/mcp-tools.md`](mcp-tools.md) |
+| Node/TypeScript client | Node applications and agent hosts | [`packages/client/README.md`](../packages/client/README.md) |
 | Workspace contract | Implementers and integrators | [`docs/workspace-standard.md`](workspace-standard.md) |
 | Signed package catalog | Package discovery and trust review | [`community-packages/standard_package_catalog.json`](../community-packages/standard_package_catalog.json) |
 

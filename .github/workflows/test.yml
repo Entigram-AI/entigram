@@ -49,3 +49,21 @@ jobs:
       - name: Fail when Python test matrix did not pass
         if: ${{ needs.test-python.result != 'success' }}
         run: exit 1
+
+  test-node-client:
+    name: test Node client
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/client
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Run Node client tests
+        run: npm test

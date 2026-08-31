@@ -213,6 +213,16 @@ schema_paths:
 state_ledger: .etg/state.db
 ```
 
+Node and TypeScript applications can connect to the same local MCP server with
+the dependency-free [`@entigram/client`](packages/client/README.md) package:
+
+```bash
+npm install @entigram/client
+```
+
+The client is a typed stdio bridge to `etg serve`; it does not reimplement
+Entigram policy evaluation or write the workspace ledger directly.
+
 The server treats `schema_paths` as the closed-world boundary. Demo files,
 templates, drafts, and unrelated LDS files are not exposed unless explicitly
 listed.
