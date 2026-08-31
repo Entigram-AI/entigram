@@ -191,6 +191,7 @@ def agent_attestation_claims(
     runtime: str,
     version: str,
     expires_at: str,
+    issued_at: Optional[str] = None,
     nonce: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build a short-lived assertion that binds an enrolled agent to a request.
@@ -207,7 +208,11 @@ def agent_attestation_claims(
         "agent_id": _require_identifier(agent_id, "agent_id"),
         "runtime": _require_identifier(runtime, "runtime"),
         "version": _require_version(version, "version"),
-        "issued_at": isoformat(utc_now()),
+        "issued_at": (
+            isoformat(parse_timestamp(issued_at, "issued_at"))
+            if issued_at is not None
+            else isoformat(utc_now())
+        ),
         "expires_at": isoformat(parse_timestamp(expires_at, "expires_at")),
         "nonce": _require_identifier(nonce, "nonce") if nonce else f"agent-nonce-{uuid.uuid4()}",
     }
