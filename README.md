@@ -21,6 +21,20 @@ Enterprise agent adoption fails when agents lack trustworthy domain context and 
 
 ## 🛠️ Key Capabilities
 
+### Model routing (MVP)
+
+`etg route` deterministically selects a proposal-only local, low-cost, or
+premium tier without invoking a model. Local providers are discovery-only in
+this release: Ollama and optional LiteRT-LM (`lit`) are detected when installed,
+but Entigram never downloads or bundles model weights. Schema, security,
+cross-package, destructive, and write work always route to a primary agent.
+
+```bash
+etg route providers --json
+etg route explain --task "summarize failing tests" --json
+etg route eval --json
+```
+
 - **Domain Boundaries (Schema):** Give agents explicit Entigram Schemas instead of relying on vague natural-language context.
 - **Closed-World Reasoning:** Automatically reject or quarantine unknown entities, attributes, and relationships.
 - **Verified Semantic Alignments:** Enable cross-domain data federation using approved mappings instead of fuzzy LLM guesses.
@@ -29,6 +43,7 @@ Enterprise agent adoption fails when agents lack trustworthy domain context and 
 - **Agent Hydration:** Boot agents with exact project state, schemas, alignments, and settled decisions.
 - **Auditability:** Store every alignment and decision in a local SQLite ledger for full provenance and governance.
 - **Transparent Usage:** Estimate Entigram-owned context and observed CLI/MCP traffic without retaining prompts or responses.
+- **Model Routing Governance:** Provider-neutral, deterministic task classification (`local`, `low_cost`, `premium`) and offline provider discovery. LiteRT is optional, and models are never bundled or downloaded.
 - **Reversible Enrollment:** Pause, resume, or archive-and-detach workspace governance without deleting project artifacts.
 
 ## Core Workflow
@@ -182,6 +197,29 @@ etg eject
 
 Workspace `pause` and `resume` are separate from `etg broker hibernate` and
 `etg broker resume`, which checkpoint one agent near a token or time limit.
+
+### Model Routing
+
+Entigram includes a provider-neutral, deterministic Model Routing MVP that classifies operational tasks into tiers (`local`, `low_cost`, `premium`) and enforces write authority boundaries without invoking models or making network calls.
+
+This is an opt-in experimental feature. It is disabled by default and has no
+command surface unless `ENTIGRAM_ENABLE_MODEL_ROUTING=1` is set.
+
+- **Deterministic Escalation:** `local` tier is strictly `proposal_only` (read-only). Tasks involving schema/ontology, security, cross-package refactoring, destructive operations, or write actions are automatically escalated to `premium` tier (`full_write` authority).
+- **Offline Provider Discovery:** Discovers installed executables and local models for Ollama, LiteRT-LM, Codex, and Antigravity. Models are **never bundled, downloaded, or executed** during discovery or evaluation.
+- **Optional LiteRT-LM:** LiteRT (`lit`) is **completely optional**. If absent, discovery reports LiteRT as not detected and routing falls back gracefully to safe defaults.
+- **Policy Loader:** Custom policies can be declared in `.etg/routing.yaml` with safe defaults when absent.
+
+```bash
+# Explain deterministic routing for a task
+ENTIGRAM_ENABLE_MODEL_ROUTING=1 etg route explain --task "Explain LDS schema entity syntax" --task-type proposal --json
+
+# Discover available local and external providers
+etg route providers --json
+
+# Evaluate routing accuracy against the built-in test suite
+etg route eval --json
+```
 
 ### 4. Run the Immutable Gate over MCP
 
