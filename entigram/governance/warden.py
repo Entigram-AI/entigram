@@ -286,7 +286,14 @@ class Warden:
         baseline = stored
         if not isinstance(baseline, dict) and isinstance(unlock, dict):
             baseline = unlock.get("previous_fingerprint")
-        current = self.generate_fingerprint()
+        try:
+            current = self.generate_fingerprint()
+            error = None
+        except (OSError, TypeError, ValueError) as exc:
+            # Status/reporting must remain machine-readable even when a
+            # manifest points at an invalid schema path.
+            current = {}
+            error = str(exc)
         return {
             "locked": isinstance(stored, dict) and bool(stored),
             "unlocked": not (isinstance(stored, dict) and bool(stored)),
@@ -294,6 +301,7 @@ class Warden:
             "expected_fingerprint": baseline if isinstance(baseline, dict) else {},
             "current_fingerprint": current,
             "differences": self.fingerprint_differences(baseline, current),
+            "error": error,
         }
 
     def lock_fingerprint(
