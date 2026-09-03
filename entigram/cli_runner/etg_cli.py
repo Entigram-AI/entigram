@@ -903,6 +903,7 @@ def _paused_command_allowed(args) -> bool:
         "hydrate",
         "boot",
         "antigravity-hook",
+        "route",
     }:
         return True
     if args.command == "agent-hooks":
@@ -1034,6 +1035,7 @@ def _main():
     usage_parser.add_argument("--dir", help="Target directory (defaults to current workspace)")
     usage_parser.add_argument("--total-tokens", type=int, help="Total session tokens for percentage attribution")
     usage_parser.add_argument("--json", action="store_true", dest="json_output", help="Output stable JSON")
+
 
     pause_parser = subparsers.add_parser("pause", help="Pause workspace governance and compact Entigram context")
     pause_parser.add_argument("--dir", help="Target directory (defaults to current workspace)")
@@ -2240,6 +2242,24 @@ def _main():
 
     impact_parser = broker_subparsers.add_parser("impact", help="Change Impact Analysis")
     impact_parser.add_argument("--file", required=True, help="Path to changed file")
+
+    # route command
+    route_parser = subparsers.add_parser("route", help="Model routing provider discovery and policy governance")
+    route_subparsers = route_parser.add_subparsers(dest="route_command", help="Route subcommands")
+
+    explain_route_parser = route_subparsers.add_parser("explain", help="Explain deterministic model routing for a task")
+    explain_route_parser.add_argument("--task", required=True, help="Task description text")
+    explain_route_parser.add_argument("--task-type", help="Explicit task type (e.g., schema, security, proposal, write)")
+    explain_route_parser.add_argument("--dir", help="Target workspace directory (defaults to current workspace)")
+    explain_route_parser.add_argument("--json", action="store_true", dest="json_output", help="Output stable JSON")
+
+    providers_route_parser = route_subparsers.add_parser("providers", help="Discover available local and external model providers")
+    providers_route_parser.add_argument("--dir", help="Target workspace directory (defaults to current workspace)")
+    providers_route_parser.add_argument("--json", action="store_true", dest="json_output", help="Output stable JSON")
+
+    eval_route_parser = route_subparsers.add_parser("eval", help="Evaluate built-in suite of tasks against routing policy")
+    eval_route_parser.add_argument("--dir", help="Target workspace directory (defaults to current workspace)")
+    eval_route_parser.add_argument("--json", action="store_true", dest="json_output", help="Output stable JSON")
 
     args = parser.parse_args()
 
@@ -4963,6 +4983,67 @@ RELATIONSHIPS:
         else:
             learn_parser.print_help()
 
+    elif args.command == "route":
+        from entigram.model_routing import (
+            explain_routing,
+            discover_providers,
+            evaluate_routing_suite,
+        )
+        workspace_dir = _resolve_workspace_dir(getattr(args, "dir", None))
+
+        if args.route_command == "explain":
+            explanation = explain_routing(
+                task=args.task,
+                task_type=getattr(args, "task_type", None),
+                workspace_dir=workspace_dir,
+            )
+            if getattr(args, "json_output", False):
+                print(json.dumps(explanation.to_dict(), indent=2))
+            else:
+                print(f"Task: {explanation.task}")
+                if explanation.task_type:
+                    print(f"Task Type: {explanation.task_type}")
+                print(f"Tier: {explanation.tier}")
+                print(f"Provider: {explanation.provider}")
+                print(f"Write Authority: {explanation.write_authority}")
+                print(f"Rationale: {explanation.rationale}")
+                if explanation.escalation_triggers:
+                    print(f"Escalation Triggers: {', '.join(explanation.escalation_triggers)}")
+                print(f"Policy Source: {explanation.policy_source}")
+
+        elif args.route_command == "providers":
+            provider_info = discover_providers(workspace_dir=workspace_dir)
+            if getattr(args, "json_output", False):
+                print(json.dumps(provider_info, indent=2))
+            else:
+                print("Discovered Model Providers:")
+                for p_name, info in provider_info.items():
+                    status = "Available" if info.get("detected") else "Not Detected"
+                    models_str = ", ".join(info.get("models", [])) if info.get("models") else "None"
+                    print(f"  - {p_name} [{status}]")
+                    if info.get("executable"):
+                        print(f"    Executable: {info['executable']}")
+                    print(f"    Models: {models_str}")
+                    if info.get("notes"):
+                        print(f"    Notes: {info['notes']}")
+
+        elif args.route_command == "eval":
+            eval_result = evaluate_routing_suite(workspace_dir=workspace_dir)
+            if getattr(args, "json_output", False):
+                print(json.dumps(eval_result, indent=2))
+            else:
+                print("Model Routing Evaluation Suite:")
+                print(f"Total Tasks: {eval_result['total_tasks']}")
+                print(f"Passed Tasks: {eval_result['passed_tasks']}")
+                print(f"Accuracy: {eval_result['accuracy_percent']:.1f}%")
+                print("\nDetailed Results:")
+                for res in eval_result["results"]:
+                    status = "PASS" if res["passed"] else "FAIL"
+                    print(f"  [{status}] Task: \"{res['task']}\" -> Tier: {res['routed_tier']} (Expected: {res['expected_tier']}), Write Auth: {res['routed_write_authority']} (Expected: {res['expected_write_authority']})")
+
+        else:
+            route_parser.print_help()
+
     else:
         parser.print_help()
 
@@ -5001,6 +5082,7 @@ def _track_cli_operation(operation: str, argv) -> bool:
         "cloudflare-claude",
         "interview",
         "model",
+        "route",
     }:
         return False
     if operation == "agent":
