@@ -15,6 +15,13 @@
 * harden SQLite ledger concurrency with WAL mode and busy timeouts
 * close warning-producing registry, broker, router, and hydration resources
 
+## [2.3.0](https://github.com/Entigram-AI/entigram/compare/v2.2.0...v2.3.0) (2026-09-03)
+
+
+### Features
+
+* add deterministic model routing MVP ([#52](https://github.com/Entigram-AI/entigram/issues/52)) ([44cfee8](https://github.com/Entigram-AI/entigram/commit/44cfee8b637ecf903f9b0e4805fb51202135b26d))
+
 ## [2.2.0](https://github.com/Entigram-AI/entigram/compare/v2.1.0...v2.2.0) (2026-08-31)
 
 
