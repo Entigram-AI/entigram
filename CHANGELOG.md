@@ -15,6 +15,13 @@
 * harden SQLite ledger concurrency with WAL mode and busy timeouts
 * close warning-producing registry, broker, router, and hydration resources
 
+## [2.5.0](https://github.com/Entigram-AI/entigram/compare/v2.4.0...v2.5.0) (2026-09-04)
+
+
+### Features
+
+* add opt-in patch admission inspection ([#56](https://github.com/Entigram-AI/entigram/issues/56)) ([5cb2abb](https://github.com/Entigram-AI/entigram/commit/5cb2abba01a6c99fca1307118119b03f0c213820))
+
 ## [2.4.0](https://github.com/Entigram-AI/entigram/compare/v2.3.0...v2.4.0) (2026-09-04)
 
 
