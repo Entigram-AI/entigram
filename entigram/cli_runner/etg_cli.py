@@ -1794,6 +1794,9 @@ def _main():
     action_validate_parser.add_argument("--agent-attestation", help="Signed enrolled-agent attestation JSON inside the workspace")
     action_validate_parser.add_argument("--evidence-attestation", action="append", default=[], help="Signed evidence attestation JSON inside the workspace; may be repeated")
     action_validate_parser.add_argument("--json", action="store_true", dest="json_output")
+    action_patch_parser = action_subparsers.add_parser("inspect-patch", help="Inspect a pending Git patch for opt-in structural admission evidence")
+    action_patch_parser.add_argument("--protected-path", action="append", default=[], help="Path prefix that must not be changed; may be repeated")
+    action_patch_parser.add_argument("--json", action="store_true", dest="json_output")
 
     action_revoke_parser = action_subparsers.add_parser(
         "revoke",
@@ -4054,6 +4057,12 @@ RELATIONSHIPS:
                 else:
                     print(EntigramBroker.format_action_decision(result))
                 if not result.get("ok"):
+                    sys.exit(1)
+            elif args.action_command == "inspect-patch":
+                from entigram.governance.patch_admission import inspect_patch
+                result = inspect_patch(workspace, protected_paths=tuple(args.protected_path))
+                print(json.dumps(result, indent=2, sort_keys=True) if args.json_output else json.dumps(result, indent=2))
+                if not result["ok"]:
                     sys.exit(1)
             elif args.action_command == "revoke":
                 if project_trust.exists():
