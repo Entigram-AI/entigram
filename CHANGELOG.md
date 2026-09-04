@@ -15,6 +15,13 @@
 * harden SQLite ledger concurrency with WAL mode and busy timeouts
 * close warning-producing registry, broker, router, and hydration resources
 
+## [2.4.0](https://github.com/Entigram-AI/entigram/compare/v2.3.0...v2.4.0) (2026-09-04)
+
+
+### Features
+
+* remove experimental model routing MVP to restore v2.2.0 state ([#54](https://github.com/Entigram-AI/entigram/issues/54)) ([ba4adab](https://github.com/Entigram-AI/entigram/commit/ba4adab4628671baf27b16b65d9597d30e36f2fc))
+
 ## [2.3.0](https://github.com/Entigram-AI/entigram/compare/v2.2.0...v2.3.0) (2026-09-03)
 
 
