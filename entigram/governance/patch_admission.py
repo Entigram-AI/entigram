@@ -16,7 +16,13 @@ def inspect_patch(workspace: Path, *, protected_paths: tuple[str, ...] = ()) -> 
         return subprocess.run(args, cwd=workspace, text=True, capture_output=True, check=True).stdout
     diff = run("git", "diff", "HEAD")
     status = run("git", "status", "--porcelain")
-    files = [line[6:] for line in diff.splitlines() if line.startswith("+++ b/")]
+    files = []
+    for line in diff.splitlines():
+        if line.startswith("+++ b/"):
+            files.append(line[6:])
+        elif line.startswith("--- a/"):
+            files.append(line[6:])
+    files = list(dict.fromkeys(files))
     protected = [path for path in files if any(path.startswith(prefix) for prefix in protected_paths)]
     syntax_errors = []
     for path in files:
