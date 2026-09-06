@@ -10,6 +10,7 @@ from entigram.antigravity_hooks import (
     remove_antigravity_hooks,
 )
 from entigram.injector import inject_entigram_manifest
+from entigram.task_context import prepare_task
 from entigram.workspace_lifecycle import (
     active_change_status,
     establish_active_change_baseline,
@@ -85,6 +86,7 @@ class TestAntigravityHooks(unittest.TestCase):
         self.assertIn(str((self.root / "schema.lds").resolve()), tool_paths)
         self.assertIn("0/5", injected[-1]["ephemeralMessage"])
 
+        prepare_task(self.root, task_id="test-task", description="Implement work.py")
         allowed = handle_antigravity_hook(self.root, "pre-tool-use", write)
         self.assertEqual(allowed["decision"], "allow")
 

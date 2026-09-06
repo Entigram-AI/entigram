@@ -12,6 +12,7 @@ from entigram.agent_hooks import (
     remove_agent_hooks,
 )
 from entigram.injector import inject_entigram_manifest
+from entigram.task_context import prepare_task
 from entigram.workspace_lifecycle import active_change_status, establish_active_change_baseline
 
 
@@ -79,6 +80,7 @@ class TestAgentHooks(unittest.TestCase):
         self.assertIn("ENTITY: WorkItem", context)
         self.assertIn("Pre-Handoff Gate", context)
 
+        prepare_task(self.root, task_id="test-task", description="Implement changed.py")
         allowed = handle_agent_hook(
             self.root,
             runtime="codex",
@@ -105,6 +107,7 @@ class TestAgentHooks(unittest.TestCase):
             event="session-start",
             payload={"session_id": "claude-1"},
         )
+        prepare_task(self.root, task_id="claude-task", description="Implement drift changes")
         for number in range(5):
             (self.root / f"drift-{number}.txt").write_text(f"{number}\n")
         self.assertTrue(active_change_status(self.root)["budget"]["exhausted"])
@@ -138,6 +141,7 @@ class TestAgentHooks(unittest.TestCase):
             event="session-start",
             payload={"session_id": "session-1"},
         )
+        prepare_task(self.root, task_id="mcp-task", description="Implement MCP change")
         for number in range(5):
             (self.root / f"mcp-drift-{number}.txt").write_text(f"{number}\n")
         denied = handle_agent_hook(

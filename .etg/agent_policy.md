@@ -9,8 +9,10 @@ duplicating handoff rules.
 1. Run `hydrate` in the initialized workspace. If the console script is not
    available, run `etg hydrate` or
    `python3 -m entigram.cli_runner.etg_cli hydrate`.
-2. Read `.etg/entigram.yaml`, `schema.lds`, and this file.
-3. If changing implementation behavior, run impact analysis before editing:
+2. Prepare the task with `etg task prepare --id <id> --description-file <file>`
+   before making governed writes.
+3. Read `.etg/entigram.yaml`, `schema.lds`, and this file.
+4. If changing implementation behavior, run impact analysis before editing:
    `etg broker preflight --file <path>` and
    `etg broker impact --file <path>`.
 
