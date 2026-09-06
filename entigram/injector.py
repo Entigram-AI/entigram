@@ -19,8 +19,10 @@ Entigram-initialized workspace.
 1. Run `hydrate` in the initialized workspace. If the console script is not
    available, run `etg hydrate` or
    `python3 -m entigram.cli_runner.etg_cli hydrate`.
-2. Read `.etg/entigram.yaml`, `schema.lds`, and this file.
-3. If changing implementation behavior, run impact analysis before editing:
+2. Prepare the task with `etg task prepare --id <id> --description-file <file>`
+   before making governed writes.
+3. Read `.etg/entigram.yaml`, `schema.lds`, and this file.
+4. If changing implementation behavior, run impact analysis before editing:
    `etg broker preflight --file <path>` and
    `etg broker impact --file <path>`.
 
@@ -107,6 +109,9 @@ def inject_entigram_manifest(target_dir: str, selected_packages: list, cli_engin
             "state": "active",
             "change_budget": {"max_changed_files": 5},
         },
+        "governance": {
+            "require_task_prepare": True,
+        },
         "agent_governance": {
             "active_agents": [normalize_agent_runtime(cli_engine)],
         },
@@ -145,13 +150,14 @@ canonical policy is the source of truth for governance rules.
 ## Primary Directives
 
 1. Run `hydrate`.
-2. Read `.etg/entigram.yaml`, `schema.lds`, and `.etg/agent_policy.md`.
-3. Before a risky implementation, schema, ontology, package, or release change,
+2. Prepare the task with `etg task prepare --id <id> --description-file <file>`.
+3. Read `.etg/entigram.yaml`, `schema.lds`, and `.etg/agent_policy.md`.
+4. Before a risky implementation, schema, ontology, package, or release change,
    run `etg broker preflight --file <path>` and
    `etg broker impact --file <path>`.
-4. Before handoff, run `etg broker handoff` and `etg broker status`.
-5. Do not hand off unless status reports `Delivery status: current`.
-6. Before working as a declared workspace agent, keep that agent's lifecycle
+5. Before handoff, run `etg broker handoff` and `etg broker status`.
+6. Do not hand off unless status reports `Delivery status: current`.
+7. Before working as a declared workspace agent, keep that agent's lifecycle
    adapter installed. If `hydrate` reports `ACTIVE_AGENT_ADAPTER_REQUIRED`,
    install the missing adapter or record that agent's approved exception before
    editing.
