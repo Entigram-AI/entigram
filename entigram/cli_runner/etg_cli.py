@@ -222,24 +222,27 @@ def _agent_instructions_text():
    .etg/entigram.yaml
    schema.lds
 
-3. For a concise compliance check, run:
+3. Prepare the task before governed writes:
+   etg task prepare --id <id> --description-file <file>
+
+4. For a concise compliance check, run:
    etg agent start
 
-4. Before source, schema, ontology, package, or release changes, run:
+5. Before source, schema, ontology, package, or release changes, run:
    etg broker preflight --file <path>
    etg broker impact --file <path>
 
-5. Treat schema.lds as closed-world. Do not invent entities, attributes, or alignments.
+6. Treat schema.lds as closed-world. Do not invent entities, attributes, or alignments.
 
-6. Use Entigram MCP/CLI paths for governed writes. Do not directly mutate .etg/state.db or .etg/entigram_state.db.
+7. Use Entigram MCP/CLI paths for governed writes. Do not directly mutate .etg/state.db or .etg/entigram_state.db.
 
-7. Before handoff after changes, run:
+8. Before handoff after changes, run:
    etg broker handoff
    etg broker status
 
    If this repository provides Make, make handoff may wrap the same CLI sequence.
 
-8. Do not hand off unless broker status reports:
+9. Do not hand off unless broker status reports:
    Delivery status: current
 """
 
@@ -629,6 +632,7 @@ def _concise_hydration_payload(full_payload: dict, schema_content: str) -> dict:
             "blocked_count": status.get("blocked_count", 0),
             "action_admission": boot.get("action_admission", {}),
             "project_trust": boot.get("project_trust", {}),
+            "task_context": boot.get("task_context", {}),
             "next_commands": [
                 "etg broker preflight --file <path>",
                 "etg broker impact --file <path>",
@@ -846,6 +850,8 @@ def get_hydration_vector(
         commissioner_checklist = Commissioner(schema_content).build_checklist()
     action_admission = _action_admission_summary(target_path)
     project_trust = _project_trust_summary(target_path)
+    from entigram.task_context import task_context_status
+    task_context = task_context_status(target_path, manifest)
 
     # 4. Flatten to High-Density String
     workspace_schema_version = manifest.get(
@@ -875,6 +881,7 @@ def get_hydration_vector(
             "security_posture": security_posture,
             "action_admission": action_admission,
             "project_trust": project_trust,
+            "task_context": task_context,
             "timestamp": datetime.now().isoformat()
         }
     }
@@ -1034,6 +1041,30 @@ def _main():
     usage_parser.add_argument("--dir", help="Target directory (defaults to current workspace)")
     usage_parser.add_argument("--total-tokens", type=int, help="Total session tokens for percentage attribution")
     usage_parser.add_argument("--json", action="store_true", dest="json_output", help="Output stable JSON")
+
+    task_parser = subparsers.add_parser(
+        "task",
+        help="Prepare a deterministic task context before governed agent writes",
+    )
+    task_subparsers = task_parser.add_subparsers(dest="task_command", required=True)
+    task_prepare_parser = task_subparsers.add_parser(
+        "prepare",
+        help="Hydrate the workspace and record a task-scoped read-only inventory",
+    )
+    task_prepare_parser.add_argument("--id", required=True, dest="task_id", help="Stable task or issue identifier")
+    description_group = task_prepare_parser.add_mutually_exclusive_group(required=True)
+    description_group.add_argument("--description", help="Task description text")
+    description_group.add_argument("--description-file", help="Read the task description from a file")
+    task_prepare_parser.add_argument(
+        "--scope",
+        action="append",
+        default=[],
+        help="Optional authorized write-scope path; repeat for multiple paths",
+    )
+    task_prepare_parser.add_argument("--agent", help="Operating agent identity")
+    task_prepare_parser.add_argument("--model", help="Model identity used for the task")
+    task_prepare_parser.add_argument("--dir", help="Target workspace directory")
+    task_prepare_parser.add_argument("--json", action="store_true", dest="json_output", help="Output stable JSON")
 
     pause_parser = subparsers.add_parser("pause", help="Pause workspace governance and compact Entigram context")
     pause_parser.add_argument("--dir", help="Target directory (defaults to current workspace)")
@@ -2351,6 +2382,44 @@ def _main():
             print(json.dumps(result, indent=2, sort_keys=True))
         else:
             print(format_governance_report(result))
+    elif args.command == "task":
+        if args.task_command != "prepare":
+            print("Use `etg task prepare`.")
+            sys.exit(2)
+        from entigram.task_context import prepare_task
+
+        target_path = _resolve_workspace_dir(args.dir)
+        try:
+            if args.description_file:
+                description = Path(args.description_file).expanduser().read_text()
+            else:
+                description = args.description or ""
+            result = prepare_task(
+                target_path,
+                task_id=args.task_id,
+                description=description,
+                scope=args.scope,
+                agent=args.agent,
+                model=args.model,
+            )
+        except (OSError, ValueError) as exc:
+            payload = {"ok": False, "error": {"code": "TASK_PREPARE_FAILED", "message": str(exc)}}
+            if args.json_output:
+                print(json.dumps(payload, indent=2, sort_keys=True))
+            else:
+                print(f"❌ Task preparation failed: {exc}")
+            sys.exit(1)
+        if args.json_output:
+            print(json.dumps(result, indent=2, sort_keys=True))
+        else:
+            task = result["task"]
+            status = result["status"]
+            print(f"✅ Task prepared: {task['task_id']}")
+            print(f"   Files inventoried: {task['file_count']}")
+            print(f"   Referenced files: {len(task['referenced_files'])}")
+            print(f"   Base revision: {task['base_commit'] or 'unavailable'}")
+            print(f"   Context: {task['context_sha256']}")
+            print(f"   Status: {status['status']}")
     elif args.command == "usage":
         from contextlib import redirect_stderr, redirect_stdout
         from io import StringIO
@@ -4060,7 +4129,20 @@ RELATIONSHIPS:
                     sys.exit(1)
             elif args.action_command == "inspect-patch":
                 from entigram.governance.patch_admission import inspect_patch
-                result = inspect_patch(workspace, protected_paths=tuple(args.protected_path))
+                from entigram.task_context import task_context_is_ready, task_prepare_required
+                from entigram.workspace_lifecycle import load_manifest
+                manifest = load_manifest(workspace)
+                if task_prepare_required(manifest) and not task_context_is_ready(workspace, manifest):
+                    result = {
+                        "ok": False,
+                        "decision": "deny",
+                        "codes": ["TASK_PREPARATION_REQUIRED"],
+                        "error": "Prepare the task before inspecting or admitting a patch.",
+                        "next_command": "etg task prepare --id <id> --description-file <file>",
+                        "scope": "task_bootstrap",
+                    }
+                else:
+                    result = inspect_patch(workspace, protected_paths=tuple(args.protected_path))
                 print(json.dumps(result, indent=2, sort_keys=True) if args.json_output else json.dumps(result, indent=2))
                 if not result["ok"]:
                     sys.exit(1)

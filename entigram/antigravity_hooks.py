@@ -26,6 +26,7 @@ from .workspace_lifecycle import (
     paused_change_status,
     workspace_state,
 )
+from .task_context import task_context_is_ready, task_context_status, task_prepare_required
 
 
 ANTIGRAVITY_HOOK_NAME = "entigram-session-gate"
@@ -216,6 +217,17 @@ def _pre_invocation(root: Path, payload: Dict[str, Any]) -> Dict[str, Any]:
                 }
             }
         )
+    if task_prepare_required(manifest):
+        task_status = task_context_status(root, manifest)
+        steps.append(
+            {
+                "ephemeralMessage": (
+                    "This workspace requires task preparation before governed writes. "
+                    "Run `etg task prepare --id <id> --description-file <file>` first. "
+                    f"Current task context: {task_status['status']}."
+                )
+            }
+        )
     steps.append(
         {
             "ephemeralMessage": (
@@ -256,6 +268,16 @@ def _pre_tool_use(root: Path, payload: Dict[str, Any]) -> Dict[str, Any]:
             "decision": "deny",
             "reason": "Entigram Warden integrity check failed. Restore or authorize the contract change first.",
         }
+    manifest = load_manifest(root)
+    if task_prepare_required(manifest) and not task_context_is_ready(root, manifest):
+        if not _is_task_bootstrap_command(payload):
+            return {
+                "decision": "deny",
+                "reason": (
+                    "Task preparation is required before governed writes. Run "
+                    "`etg task prepare --id <id> --description-file <file>` first."
+                ),
+            }
     status = active_change_status(root)
     if status["budget"]["exhausted"] and not _is_active_check_in_command(payload):
         return {
@@ -329,6 +351,20 @@ def _is_paused_lifecycle_command(payload: Dict[str, Any]) -> bool:
 def _is_active_check_in_command(payload: Dict[str, Any]) -> bool:
     command = str(((payload.get("toolCall") or {}).get("args") or {}).get("CommandLine", ""))
     return "broker handoff" in command or "broker status" in command
+
+
+def _is_task_bootstrap_command(payload: Dict[str, Any]) -> bool:
+    command = str(((payload.get("toolCall") or {}).get("args") or {}).get("CommandLine", ""))
+    normalized = " ".join(command.split())
+    return (
+        normalized == "hydrate"
+        or normalized.startswith("etg hydrate")
+        or normalized.startswith("python -m entigram.cli_runner.etg_cli hydrate")
+        or normalized.startswith("python3 -m entigram.cli_runner.etg_cli hydrate")
+        or "etg task prepare" in normalized
+        or "python -m entigram.cli_runner.etg_cli task prepare" in normalized
+        or "python3 -m entigram.cli_runner.etg_cli task prepare" in normalized
+    )
 
 
 def _session_fingerprint(

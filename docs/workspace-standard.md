@@ -191,6 +191,21 @@ Agents that need full state can request:
 hydrate --full
 ```
 
+Newly initialized workspaces also require a deterministic task bootstrap before
+an enforced agent can make governed writes:
+
+```bash
+etg task prepare --id <task-id> --description-file <path>
+```
+
+Task preparation runs hydration, records the task description hash, base
+revision, governance fingerprints, repository file inventory, referenced files,
+dependency manifests, and schema entities under
+`.etg/lifecycle/task-context.json`. The inventory is read-only and deterministic;
+model-generated interpretations are proposals and are never trusted as schema
+or authorization. Existing workspaces remain compatible until they opt into
+`governance.require_task_prepare: true`.
+
 Automation should branch on the JSON fields, not on surrounding prose.
 
 ## Workspace Lifecycle Contract
