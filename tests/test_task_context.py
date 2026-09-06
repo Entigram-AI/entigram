@@ -11,6 +11,7 @@ from unittest.mock import patch
 from entigram.antigravity_hooks import handle_antigravity_hook
 from entigram.injector import inject_entigram_manifest
 from entigram.task_context import (
+    build_expectation_envelope,
     load_task_context,
     prepare_task,
     task_context_status,
@@ -43,12 +44,21 @@ class TestTaskContext(unittest.TestCase):
         )
         context = load_task_context(self.root)
         self.assertTrue(result["ok"])
+        self.assertEqual(result["expectation"]["task_id"], "issue-123")
+        self.assertEqual(result["expectation"]["context_sha256"], context["context_sha256"])
         self.assertEqual(context["task_id"], "issue-123")
         self.assertIn("work.py", context["referenced_files"])
         self.assertEqual(context["scope"], ["work.py"])
         self.assertEqual(context["schema_entities"], ["WorkItem"])
         self.assertEqual(task_context_status(self.root)["status"], "prepared")
         self.assertTrue(context["hydration"])
+        envelope = build_expectation_envelope(context)
+        self.assertEqual(envelope["kind"], "entigram.task_expectation")
+        self.assertEqual(envelope["scope"], ["work.py"])
+        self.assertEqual(envelope["referenced_files"], ["work.py"])
+        self.assertTrue(envelope["discovery"]["allowed"])
+        self.assertEqual(envelope["trust_boundary"]["model_interpretation"], "proposal_only")
+        self.assertIn("semantic_acceptance_criteria_require_agent_or_human_interpretation", envelope["unknowns"])
 
     def test_required_task_context_blocks_writes_until_prepared(self):
         session = {"conversationId": "conversation-1"}
@@ -100,6 +110,44 @@ class TestTaskContext(unittest.TestCase):
         payload = json.loads(output.getvalue())
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["task"]["task_id"], "issue-123")
+
+    def test_cli_task_context_emits_stable_envelope(self):
+        from entigram.cli_runner.etg_cli import main
+
+        prepare_task(
+            self.root,
+            task_id="issue-123",
+            description="Fix work.py",
+            scope=["work.py"],
+        )
+        output = StringIO()
+        with patch.object(
+            sys,
+            "argv",
+            ["etg", "task", "context", "--dir", str(self.root), "--json"],
+        ), patch("sys.stdout", output):
+            main()
+        payload = json.loads(output.getvalue())
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["envelope"]["task_id"], "issue-123")
+        self.assertEqual(payload["envelope"]["original_prompt"], "Fix work.py")
+        self.assertEqual(payload["envelope"]["referenced_files"], ["work.py"])
+        self.assertNotIn("authorization", payload["envelope"]["trust_boundary"])
+
+    def test_context_unknowns_do_not_block_read_only_discovery(self):
+        context = {
+            "task_id": "issue-123",
+            "description": "Investigate the failing behavior",
+            "description_sha256": "prompt-hash",
+            "scope": [],
+            "referenced_files": [],
+            "dependency_files": [],
+            "schema_entities": [],
+        }
+        envelope = build_expectation_envelope(context)
+        self.assertTrue(envelope["discovery"]["allowed"])
+        self.assertIn("write_scope_not_explicitly_declared", envelope["unknowns"])
+        self.assertIn("no_prompt_file_references_detected", envelope["unknowns"])
 
 
 if __name__ == "__main__":
