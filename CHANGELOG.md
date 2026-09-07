@@ -4,6 +4,7 @@
 
 ### Features
 
+* add 2.8.0 task-envelope workflow to structure and require acceptance for LLM action intents before execution
 * add out-of-the-box expectation guard for pre-handoff agent verification
 * add `etg serve` MCP server with schema-gated alignment and conflict tools
 * publish agent discoverability through `ai-catalog.json`

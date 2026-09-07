@@ -17,7 +17,8 @@ file conflicts with `.etg/agent_policy.md`, the canonical policy wins.
 2. **Schema changes:** Treat `schema.lds` and `draft_schema.lds` as governed
    contracts. Change them only when the task requires schema modeling, and
    follow `.etg/agent_policy.md` for the required lock and handoff flow.
-3. **Portable Broker Flow:** Use the current Entigram CLI defaults:
+3. **Advisory Task Envelopes:** Before executing complex tasks, you MUST propose an advisory task envelope using `etg task-envelope propose`. This envelope must contain your intent, entities, expectations, validation commands, and unknowns. Do not execute the task until the operator accepts the envelope via `etg task-envelope accept <id>`.
+4. **Portable Broker Flow:** Use the current Entigram CLI defaults:
    - **Hydrate First:** `hydrate`
    - **Before Risky Changes:** `etg broker preflight --file <path>` and `etg broker impact --file <path>`
    - **Before Handoff:** `etg broker handoff` and `etg broker status`
