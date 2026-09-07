@@ -1074,6 +1074,15 @@ def _main():
     task_prepare_parser.add_argument("--model", help="Model identity used for the task")
     task_prepare_parser.add_argument("--dir", help="Target workspace directory")
     task_prepare_parser.add_argument("--json", action="store_true", dest="json_output", help="Output stable JSON")
+    task_context_parser = task_subparsers.add_parser(
+        "context",
+        aliases=["envelope"],
+        help="Render deterministic task expectations for an LLM prompt",
+    )
+    task_context_parser.add_argument("--dir", help="Target workspace directory")
+    task_context_parser.add_argument(
+        "--json", action="store_true", dest="json_output", help="Output stable JSON"
+    )
 
     pause_parser = subparsers.add_parser("pause", help="Pause workspace governance and compact Entigram context")
     pause_parser.add_argument("--dir", help="Target directory (defaults to current workspace)")
@@ -2414,12 +2423,67 @@ def _main():
         else:
             print(format_governance_report(result))
     elif args.command == "task":
-        if args.task_command != "prepare":
-            print("Use `etg task prepare`.")
+        if args.task_command not in {"prepare", "context", "envelope"}:
+            print("Use `etg task prepare` or `etg task context`.")
             sys.exit(2)
-        from entigram.task_context import prepare_task
+        from entigram.task_context import (
+            build_expectation_envelope,
+            load_task_context,
+            prepare_task,
+            task_context_status,
+        )
 
         target_path = _resolve_workspace_dir(args.dir)
+        if args.task_command in {"context", "envelope"}:
+            context = load_task_context(target_path)
+            manifest_path = target_path / ".etg" / "entigram.yaml"
+            manifest = {}
+            if manifest_path.is_file():
+                try:
+                    manifest = _load_yaml_module().safe_load(manifest_path.read_text()) or {}
+                except (OSError, ValueError) as exc:
+                    payload = {
+                        "ok": False,
+                        "error": {
+                            "code": "TASK_CONTEXT_FAILED",
+                            "message": str(exc),
+                        },
+                    }
+                    if args.json_output:
+                        print(json.dumps(payload, indent=2, sort_keys=True))
+                    else:
+                        print(f"❌ Task context failed: {exc}")
+                    sys.exit(1)
+            if context is None:
+                payload = {
+                    "ok": False,
+                    "error": {
+                        "code": "TASK_CONTEXT_MISSING",
+                        "message": "No prepared task context found; run `etg task prepare` first.",
+                    },
+                }
+                if args.json_output:
+                    print(json.dumps(payload, indent=2, sort_keys=True))
+                else:
+                    print(f"❌ {payload['error']['message']}")
+                sys.exit(1)
+            status = task_context_status(target_path, manifest)
+            envelope = build_expectation_envelope(context)
+            envelope["status"] = status["status"]
+            envelope["prepared_at"] = context.get("prepared_at")
+            payload = {"ok": status["status"] == "prepared", "envelope": envelope, "status": status}
+            if args.json_output:
+                print(json.dumps(payload, indent=2, sort_keys=True))
+            else:
+                print(f"Task expectation context: {envelope.get('task_id')}")
+                print(f"  Status: {status['status']}")
+                print(f"  Scope: {', '.join(envelope['scope']) or 'not declared'}")
+                print(f"  Referenced files: {len(envelope['referenced_files'])}")
+                print(f"  Unknowns: {len(envelope['unknowns'])}")
+                print(f"  Trust boundary: {envelope['trust_boundary']['model_interpretation']}")
+            if status["status"] != "prepared":
+                sys.exit(1)
+            return
         try:
             if args.description_file:
                 description = Path(args.description_file).expanduser().read_text()
