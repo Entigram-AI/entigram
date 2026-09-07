@@ -16,6 +16,13 @@
 * harden SQLite ledger concurrency with WAL mode and busy timeouts
 * close warning-producing registry, broker, router, and hydration resources
 
+## [2.8.0](https://github.com/Entigram-AI/entigram/compare/v2.7.0...v2.8.0) (2026-09-07)
+
+
+### Features
+
+* add proposal-first task envelopes for 2.8 ([#65](https://github.com/Entigram-AI/entigram/issues/65)) ([8024328](https://github.com/Entigram-AI/entigram/commit/80243287f00a8272c471b5579f569630685d177f))
+
 ## [2.7.0](https://github.com/Entigram-AI/entigram/compare/v2.6.0...v2.7.0) (2026-09-06)
 
 
