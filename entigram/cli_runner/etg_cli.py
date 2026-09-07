@@ -633,6 +633,7 @@ def _concise_hydration_payload(full_payload: dict, schema_content: str) -> dict:
             "action_admission": boot.get("action_admission", {}),
             "project_trust": boot.get("project_trust", {}),
             "task_context": boot.get("task_context", {}),
+            "task_envelopes": boot.get("task_envelopes", {}),
             "next_commands": [
                 "etg broker preflight --file <path>",
                 "etg broker impact --file <path>",
@@ -860,6 +861,13 @@ def get_hydration_vector(
     )
     package_version = get_package_version()
 
+    from entigram.governance.task_envelope import get_pending_envelopes, get_accepted_envelopes, get_error_envelopes
+    task_envelopes = {
+        "pending": get_pending_envelopes(target_path),
+        "accepted": get_accepted_envelopes(target_path),
+        "errors": get_error_envelopes(target_path),
+    }
+
     boot_payload = {
         "ENTIGRAM_BOOT_VECTOR": {
             "version": package_version,
@@ -882,6 +890,7 @@ def get_hydration_vector(
             "action_admission": action_admission,
             "project_trust": project_trust,
             "task_context": task_context,
+            "task_envelopes": task_envelopes,
             "timestamp": datetime.now().isoformat()
         }
     }
@@ -1855,6 +1864,28 @@ def _main():
     action_decisions_parser.add_argument("--request-id", help="Filter by action request ID")
     action_decisions_parser.add_argument("--limit", type=int, default=20, help="Maximum decisions to return")
     action_decisions_parser.add_argument("--json", action="store_true", dest="json_output")
+
+    envelope_parser = subparsers.add_parser("task-envelope", help="Manage advisory task envelopes before agent execution")
+    envelope_subparsers = envelope_parser.add_subparsers(dest="envelope_command", required=True)
+    envelope_propose_parser = envelope_subparsers.add_parser("propose", help="Propose a new task envelope")
+    envelope_propose_parser.add_argument("--dir", default=".", help="Workspace directory")
+    envelope_propose_parser.add_argument("--intent", required=True, help="Task intent")
+    envelope_propose_parser.add_argument("--entities", nargs="+", default=[], help="Proposed entities and relationships")
+    envelope_propose_parser.add_argument("--invariants", nargs="+", default=[], help="Invariants and expectations")
+    envelope_propose_parser.add_argument("--paths", nargs="+", default=[], help="Affected paths")
+    envelope_propose_parser.add_argument("--commands", nargs="+", default=[], help="Validation commands")
+    envelope_propose_parser.add_argument("--uncertainty", nargs="+", default=[], help="Uncertainty and unknowns")
+    envelope_propose_parser.add_argument("--agent", default="agent", help="Agent proposing the task envelope")
+    envelope_propose_parser.add_argument("--json", action="store_true", dest="json_output")
+    envelope_accept_parser = envelope_subparsers.add_parser("accept", help="Accept a proposed task envelope")
+    envelope_accept_parser.add_argument("--dir", default=".", help="Workspace directory")
+    envelope_accept_parser.add_argument("--id", required=True, help="Task envelope ID")
+    envelope_accept_parser.add_argument("--by", default="operator", help="Approver ID")
+    envelope_accept_parser.add_argument("--json", action="store_true", dest="json_output")
+    envelope_authorize_parser = envelope_subparsers.add_parser("authorize", help="Verify if an envelope authorizes execution")
+    envelope_authorize_parser.add_argument("--dir", default=".", help="Workspace directory")
+    envelope_authorize_parser.add_argument("--id", required=True, help="Task envelope ID")
+    envelope_authorize_parser.add_argument("--json", action="store_true", dest="json_output")
 
     broker_parser = subparsers.add_parser("broker", help="Agent orchestration broker")
     broker_subparsers = broker_parser.add_subparsers(dest="broker_command", help="Broker commands")
@@ -4257,6 +4288,40 @@ RELATIONSHIPS:
                 print(json.dumps({"ok": False, "error": str(exc)}, indent=2, sort_keys=True))
             else:
                 print(f"❌ Action admission error: {exc}")
+            sys.exit(1)
+
+    elif args.command == "task-envelope":
+        from entigram.governance.task_envelope import create_envelope, accept_envelope, authorize_execution
+        workspace = Path(args.dir).expanduser().resolve()
+        try:
+            if args.envelope_command == "propose":
+                result = create_envelope(
+                    workspace,
+                    intent=args.intent,
+                    proposed_entities=args.entities,
+                    invariants=args.invariants,
+                    affected_paths=args.paths,
+                    validation_commands=args.commands,
+                    uncertainty_unknowns=args.uncertainty,
+                    agent_id=args.agent,
+                )
+            elif args.envelope_command == "accept":
+                result = accept_envelope(workspace, args.id, args.by)
+            else:
+                result = authorize_execution(workspace, args.id)
+            if args.json_output:
+                print(json.dumps(result, indent=2, sort_keys=True))
+            elif args.envelope_command == "authorize":
+                print("Execution authorized" if result["authorized"] else f"Execution NOT authorized: {result['reason']}")
+                if not result["authorized"]:
+                    sys.exit(1)
+            else:
+                print(f"Task envelope {result['envelope_id']} {result.get('status', 'processed')}")
+        except (ValueError, OSError) as exc:
+            if getattr(args, "json_output", False):
+                print(json.dumps({"ok": False, "error": str(exc)}, indent=2, sort_keys=True))
+            else:
+                print(f"❌ Task envelope error: {exc}")
             sys.exit(1)
 
     elif args.command == "broker":
