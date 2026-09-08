@@ -7,6 +7,7 @@ import importlib.util
 import getpass
 import re
 import shutil
+import subprocess
 from pathlib import Path
 from datetime import datetime
 from entigram.schema_compiler import compile_schema_file
@@ -1314,6 +1315,53 @@ def _main():
                               help="Show diff without applying changes")
     merge_parser.add_argument("--apply", action="store_true",
                               help="Write merged schema to schema.lds and relock Warden fingerprint")
+
+    # Git-native semantic governance. This is deliberately opt-in: projects
+    # retain ordinary Git behavior until `etg git install` is requested.
+    git_parser = subparsers.add_parser("git", help="Git-native semantic governance for Entigram contracts")
+    git_subparsers = git_parser.add_subparsers(dest="git_command", required=True)
+    for name, help_text in (
+        ("status", "Show semantic status of governed changes"),
+        ("check", "Fail closed when governed changes need review"),
+        ("rebase-check", "Confirm a recorded assessment is fresh against a Git base"),
+    ):
+        command_parser = git_subparsers.add_parser(name, help=help_text)
+        command_parser.add_argument("--dir", help="Git workspace (defaults to current directory)")
+        command_parser.add_argument("--base", required=True, help="Target branch or commit")
+        command_parser.add_argument("--head", default="HEAD", help="Source branch or commit")
+        command_parser.add_argument("--staged", action="store_true", help="Assess staged LDS files")
+        command_parser.add_argument("--json", action="store_true", dest="json_output")
+    git_check_parser = git_subparsers.choices["check"]
+    git_check_parser.add_argument("--write-evidence", action="store_true", help="Write a Git-tracked assessment record")
+    git_rebase_parser = git_subparsers.choices["rebase-check"]
+    git_rebase_parser.add_argument("--report", required=True, help="Prior Git-tracked merge assessment JSON")
+
+    git_resolve_parser = git_subparsers.add_parser("resolve", help="Record an explicit human semantic conflict resolution")
+    git_resolve_parser.add_argument("--dir", help="Git workspace (defaults to current directory)")
+    git_resolve_parser.add_argument("--report", required=True, help="Git-tracked merge assessment JSON")
+    git_resolve_parser.add_argument("--conflict", required=True, help="Conflict ID from the assessment")
+    git_resolve_parser.add_argument("--strategy", required=True, choices=["ours", "theirs", "union"])
+    git_resolve_parser.add_argument("--rationale", required=True)
+    git_resolve_parser.add_argument("--apply", action="store_true", help="Apply the explicitly chosen schema resolution")
+    git_resolve_parser.add_argument("--json", action="store_true", dest="json_output")
+
+    git_install_parser = git_subparsers.add_parser("install", help="Install opt-in Git governance integrations")
+    git_install_parser.add_argument("--dir", help="Git workspace (defaults to current directory)")
+    git_install_parser.add_argument("--merge-driver", action="store_true", help="Install the safe LDS merge driver")
+    git_install_parser.add_argument("--ci", choices=["github"], help="Scaffold a CI integration")
+    git_install_parser.add_argument("--shared", action="store_true", help="Track merge attributes in .gitattributes")
+    git_install_parser.add_argument("--json", action="store_true", dest="json_output")
+
+    git_driver_parser = git_subparsers.add_parser("merge-driver", help=argparse.SUPPRESS)
+    git_driver_parser.add_argument("base")
+    git_driver_parser.add_argument("ours")
+    git_driver_parser.add_argument("theirs")
+
+    git_handoff_parser = git_subparsers.add_parser("handoff", help="Record a commit-bound Git assessment before broker handoff")
+    git_handoff_parser.add_argument("--dir", help="Git workspace (defaults to current directory)")
+    git_handoff_parser.add_argument("--base", required=True, help="Target branch or commit")
+    git_handoff_parser.add_argument("--head", default="HEAD", help="Source branch or commit")
+    git_handoff_parser.add_argument("--json", action="store_true", dest="json_output")
 
     # package command
     pkg_parser = subparsers.add_parser("package", help="Package management")
@@ -3170,6 +3218,96 @@ def _main():
             print(f"Assessment failed: {exc}")
 
             sys.exit(1)
+
+    elif args.command == "git":
+        from entigram.git_governance import (
+            GitGovernanceError,
+            assessment_is_fresh,
+            assess_repository,
+            check_repository,
+            install as install_git_governance,
+            resolve_conflict,
+            run_merge_driver,
+            write_assessment,
+            write_handoff_bundle,
+        )
+
+        try:
+            target_path = _resolve_workspace_dir(getattr(args, "dir", None))
+            if args.git_command == "merge-driver":
+                sys.exit(run_merge_driver(args.base, args.ours, args.theirs))
+            if args.git_command == "install":
+                result = install_git_governance(
+                    target_path,
+                    merge_driver=args.merge_driver,
+                    ci_github=args.ci == "github",
+                    shared=args.shared,
+                )
+            elif args.git_command == "resolve":
+                output = resolve_conflict(
+                    target_path, args.report, args.conflict, args.strategy, args.rationale, apply=args.apply
+                )
+                result = {"ok": True, "resolution": output.relative_to(target_path).as_posix()}
+            elif args.git_command == "rebase-check":
+                result = assessment_is_fresh(target_path, args.report, args.base, args.head)
+                result["safe"] = bool(result.get("safe")) and bool(result.get("fresh"))
+                result["ok"] = result["safe"]
+            elif args.git_command == "handoff":
+                result = check_repository(target_path, args.base, args.head, write_evidence=True)
+                result["ok"] = bool(result.get("safe"))
+                if result["ok"]:
+                    assessment_path = target_path / result["evidence_path"]
+                    bundle = write_handoff_bundle(target_path, result, assessment_path)
+                    handoff = subprocess.run(
+                        [
+                            sys.executable, "-m", "entigram.cli_runner.etg_cli", "broker", "--dir", str(target_path),
+                            "handoff", "--artifact", bundle.relative_to(target_path).as_posix(), "--json",
+                        ],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    result["handoff_bundle"] = bundle.relative_to(target_path).as_posix()
+                    result["broker_exit_code"] = handoff.returncode
+                    result["broker"] = json.loads(handoff.stdout) if handoff.stdout.strip().startswith("{") else handoff.stdout
+                    result["ok"] = handoff.returncode == 0
+            elif args.git_command == "status":
+                result = assess_repository(target_path, args.base, args.head, staged=args.staged)
+            else:
+                result = check_repository(
+                    target_path,
+                    args.base,
+                    args.head,
+                    staged=args.staged,
+                    write_evidence=getattr(args, "write_evidence", False),
+                )
+                result["ok"] = bool(result.get("safe"))
+                if args.git_command == "rebase-check":
+                    result["rebase_fresh"] = bool(result.get("safe"))
+            if getattr(args, "json_output", False):
+                print(json.dumps(result, indent=2, sort_keys=True))
+            else:
+                if args.git_command in {"status", "check", "rebase-check", "handoff"}:
+                    print(
+                        f"Git semantic assessment: {'safe' if result.get('safe') else 'review required'} "
+                        f"({len(result.get('paths', []))} LDS files, {len(result.get('conflicts', []))} conflicts)"
+                    )
+                    if result.get("conflict_marker_paths"):
+                        print("Unresolved Git conflict markers: " + ", ".join(result["conflict_marker_paths"]))
+                    for conflict in result.get("conflicts", []):
+                        print(f"- {conflict['id']}: {conflict['path']} ({conflict['kind']})")
+                    if result.get("evidence_path"):
+                        print(f"Evidence: {result['evidence_path']}")
+                else:
+                    print(json.dumps(result, indent=2, sort_keys=True))
+            if args.git_command in {"check", "rebase-check", "handoff"} and not result.get("ok", result.get("safe")):
+                sys.exit(3)
+        except GitGovernanceError as exc:
+            if getattr(args, "json_output", False):
+                print(json.dumps({"ok": False, "error": str(exc)}, indent=2, sort_keys=True))
+            else:
+                print(f"Git governance failed: {exc}")
+            sys.exit(2)
 
     elif args.command == "merge":
         try:
