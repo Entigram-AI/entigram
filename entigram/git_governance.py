@@ -62,6 +62,14 @@ def _merge_base(root: Path, ours: str, theirs: str) -> str:
     return result.stdout.strip()
 
 
+def _git_path(root: Path, path: str) -> Path:
+    result = _run(root, ["rev-parse", "--git-path", path])
+    if result.returncode or not result.stdout.strip():
+        raise GitGovernanceError(f"unable to resolve Git path: {path}")
+    candidate = Path(result.stdout.strip())
+    return candidate if candidate.is_absolute() else root / candidate
+
+
 def _blob(root: Path, revision: str, path: str) -> Optional[str]:
     result = _run(root, ["show", f"{revision}:{path}"])
     if result.returncode:
@@ -116,6 +124,20 @@ def schema_state(text: Optional[str]) -> Dict[str, Any]:
         for rel in relationships
     }
     return {"entities": entity_map, "relationships": relationship_map}
+
+
+def _unsupported_auto_merge_constructs(text: Optional[str]) -> List[str]:
+    """Detect LDS features the canonical renderer cannot round-trip losslessly."""
+    if text is None:
+        return []
+    patterns = {
+        "comments": ("/*", "#", "//"),
+        "block syntax": ("{", "}"),
+        "external entities": ("EXTERNAL_ENTITY", "::"),
+        "external attribute links": ("[EXTERNAL:",),
+        "edge metadata": ("[EDGE_BOUNDARY]",),
+    }
+    return [name for name, markers in patterns.items() if any(marker in text for marker in markers)]
 
 
 def _changed(base: Any, candidate: Any) -> bool:
@@ -214,6 +236,23 @@ def assess_schema(base_text: Optional[str], ours_text: Optional[str], theirs_tex
         "relationship", base["relationships"], ours["relationships"], theirs["relationships"]
     )
     conflicts = entity_conflicts + relationship_conflicts
+    unsupported = sorted(set(
+        _unsupported_auto_merge_constructs(base_text)
+        + _unsupported_auto_merge_constructs(ours_text)
+        + _unsupported_auto_merge_constructs(theirs_text)
+    ))
+    if unsupported:
+        conflicts.append({
+            "id": "GIT-SYNTAX-LOSSLESS-RENDER-REQUIRED",
+            "kind": "syntax",
+            "key": "lossless_render_required",
+            "classification": "review_required",
+            "reason": "automatic merge would not preserve all LDS constructs",
+            "unsupported_constructs": unsupported,
+            "base": None,
+            "ours": None,
+            "theirs": None,
+        })
     return {
         "safe": not conflicts,
         "classifications": entity_safe + relationship_safe,
@@ -426,10 +465,25 @@ def resolve_conflict(
 ) -> Path:
     if strategy not in {"ours", "theirs", "union"}:
         raise GitGovernanceError("strategy must be ours, theirs, or union")
+    root = _require_git_root(root)
     report_path, report = _read_report(root, report_value)
     conflict = next((item for item in report.get("conflicts", []) if item.get("id") == conflict_id), None)
     if conflict is None:
         raise GitGovernanceError(f"unknown conflict ID: {conflict_id}")
+    if apply:
+        if report.get("ours") != _rev(root, "HEAD"):
+            raise GitGovernanceError(
+                "assessment is stale for this HEAD; run `etg git rebase-check` and create a new assessment"
+            )
+        file_record = next((item for item in report.get("files", []) if item.get("path") == conflict["path"]), None)
+        current_text = _working_blob(root, conflict["path"])
+        expected_hash = (file_record or {}).get("hashes", {}).get("ours")
+        unresolved_markers = current_text and any(marker in current_text for marker in ("<<<<<<<", "=======", ">>>>>>>"))
+        if expected_hash and _sha(current_text) != expected_hash and not unresolved_markers:
+            raise GitGovernanceError(
+                "affected file changed after assessment; create a new assessment before applying a resolution"
+            )
+        _apply_resolution(root, conflict, strategy)
     payload = {
         "format": "entigram.git-resolution.v1",
         "assessment": report_path.relative_to(root).as_posix(),
@@ -446,8 +500,20 @@ def resolve_conflict(
     output = root / RESOLUTION_EVIDENCE_DIR / f"{conflict_id.lower()}-{digest}.json"
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(_canonical_json(payload))
-    if apply:
-        _apply_resolution(root, conflict, strategy)
+    # The SQLite ledger is a local index. Git-tracked evidence remains the
+    # collaborative source of truth and resolution succeeds if no ledger exists.
+    if (root / ".etg").is_dir():
+        from entigram.sqlite_ledger.manager import LedgerManager
+        ledger = LedgerManager(str(root / ".etg" / "state.db"))
+        try:
+            ledger.record_resolution(
+                conflict_id,
+                conflict["kind"],
+                json.dumps({"strategy": strategy, "evidence": output.relative_to(root).as_posix()}),
+                rationale,
+            )
+        finally:
+            ledger.close()
     return output
 
 
@@ -489,7 +555,7 @@ def install(root: Path, *, merge_driver: bool = False, ci_github: bool = False, 
     if merge_driver:
         _run(root, ["config", "merge.entigram-lds.name", "Entigram safe LDS semantic merge"])
         _run(root, ["config", "merge.entigram-lds.driver", "etg git merge-driver %O %A %B"])
-        attributes = (root / ".gitattributes") if shared else (root / ".git" / "info" / "attributes")
+        attributes = (root / ".gitattributes") if shared else _git_path(root, "info/attributes")
         attributes.parent.mkdir(parents=True, exist_ok=True)
         existing = attributes.read_text() if attributes.exists() else ""
         line = "*.lds merge=entigram-lds"

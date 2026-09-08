@@ -75,6 +75,13 @@ class GitGovernanceTests(unittest.TestCase):
         self.assertIn("email (String)", merged)
         self.assertIn("phone (String)", merged)
 
+    def test_lossy_lds_construct_refuses_automatic_merge(self):
+        external = "EXTERNAL_ENTITY: catalog::Person {\n  .id UUID\n}\n"
+        merged, report = safe_merge(external, external, external)
+        self.assertIsNone(merged)
+        self.assertFalse(report["safe"])
+        self.assertEqual("syntax", report["conflicts"][0]["kind"])
+
     def test_resolution_writes_evidence_and_applies_selected_state(self):
         self.commit_schema("remote", BASE.replace("name (String)", "name (Text)"), "remote")
         self.git("checkout", "-q", self.base_branch)
@@ -94,6 +101,24 @@ class GitGovernanceTests(unittest.TestCase):
         self.assertTrue(evidence.is_file())
         self.assertIn("name (Text)", (self.root / "schema.lds").read_text())
         self.assertEqual("theirs", json.loads(evidence.read_text())["strategy"])
+
+    def test_stale_resolution_cannot_apply_or_write_evidence(self):
+        self.commit_schema("remote", BASE.replace("name (String)", "name (Text)"), "remote")
+        self.git("checkout", "-q", self.base_branch)
+        (self.root / "schema.lds").write_text(BASE.replace("name (String)", "name (UUID)"))
+        self.git("add", "schema.lds")
+        self.git("commit", "-qm", "local")
+        report = assess_repository(self.root, "remote")
+        report_path = write_assessment(self.root, report)
+        (self.root / "README.md").write_text("newer state\n")
+        self.git("add", "README.md")
+        self.git("commit", "-qm", "newer")
+        with self.assertRaisesRegex(ValueError, "assessment is stale"):
+            resolve_conflict(
+                self.root, report_path.relative_to(self.root).as_posix(), report["conflicts"][0]["id"],
+                "theirs", "must not apply", apply=True,
+            )
+        self.assertFalse((self.root / ".etg/evidence/resolutions").exists())
 
     def test_freshness_detects_new_commit(self):
         self.commit_schema("remote", BASE + "\nENTITY: Phone\nATTRIBUTES:\n  - .id (UUID)\n", "remote")
