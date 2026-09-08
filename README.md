@@ -302,6 +302,21 @@ the Worker, the core community tree, and user registries can coexist like
 Maven repositories. Package source code remains reviewable in its source
 repository; the Worker is the delivery and caching layer.
 
+### Git-native governed collaboration
+
+For teams that evolve LDS contracts on branches, Entigram can use Git's merge
+base to distinguish non-overlapping additions from semantic conflicts. The
+integration is opt-in and does not require a hosted Entigram service:
+
+```bash
+etg git install --merge-driver --ci github
+etg git check --base origin/main --write-evidence
+```
+
+Safe additions can merge normally; concurrent non-identical changes to the
+same entity require an explicit, versioned resolution record. See
+[Git-native collaboration](docs/git-governance.md) for the workflow.
+
 ### Run a community assessment
 
 Community assessment packages run locally and do not require a cloud key. For
