@@ -206,6 +206,22 @@ model-generated interpretations are proposals and are never trusted as schema
 or authorization. Existing workspaces remain compatible until they opt into
 `governance.require_task_prepare: true`.
 
+Before sending the task to an LLM, an integration can render the compact,
+deterministic expectation envelope:
+
+```bash
+etg task context --json
+```
+
+The envelope preserves the original prompt and exposes the prepared facts,
+declared scope, detected file references, dependency manifests, schema entity
+names, and explicit unknowns. It also states the boundary between deterministic
+facts and model interpretation. Missing scope or references are reported as
+unknowns; they do not prevent read-only discovery. The envelope does not rewrite
+the prompt, infer semantic acceptance criteria, authorize writes, or replace
+the existing action-admission checks. The `envelope` subcommand is an alias for
+`context`.
+
 Automation should branch on the JSON fields, not on surrounding prose.
 
 ## Workspace Lifecycle Contract

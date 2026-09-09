@@ -22,6 +22,7 @@ import yaml
 
 
 TASK_CONTEXT_VERSION = 1
+EXPECTATION_ENVELOPE_VERSION = 1
 TASK_CONTEXT_RELATIVE_PATH = ".etg/lifecycle/task-context.json"
 _PATH_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_./-])(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.(?:py|pyi|js|jsx|ts|tsx|java|swift|go|rs|rb|php|sql|yaml|yml|json|toml|md)(?![A-Za-z0-9_./-])")
 _INVENTORY_FILES = {
@@ -107,6 +108,69 @@ def _governance_fingerprint(root: Path, manifest: dict[str, Any]) -> dict[str, A
 
 def task_context_path(root: Path) -> Path:
     return root / TASK_CONTEXT_RELATIVE_PATH
+
+
+def build_expectation_envelope(context: dict[str, Any]) -> dict[str, Any]:
+    """Build a compact, deterministic context envelope for an LLM prompt.
+
+    The envelope describes facts Entigram observed while preparing the task;
+    it does not infer acceptance criteria or grant authorization.  In
+    particular, an absent scope or file reference is surfaced as an unknown,
+    not converted into a write restriction.  This keeps read-only discovery
+    available while leaving writes and final submission to existing workspace
+    policy and admission checks.
+    """
+    def _sorted_text_values(value: Any) -> list[str]:
+        if not isinstance(value, (list, tuple, set)):
+            return []
+        return sorted({str(item) for item in value if item is not None and str(item)})
+
+    scope = _sorted_text_values(context.get("scope", []))
+    referenced_files = _sorted_text_values(context.get("referenced_files", []))
+    dependency_files = sorted(
+        {
+            str(record.get("path"))
+            for record in context.get("dependency_files", [])
+            if isinstance(record, dict) and record.get("path")
+        }
+    )
+    unknowns: list[str] = []
+    if not scope:
+        unknowns.append("write_scope_not_explicitly_declared")
+    if not referenced_files:
+        unknowns.append("no_prompt_file_references_detected")
+    unknowns.append("semantic_acceptance_criteria_require_agent_or_human_interpretation")
+
+    return {
+        "kind": "entigram.task_expectation",
+        "version": EXPECTATION_ENVELOPE_VERSION,
+        "task_id": context.get("task_id"),
+        "original_prompt": context.get("description", ""),
+        "original_prompt_sha256": context.get("description_sha256")
+        or _sha256_text(str(context.get("description", ""))),
+        "context_sha256": context.get("context_sha256"),
+        "base_commit": context.get("base_commit"),
+        "scope": scope,
+        "referenced_files": referenced_files,
+        "dependency_files": dependency_files,
+        "schema_entities": _sorted_text_values(context.get("schema_entities", [])),
+        "unknowns": unknowns,
+        "discovery": {
+            "allowed": True,
+            "mode": "read_only",
+            "purpose": "Resolve unknowns before proposing a change.",
+        },
+        "trust_boundary": {
+            "deterministic_facts": True,
+            "model_interpretation": "proposal_only",
+            "writes": "subject_to_workspace_policy",
+            "submission": "subject_to_action_admission",
+        },
+        "interpretation": (
+            "Use this as deterministic task context. Do not treat model-generated "
+            "interpretations as schema, authorization, or proof of correctness."
+        ),
+    }
 
 
 def load_task_context(root: Path) -> dict[str, Any] | None:
@@ -211,7 +275,12 @@ def prepare_task(
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(context, indent=2, sort_keys=True) + "\n")
     temporary.replace(path)
-    return {"ok": True, "task": context, "status": task_context_status(root, manifest)}
+    return {
+        "ok": True,
+        "task": context,
+        "expectation": build_expectation_envelope(context),
+        "status": task_context_status(root, manifest),
+    }
 
 
 def task_context_is_ready(root: Path, manifest: dict[str, Any] | None = None) -> bool:
