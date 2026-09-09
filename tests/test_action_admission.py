@@ -19,6 +19,7 @@ from entigram.cli_runner.etg_cli import get_hydration_vector
 from entigram.governance.action_admission import (
     ActionAdmissionEngine,
     LocalActionAuthority,
+    decision_event,
 )
 from entigram.governance.warden import Warden
 
@@ -100,6 +101,25 @@ class ActionAdmissionTestCase(unittest.TestCase):
 
     def lock_contract(self):
         Warden(str(self.workspace)).lock_fingerprint()
+
+    def test_decision_event_normalizes_allow_deny_and_escalate(self):
+        allow = decision_event({"ok": True, "status": "admitted", "action_name": "publish_release"})
+        self.assertEqual(allow["outcome"], "ALLOW")
+        self.assertTrue(allow["side_effect_permitted"])
+
+        deny = decision_event({
+            "ok": False,
+            "status": "preflight_denied",
+            "action_name": "publish_release",
+            "reasons": [{"code": "policy_denied"}],
+        })
+        self.assertEqual(deny["outcome"], "DENY")
+        self.assertFalse(deny["side_effect_permitted"])
+        self.assertEqual(deny["reason_codes"], ["policy_denied"])
+
+        escalate = decision_event({"ok": False, "status": "approval_required"})
+        self.assertEqual(escalate["outcome"], "ESCALATE")
+        self.assertFalse(escalate["side_effect_permitted"])
 
     def sign_grant(self, scopes=None):
         return self.authority.issue_grant(
