@@ -45,6 +45,43 @@ class ActionContractError(ValueError):
     """Raised when an action-contract document is malformed."""
 
 
+def decision_event(decision: Dict[str, Any], *, phase: str = "preflight") -> Dict[str, Any]:
+    """Return a stable, transport-safe decision event for adapters and ledgers.
+
+    The event deliberately contains no private key material or mutable request
+    objects.  It gives an executor one explicit, auditable vocabulary for the
+    admission lifecycle while retaining the richer decision response for
+    diagnostics and remediation.
+    """
+    status = str(decision.get("status", "preflight_denied"))
+    if decision.get("ok") is True:
+        outcome = "ALLOW"
+    elif status == "approval_required":
+        outcome = "ESCALATE"
+    else:
+        outcome = "DENY"
+    return {
+        "event_type": "entigram.action_decision.v1",
+        "phase": phase,
+        "decision_id": decision.get("decision_id"),
+        "action_name": decision.get("action_name"),
+        "request_id": decision.get("request_id"),
+        "outcome": outcome,
+        "status": status,
+        "side_effect_permitted": bool(decision.get("ok") is True),
+        "assurance": decision.get("assurance"),
+        "contract_digest": decision.get("contract_digest"),
+        "request_digest": decision.get("request_digest"),
+        "reason_codes": [
+            str(item.get("code"))
+            for item in (decision.get("reasons") or [])
+            if isinstance(item, dict) and item.get("code")
+        ],
+        "remediation": list(decision.get("remediation") or []),
+        "observed_at": decision.get("observed_at"),
+    }
+
+
 def canonical_json(value: Any) -> bytes:
     """Canonical bytes used for all action, evidence, and signature digests."""
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")

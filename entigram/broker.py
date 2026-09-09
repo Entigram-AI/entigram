@@ -391,7 +391,7 @@ class EntigramBroker:
         evidence, authority, and policy decision that a future mediated action
         executor must verify again immediately before operating on a target.
         """
-        from .governance.action_admission import ActionAdmissionEngine
+        from .governance.action_admission import ActionAdmissionEngine, decision_event
         from .sqlite_ledger.manager import ActionAttestationReplayError
 
         decision = ActionAdmissionEngine(
@@ -399,6 +399,7 @@ class EntigramBroker:
             revocation_checker=self.ledger.is_action_grant_revoked,
             attestation_consumed_checker=self.ledger.is_action_attestation_consumed,
         ).validate(action_name, request)
+        decision["decision_event"] = decision_event(decision)
         try:
             decision["ledger_id"] = self.ledger.record_action_decision(decision)
         except ActionAttestationReplayError:
