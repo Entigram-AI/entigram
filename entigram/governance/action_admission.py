@@ -39,6 +39,8 @@ _IDENTIFIER = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]*$")
 _VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:+-]*$")
 _SHA256 = re.compile(r"^[a-fA-F0-9]{64}$")
 MAX_EVIDENCE_CLOCK_SKEW_SECONDS = 30
+POLICY_REFERENCE = re.compile(r"\b[A-Z][A-Z0-9]+(?:-[A-Z0-9]+)+\b")
+POLICY_REFERENCE_FIELD = re.compile(r"(?:policy|citation|section|reference)", re.IGNORECASE)
 
 
 class ActionContractError(ValueError):
@@ -107,7 +109,19 @@ def normalize_tool_contract(tools: Iterable[Dict[str, Any]]) -> List[Dict[str, A
     return contract
 
 
-def _tool_proposal_errors(proposal: Dict[str, Any], contract: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+def policy_reference_ids(context: Iterable[Dict[str, Any]]) -> List[str]:
+    """Extract citation identifiers from supplied policy context, never model output."""
+    identifiers = set()
+    for item in context:
+        if not isinstance(item, dict) or str(item.get("kind", "")).lower() != "policy":
+            continue
+        content = item.get("content", "")
+        if isinstance(content, str):
+            identifiers.update(POLICY_REFERENCE.findall(content))
+    return sorted(identifiers)
+
+
+def _tool_proposal_errors(proposal: Dict[str, Any], contract: List[Dict[str, Any]], permitted_policy_references: Iterable[str] = ()) -> List[Dict[str, str]]:
     declared = {entry["name"]: entry for entry in contract}
     tool = declared.get(proposal.get("name"))
     if tool is None:
@@ -135,11 +149,15 @@ def _tool_proposal_errors(proposal: Dict[str, Any], contract: List[Dict[str, Any
         )
         if not valid:
             errors.append({"code": "argument_type_mismatch"})
+        if POLICY_REFERENCE_FIELD.search(name) and permitted_policy_references:
+            cited = value if isinstance(value, list) else [value]
+            if not all(isinstance(reference, str) and reference in permitted_policy_references for reference in cited):
+                errors.append({"code": "unverified_policy_reference"})
     return errors
 
 
 def admit_tool_proposals(
-    proposals: Iterable[Dict[str, Any]], tools: Iterable[Dict[str, Any]], *, phase: str = "inference_proposal"
+    proposals: Iterable[Dict[str, Any]], tools: Iterable[Dict[str, Any]], *, phase: str = "inference_proposal", permitted_policy_references: Iterable[str] = ()
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Admit ordered native tool proposals against an explicit contract.
 
@@ -153,7 +171,7 @@ def admit_tool_proposals(
     for proposal in proposals:
         if not isinstance(proposal, dict):
             continue
-        errors = _tool_proposal_errors(proposal, contract)
+        errors = _tool_proposal_errors(proposal, contract, permitted_policy_references)
         allowed = not errors
         events.append(
             decision_event(
