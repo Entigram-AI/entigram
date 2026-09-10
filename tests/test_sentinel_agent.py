@@ -124,6 +124,23 @@ class SentinelAgentTests(unittest.TestCase):
 
         self.assertEqual(seen["payload"]["tool_choice"], {"type": "function", "name": "record_decision"})
 
+    def test_openai_responses_uses_configurable_output_budget(self):
+        seen = {}
+
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *_): return False
+            def read(self): return b'{"output": []}'
+
+        def urlopen(request, timeout):
+            seen["payload"] = json.loads(request.data)
+            return Response()
+
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key", "ENTIGRAM_SENTINEL_MAX_OUTPUT_TOKENS": "2048"}, clear=True), patch("urllib.request.urlopen", urlopen):
+            openai_responses([], [])
+
+        self.assertEqual(seen["payload"]["max_output_tokens"], 2048)
+
     def test_router_prefers_openai_when_its_key_is_available(self):
         with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}, clear=True), patch("entigram.sentinel_agent.openai_responses", return_value={"output": []}) as openai, patch("entigram.sentinel_agent.cloudflare_responses") as cloudflare:
             self.assertEqual(model_responses([], []), {"output": []})

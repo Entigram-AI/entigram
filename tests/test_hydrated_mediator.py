@@ -73,6 +73,57 @@ class HydratedPolicyMediatorTests(unittest.TestCase):
         self.assertEqual(mediator.permitted_policy_references, ["POL-ACCOUNT-01"])
         self.assertEqual([t["name"] for t in mediator.tools], ["verify_customer", "issue_refund"])
 
+    def test_accepts_explicit_section_citations_from_policy_context(self):
+        mediator = HydratedPolicyMediator(
+            [
+                {
+                    "kind": "policy",
+                    "content": "Document ID: BM-SOP-RET-2025-04\n\n## 7. Account review\n\nSee Section 7 for account review.",
+                }
+            ],
+            self.tools,
+        )
+        self.assertEqual(
+            mediator.permitted_policy_references,
+            ["BM-SOP-RET-2025-04", "Section 7"],
+        )
+
+        errors, _, _ = mediator._proposal_denial_errors(
+            {
+                "id": "section-citation",
+                "name": "issue_refund",
+                "arguments": {
+                    "refund_id": "ref-500",
+                    "policy_reference": "BM-SOP-RET-2025-04 §7: Account review",
+                },
+            }
+        )
+        self.assertNotIn("unverified_policy_reference", [error["code"] for error in errors])
+
+        invalid_errors, _, _ = mediator._proposal_denial_errors(
+            {
+                "id": "unknown-section",
+                "name": "issue_refund",
+                "arguments": {
+                    "refund_id": "ref-500",
+                    "policy_reference": "Sections 7 and 99",
+                },
+            }
+        )
+        self.assertIn("unverified_policy_reference", [error["code"] for error in invalid_errors])
+
+        heading_errors, _, _ = mediator._proposal_denial_errors(
+            {
+                "id": "heading-citation",
+                "name": "issue_refund",
+                "arguments": {
+                    "refund_id": "ref-500",
+                    "policy_reference": "7. Account review",
+                },
+            }
+        )
+        self.assertNotIn("unverified_policy_reference", [error["code"] for error in heading_errors])
+
     def test_builds_session_local_evidence_linked_policy_model_with_explicit_rules(self):
         mediator = HydratedPolicyMediator(self.policy_context, self.tools)
         prereqs = mediator.get_explicit_prerequisites("issue_refund")

@@ -25,6 +25,7 @@ POLICY_BOOTSTRAP_EXTENSION = "urn:pi-bench:policy-bootstrap:v1"
 SessionStore = dict[str, dict[str, Any]]
 ModelClient = Callable[[list[dict[str, Any]], list[dict[str, Any]]], dict[str, Any]]
 LOGGER = logging.getLogger(__name__)
+DEFAULT_MAX_OUTPUT_TOKENS = 4096
 
 
 def agent_card(card_url: str) -> dict[str, Any]:
@@ -128,6 +129,22 @@ def _tool_name(tool: dict[str, Any]) -> str:
     return str(function.get("name", "")) if isinstance(function, dict) else ""
 
 
+def _max_output_tokens() -> int:
+    """Return a bounded response budget suitable for reasoning plus tool use."""
+    configured = os.environ.get("ENTIGRAM_SENTINEL_MAX_OUTPUT_TOKENS")
+    if configured is None:
+        return DEFAULT_MAX_OUTPUT_TOKENS
+    try:
+        budget = int(configured)
+    except ValueError:
+        LOGGER.warning("Invalid ENTIGRAM_SENTINEL_MAX_OUTPUT_TOKENS; using default")
+        return DEFAULT_MAX_OUTPUT_TOKENS
+    if budget < 256:
+        LOGGER.warning("ENTIGRAM_SENTINEL_MAX_OUTPUT_TOKENS below minimum; using default")
+        return DEFAULT_MAX_OUTPUT_TOKENS
+    return budget
+
+
 def _log_lifecycle(context_id: str, mediator: HydratedPolicyMediator, planning_tools: list[dict[str, Any]]) -> None:
     """Emit non-sensitive execution diagnostics for a hydrated session."""
     contract = mediator.telemetry()["completion_contract"]
@@ -166,7 +183,7 @@ def openai_responses(
         "model": os.environ.get("OPENAI_MODEL", "gpt-5.2"),
         "input": _responses_input(messages),
         "tools": _responses_tools(tools),
-        "max_output_tokens": 1200,
+        "max_output_tokens": _max_output_tokens(),
     }
     if tool_choice is not None:
         payload["tool_choice"] = tool_choice
@@ -185,7 +202,7 @@ def cloudflare_responses(
         "model": os.environ.get("CLOUDFLARE_MODEL", "openai/gpt-5.6-terra"),
         "input": _responses_input(messages),
         "tools": _responses_tools(tools),
-        "max_output_tokens": 1200,
+        "max_output_tokens": _max_output_tokens(),
     }
     if tool_choice is not None:
         payload["tool_choice"] = tool_choice
@@ -301,6 +318,25 @@ def handle_request(request: dict[str, Any], sessions: SessionStore | None = None
 
     # Use session mediator for pre-dispatch evaluation and admission
     calls, events = mediator.admit_proposals(proposed_calls)
+    output_types = [str(item.get("type", "")) for item in response.get("output", []) if isinstance(item, dict)]
+    denied_reason_codes = sorted({
+        code
+        for event in events
+        for code in event.get("reason_codes", [])
+        if isinstance(code, str)
+    })
+    LOGGER.info(
+        "sentinel_response context_id=%s requested_tool_choice=%s response_status=%s "
+        "incomplete_reason=%s output_types=%s proposed_tools=%s admitted_tools=%s denied_reason_codes=%s",
+        str(data.get("context_id", "")),
+        mediator.required_tool_choice(),
+        response.get("status"),
+        (response.get("incomplete_details") or {}).get("reason") if isinstance(response.get("incomplete_details"), dict) else None,
+        output_types,
+        [str(proposal.get("name", "")) for proposal in proposed_calls],
+        [str(call.get("name", "")) for call in calls],
+        denied_reason_codes,
+    )
     return _result(
         request_id,
         {
