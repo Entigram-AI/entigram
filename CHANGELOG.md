@@ -16,6 +16,13 @@
 * harden SQLite ledger concurrency with WAL mode and busy timeouts
 * close warning-producing registry, broker, router, and hydration resources
 
+## [2.11.0](https://github.com/Entigram-AI/entigram/compare/v2.10.0...v2.11.0) (2026-09-10)
+
+
+### Features
+
+* add Entigram Sentinel AgentBeats manifest ([#71](https://github.com/Entigram-AI/entigram/issues/71)) ([fb19099](https://github.com/Entigram-AI/entigram/commit/fb190992fcc3c88c4ea7fb1add5b44cbeca60229))
+
 ## [2.10.0](https://github.com/Entigram-AI/entigram/compare/v2.9.0...v2.10.0) (2026-09-09)
 
 
