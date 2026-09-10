@@ -74,11 +74,8 @@ def _responses_input(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return converted
 
 
-def cloudflare_responses(messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
-    account, token = os.environ.get("CLOUDFLARE_ACCOUNT_ID"), os.environ.get("CLOUDFLARE_AUTH_TOKEN")
-    if not account or not token:
-        raise RuntimeError("CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_AUTH_TOKEN are required")
-    responses_tools = []
+def _responses_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    responses_tools: list[dict[str, Any]] = []
     for tool in tools:
         function = tool.get("function", tool)
         responses_tools.append({
@@ -87,15 +84,54 @@ def cloudflare_responses(messages: list[dict[str, Any]], tools: list[dict[str, A
             "description": function.get("description", ""),
             "parameters": function.get("parameters", function.get("input_schema", {})),
         })
-    payload = {"model": os.environ.get("CLOUDFLARE_MODEL", "openai/gpt-5.6-terra"), "input": _responses_input(messages), "tools": responses_tools, "max_output_tokens": 1200}
-    request = urllib.request.Request(f"https://api.cloudflare.com/client/v4/accounts/{account}/ai/v1/responses", data=json.dumps(payload).encode(), headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
+    return responses_tools
+
+
+def _post_responses(url: str, token: str, payload: dict[str, Any], provider: str) -> dict[str, Any]:
+    request = urllib.request.Request(url, data=json.dumps(payload).encode(), headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(request, timeout=120) as response:
             return json.load(response)
     except urllib.error.HTTPError as exc:
-        raise RuntimeError(f"Cloudflare Responses returned HTTP {exc.code}") from exc
+        raise RuntimeError(f"{provider} Responses returned HTTP {exc.code}") from exc
     except urllib.error.URLError as exc:
-        raise RuntimeError("Cloudflare Responses request failed") from exc
+        raise RuntimeError(f"{provider} Responses request failed") from exc
+
+
+def openai_responses(messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
+    token = os.environ.get("OPENAI_API_KEY")
+    if not token:
+        raise RuntimeError("OPENAI_API_KEY is required for the OpenAI Sentinel provider")
+    payload = {
+        "model": os.environ.get("OPENAI_MODEL", "gpt-5.2"),
+        "input": _responses_input(messages),
+        "tools": _responses_tools(tools),
+        "max_output_tokens": 1200,
+    }
+    return _post_responses("https://api.openai.com/v1/responses", token, payload, "OpenAI")
+
+
+def cloudflare_responses(messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
+    account, token = os.environ.get("CLOUDFLARE_ACCOUNT_ID"), os.environ.get("CLOUDFLARE_AUTH_TOKEN")
+    if not account or not token:
+        raise RuntimeError("CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_AUTH_TOKEN are required")
+    payload = {
+        "model": os.environ.get("CLOUDFLARE_MODEL", "openai/gpt-5.6-terra"),
+        "input": _responses_input(messages),
+        "tools": _responses_tools(tools),
+        "max_output_tokens": 1200,
+    }
+    return _post_responses(f"https://api.cloudflare.com/client/v4/accounts/{account}/ai/v1/responses", token, payload, "Cloudflare")
+
+
+def model_responses(messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
+    """Use an explicitly selected provider, or prefer configured OpenAI."""
+    provider = os.environ.get("ENTIGRAM_SENTINEL_PROVIDER", "").strip().lower()
+    if provider == "openai" or (not provider and os.environ.get("OPENAI_API_KEY")):
+        return openai_responses(messages, tools)
+    if provider == "cloudflare" or not provider:
+        return cloudflare_responses(messages, tools)
+    raise RuntimeError("ENTIGRAM_SENTINEL_PROVIDER must be 'openai' or 'cloudflare'")
 
 
 def _response_content(response: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
@@ -157,7 +193,7 @@ def handle_request(request: dict[str, Any], sessions: SessionStore | None = None
     messages = data.get("messages", [])
     if not isinstance(messages, list):
         return HTTPStatus.BAD_REQUEST, {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32602, "message": "messages must be a list."}}
-    response = (model_client or cloudflare_responses)([{"role": "system", "content": _context_prompt(session["benchmark_context"])}, *messages], session["tools"])
+    response = (model_client or model_responses)([{"role": "system", "content": _context_prompt(session["benchmark_context"])}, *messages], session["tools"])
     content, proposed_calls = _response_content(response)
     calls, events = _mediate_tool_calls(proposed_calls, session["tools"])
     return _result(request_id, {"content": content, "tool_calls": calls, "decision_events": events})
