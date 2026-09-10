@@ -1,0 +1,34 @@
+{
+  manifest_version: "0.1.0",
+  program: {
+    image: "ghcr.io/entigram-ai/entigram-sentinel:latest",
+    entrypoint: [
+      "python",
+      "-m",
+      "entigram.sentinel_agent",
+      "--host",
+      "0.0.0.0",
+      "--port",
+      "9010",
+      "--card-url",
+      "http://endpoint:9010"
+    ],
+    env: {
+      LOG_LEVEL: "INFO"
+    },
+    network: {
+      endpoints: [{ name: "endpoint", port: 9010 }]
+    }
+  },
+  config_schema: {
+    type: "object",
+    properties: {},
+    additionalProperties: false
+  },
+  provides: {
+    a2a: { kind: "a2a", endpoint: "endpoint" }
+  },
+  exports: {
+    a2a: "a2a"
+  }
+}

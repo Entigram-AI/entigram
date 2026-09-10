@@ -1,0 +1,32 @@
+name: Publish Entigram Sentinel
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile.sentinel
+      - entigram/sentinel_agent.py
+      - .github/workflows/publish-sentinel.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.sentinel
+          push: true
+          platforms: linux/amd64
+          tags: ghcr.io/entigram-ai/entigram-sentinel:latest
