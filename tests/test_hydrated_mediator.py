@@ -116,6 +116,11 @@ class HydratedPolicyMediatorTests(unittest.TestCase):
         self.assertEqual(result.arguments, {"customer_id": "cust-100"})
         self.assertEqual(result.output, '{"status": "verified", "customer_id": "cust-100"}')
 
+        # A2A callers can replay prior history on later turns without creating
+        # phantom state transitions.
+        mediator.update_state(messages)
+        self.assertEqual(len(mediator.state.tool_results), 1)
+
     def test_identifies_enabled_tools_from_high_confidence_explicit_prerequisites(self):
         mediator = HydratedPolicyMediator(self.policy_context, self.tools)
 
@@ -205,6 +210,12 @@ class HydratedPolicyMediatorTests(unittest.TestCase):
         ctx_id = response["result"]["parts"][0]["data"]["context_id"]
         self.assertIn(ctx_id, sessions)
         self.assertIn("mediator", sessions[ctx_id])
+        hydration = response["result"]["parts"][0]["data"]["hydration"]
+        self.assertEqual(hydration["policy_evidence_count"], 1)
+        self.assertGreaterEqual(hydration["explicit_rule_count"], 1)
+        self.assertEqual(hydration["declared_tool_count"], 2)
+        self.assertEqual(hydration["enabled_tool_count"], 1)
+        self.assertNotIn("content", hydration)
 
         # 2. Turn 1 proposing issue_refund without prior verify_customer (should deny)
         def model_attempt_refund(_messages, _tools):
@@ -231,6 +242,7 @@ class HydratedPolicyMediatorTests(unittest.TestCase):
         self.assertEqual(data1["tool_calls"], [])
         self.assertEqual(data1["decision_events"][0]["outcome"], "DENY")
         self.assertIn("missing_prerequisite", data1["decision_events"][0]["reason_codes"])
+        self.assertEqual(data1["hydration"]["state_transition_count"], 0)
 
         # 3. Turn 2 after verify_customer has executed
         turn2_messages = [
@@ -276,6 +288,7 @@ class HydratedPolicyMediatorTests(unittest.TestCase):
         self.assertEqual(len(data2["tool_calls"]), 1)
         self.assertEqual(data2["tool_calls"][0]["name"], "issue_refund")
         self.assertEqual(data2["decision_events"][0]["outcome"], "ALLOW")
+        self.assertEqual(data2["hydration"]["state_transition_count"], 1)
 
 
 if __name__ == "__main__":

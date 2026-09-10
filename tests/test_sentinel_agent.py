@@ -27,8 +27,11 @@ class SentinelAgentTests(unittest.TestCase):
         sessions = {}
         status, response = handle_request(request({"bootstrap": True, "benchmark_context": [{"kind": "policy", "content": "Refunds require manager approval."}], "tools": [{"type": "function", "function": {"name": "record_decision", "parameters": {}}}]}), sessions=sessions, model_client=lambda *_: self.fail("bootstrap must not infer"))
         self.assertEqual(status, 200)
-        context_id = response["result"]["parts"][0]["data"]["context_id"]
+        bootstrap = response["result"]["parts"][0]["data"]
+        context_id = bootstrap["context_id"]
         self.assertIn(context_id, sessions)
+        self.assertEqual(bootstrap["hydration"]["policy_evidence_count"], 1)
+        self.assertNotIn("content", bootstrap["hydration"])
 
     def test_turn_uses_cached_context_and_declared_tool_contract(self):
         sessions = {"ctx": {"benchmark_context": [{"kind": "policy", "content": "Escalate uncertain cases."}], "tools": [{"type": "function", "function": {"name": "record_decision", "parameters": {}}}]}}

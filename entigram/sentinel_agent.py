@@ -197,7 +197,14 @@ def handle_request(request: dict[str, Any], sessions: SessionStore | None = None
             "policy_context": context,
             "tools": tools,
         }
-        return _result(request_id, {"bootstrapped": True, "context_id": context_id})
+        return _result(
+            request_id,
+            {
+                "bootstrapped": True,
+                "context_id": context_id,
+                "hydration": mediator.telemetry(),
+            },
+        )
 
     session = store.get(str(data.get("context_id")))
     if session is None or "mediator" not in session:
@@ -234,7 +241,15 @@ def handle_request(request: dict[str, Any], sessions: SessionStore | None = None
 
     # Use session mediator for pre-dispatch evaluation and admission
     calls, events = mediator.admit_proposals(proposed_calls)
-    return _result(request_id, {"content": content, "tool_calls": calls, "decision_events": events})
+    return _result(
+        request_id,
+        {
+            "content": content,
+            "tool_calls": calls,
+            "decision_events": events,
+            "hydration": mediator.telemetry(),
+        },
+    )
 
 
 class SentinelRequestHandler(BaseHTTPRequestHandler):

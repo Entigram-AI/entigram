@@ -112,6 +112,7 @@ class SessionState:
     def __init__(self):
         self.executed_tools: Set[str] = set()
         self.tool_results: List[ToolResultProvenance] = []
+        self.recorded_call_ids: Set[str] = set()
         self.observed_facts: Dict[str, Any] = {}
         self.step_counter: int = 0
 
@@ -123,6 +124,11 @@ class SessionState:
         output: Any,
         status: str = "success",
     ) -> ToolResultProvenance:
+        # A2A callers normally resend the complete conversation on every turn.
+        # Only count each tool result once so policy state is derived from the
+        # conversation, rather than from how often the caller retransmits it.
+        if call_id in self.recorded_call_ids:
+            return next(record for record in self.tool_results if record.call_id == call_id)
         self.step_counter += 1
         record = ToolResultProvenance(
             call_id=call_id,
@@ -133,6 +139,7 @@ class SessionState:
             step_index=self.step_counter,
         )
         self.tool_results.append(record)
+        self.recorded_call_ids.add(call_id)
         if status == "success":
             self.executed_tools.add(tool_name)
             self.observed_facts[f"tool_result:{tool_name}"] = output
@@ -155,6 +162,31 @@ class HydratedPolicyMediator:
         self.state = SessionState()
 
         self._hydrate()
+
+    def telemetry(self) -> Dict[str, Any]:
+        """Return privacy-safe diagnostics for the hydrated session.
+
+        This intentionally exposes neither supplied policy text nor tool output.
+        The fingerprint lets an operator correlate equal bootstrap contexts in
+        local logs without making policy material recoverable from the response.
+        """
+        fingerprint_input = [
+            {"id": evidence.id, "kind": evidence.kind, "digest": evidence.digest}
+            for evidence in self.evidence_model
+        ]
+        policy_fingerprint = hashlib.sha256(
+            json.dumps(fingerprint_input, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        enabled_tools = self.get_enabled_tools()
+        return {
+            "policy_fingerprint": policy_fingerprint,
+            "policy_evidence_count": len(self.evidence_model),
+            "explicit_rule_count": len(self.explicit_rules),
+            "permitted_policy_reference_count": len(self.permitted_policy_references),
+            "declared_tool_count": len(self.tools),
+            "enabled_tool_count": len(enabled_tools),
+            "state_transition_count": len(self.state.tool_results),
+        }
 
     def _hydrate(self) -> None:
         """Build evidence-linked policy model and extract explicit rules."""
