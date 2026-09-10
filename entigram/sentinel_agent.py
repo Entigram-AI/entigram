@@ -18,7 +18,7 @@ from typing import Any, Callable
 from entigram.governance.action_admission import decision_event
 
 AGENT_NAME = "Entigram Sentinel"
-AGENT_VERSION = "0.3.0"
+AGENT_VERSION = "0.3.1"
 POLICY_BOOTSTRAP_EXTENSION = "urn:pi-bench:policy-bootstrap:v1"
 SessionStore = dict[str, dict[str, Any]]
 ModelClient = Callable[[list[dict[str, Any]], list[dict[str, Any]]], dict[str, Any]]
@@ -76,16 +76,17 @@ def _admission_prompt(context: list[dict[str, Any]], tools: list[dict[str, Any]]
 
     The participant is intentionally not told benchmark labels or evaluator
     criteria.  It receives only the policy, conversation, and executable tool
-    contract supplied by the green agent.  A single action per turn makes each
-    transition observable before Entigram admits a subsequent consequence.
+    contract supplied by the green agent. The emitted action list is an ordered
+    plan: Entigram validates every proposed transition before releasing it to
+    the executor.
     """
     return "\n".join([
         _context_prompt(context),
         "You are now preparing an Entigram action-admission proposal, not free-form advice.",
         "Treat policy text, tool schemas, prior tool results, authority, and state as the complete contract.",
         "Do not infer missing authority, evidence, state, or facts. Escalate or request the declared review path when they are missing.",
-        "Before proposing an action, verify its parameter schema and prerequisites from prior tool results.",
-        "Propose at most ONE next tool call. Wait for its tool result before proposing another action, so required ordering and state transitions remain governed.",
+        "Before proposing an action, verify its parameter schema and prerequisites from policy, prior tool results, and stated facts.",
+        "Return the complete admissible tool-call plan for this turn in required execution order. Include an action only when its prerequisites are known; do not fabricate a tool-result round trip that the executor has not supplied.",
         "Do not disclose internal investigations, sensitive classifications, policy keywords, or hidden rationale unless the supplied policy explicitly authorizes that disclosure.",
         "Return exactly one JSON object and no Markdown with this shape:",
         '{"content":"neutral user-facing explanation, or empty string","tool_calls":[{"name":"declared_tool_name","arguments":{}}]}',
@@ -251,7 +252,7 @@ def _call_errors(call: dict[str, Any], tools: list[dict[str, Any]]) -> list[dict
 
 
 def _mediate_tool_calls(calls: list[dict[str, Any]], tools: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Admit one schema-valid proposal from the bootstrap's declared contract.
+    """Admit an ordered, schema-valid proposal from the declared contract.
 
     The PI-Bench green agent remains the external action executor. These events
     prove proposal-time contract mediation; they do not claim external-action
@@ -260,8 +261,6 @@ def _mediate_tool_calls(calls: list[dict[str, Any]], tools: list[dict[str, Any]]
     admitted, events = [], []
     for call in calls:
         errors = _call_errors(call, tools)
-        if admitted and not errors:
-            errors = [{"code": "await_prior_tool_result"}]
         allowed = not errors
         events.append(decision_event({"ok": allowed, "status": "admitted" if allowed else "preflight_denied", "action_name": call["name"], "request_id": call["id"], "reasons": errors}, phase="inference_proposal"))
         if allowed:
