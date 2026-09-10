@@ -19,7 +19,9 @@ from entigram.cli_runner.etg_cli import get_hydration_vector
 from entigram.governance.action_admission import (
     ActionAdmissionEngine,
     LocalActionAuthority,
+    admit_tool_proposals,
     decision_event,
+    normalize_tool_contract,
 )
 from entigram.governance.warden import Warden
 
@@ -120,6 +122,28 @@ class ActionAdmissionTestCase(unittest.TestCase):
         escalate = decision_event({"ok": False, "status": "approval_required"})
         self.assertEqual(escalate["outcome"], "ESCALATE")
         self.assertFalse(escalate["side_effect_permitted"])
+
+    def test_native_tool_proposals_are_admitted_in_order_against_contract(self):
+        tools = [
+            {"type": "function", "function": {"name": "open_case", "parameters": {"type": "object"}}},
+            {"type": "function", "function": {"name": "escalate", "parameters": {"type": "object"}}},
+        ]
+        self.assertEqual([tool["name"] for tool in normalize_tool_contract(tools)], ["open_case", "escalate"])
+        admitted, events = admit_tool_proposals(
+            [{"id": "call-1", "name": "open_case", "arguments": {}}, {"id": "call-2", "name": "escalate", "arguments": {}}],
+            tools,
+        )
+        self.assertEqual([proposal["name"] for proposal in admitted], ["open_case", "escalate"])
+        self.assertEqual([event["outcome"] for event in events], ["ALLOW", "ALLOW"])
+
+    def test_native_tool_proposal_rejects_undeclared_or_invalid_arguments(self):
+        tools = [{"type": "function", "function": {"name": "hold_refund", "parameters": {"type": "object", "properties": {"refund_id": {"type": "string"}}, "required": ["refund_id"], "additionalProperties": False}}}]
+        admitted, events = admit_tool_proposals(
+            [{"id": "call-1", "name": "hold_refund", "arguments": {"refund_id": 3}}, {"id": "call-2", "name": "process_refund", "arguments": {}}],
+            tools,
+        )
+        self.assertEqual(admitted, [])
+        self.assertEqual([event["reason_codes"] for event in events], [["argument_type_mismatch"], ["undeclared_tool"]])
 
     def sign_grant(self, scopes=None):
         return self.authority.issue_grant(
