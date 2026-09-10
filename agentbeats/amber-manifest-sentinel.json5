@@ -15,9 +15,9 @@
     ],
     env: {
       LOG_LEVEL: "INFO",
-      CLOUDFLARE_AUTH_TOKEN: "${config.cloudflare_auth_token}",
-      CLOUDFLARE_ACCOUNT_ID: "${config.cloudflare_account_id}",
-      CLOUDFLARE_MODEL: "${config.cloudflare_model}"
+      ENTIGRAM_SENTINEL_PROVIDER: "openai",
+      OPENAI_API_KEY: "${config.openai_api_key}",
+      OPENAI_MODEL: "${config.openai_model}"
     },
     network: {
       endpoints: [{ name: "endpoint", port: 9010 }]
@@ -26,11 +26,10 @@
   config_schema: {
     type: "object",
     properties: {
-      cloudflare_auth_token: { type: "string", secret: true },
-      cloudflare_account_id: { type: "string", secret: true },
-      cloudflare_model: { type: "string", default: "openai/gpt-5.6-terra" }
+      openai_api_key: { type: "string", secret: true },
+      openai_model: { type: "string", default: "gpt-5.2" }
     },
-    required: ["cloudflare_auth_token", "cloudflare_account_id"],
+    required: ["openai_api_key"],
     additionalProperties: false
   },
   provides: {
