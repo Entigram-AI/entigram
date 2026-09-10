@@ -16,6 +16,13 @@
 * harden SQLite ledger concurrency with WAL mode and busy timeouts
 * close warning-producing registry, broker, router, and hydration resources
 
+## [2.16.0](https://github.com/Entigram-AI/entigram/compare/v2.15.0...v2.16.0) (2026-09-10)
+
+
+### Features
+
+* hydrate session policy mediation ([#87](https://github.com/Entigram-AI/entigram/issues/87)) ([2b83968](https://github.com/Entigram-AI/entigram/commit/2b839680f9f1ad9905f22ab2ffc5d951aae6c3a5))
+
 ## [2.15.0](https://github.com/Entigram-AI/entigram/compare/v2.14.0...v2.15.0) (2026-09-10)
 
 
