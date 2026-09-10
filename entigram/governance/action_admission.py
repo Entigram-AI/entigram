@@ -82,6 +82,96 @@ def decision_event(decision: Dict[str, Any], *, phase: str = "preflight") -> Dic
     }
 
 
+def normalize_tool_contract(tools: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Return a portable declared-function contract from provider tool shapes.
+
+    Providers wrap function definitions differently.  This deliberately small
+    normalization layer lets an Entigram adapter enforce the same declared
+    contract whether a model emits native function calls, A2A proposals, or
+    another tool protocol.
+    """
+    contract: List[Dict[str, Any]] = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        function = tool.get("function", tool)
+        if not isinstance(function, dict) or not isinstance(function.get("name"), str):
+            continue
+        contract.append(
+            {
+                "name": function["name"],
+                "description": function.get("description", ""),
+                "parameters": function.get("parameters", function.get("input_schema", {})),
+            }
+        )
+    return contract
+
+
+def _tool_proposal_errors(proposal: Dict[str, Any], contract: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    declared = {entry["name"]: entry for entry in contract}
+    tool = declared.get(proposal.get("name"))
+    if tool is None:
+        return [{"code": "undeclared_tool"}]
+    arguments, schema = proposal.get("arguments"), tool.get("parameters")
+    if not isinstance(arguments, dict):
+        return [{"code": "invalid_arguments"}]
+    if not isinstance(schema, dict):
+        return []
+    required = schema.get("required", [])
+    properties = schema.get("properties", {})
+    errors = [{"code": "required_argument_missing"} for name in required if name not in arguments]
+    if schema.get("additionalProperties") is False:
+        errors.extend({"code": "undeclared_argument"} for name in arguments if name not in properties)
+    for name, value in arguments.items():
+        expected = properties.get(name, {}).get("type") if isinstance(properties.get(name), dict) else None
+        valid = (
+            expected is None
+            or (expected == "string" and isinstance(value, str))
+            or (expected == "boolean" and isinstance(value, bool))
+            or (expected == "number" and isinstance(value, (int, float)) and not isinstance(value, bool))
+            or (expected == "integer" and isinstance(value, int) and not isinstance(value, bool))
+            or (expected == "object" and isinstance(value, dict))
+            or (expected == "array" and isinstance(value, list))
+        )
+        if not valid:
+            errors.append({"code": "argument_type_mismatch"})
+    return errors
+
+
+def admit_tool_proposals(
+    proposals: Iterable[Dict[str, Any]], tools: Iterable[Dict[str, Any]], *, phase: str = "inference_proposal"
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Admit ordered native tool proposals against an explicit contract.
+
+    This evaluates proposals only; execution stays with the caller's adapter.
+    Consumers may therefore use it without overstating executor-side
+    prevention when they do not own the target credential.
+    """
+    contract = normalize_tool_contract(tools)
+    admitted: List[Dict[str, Any]] = []
+    events: List[Dict[str, Any]] = []
+    for proposal in proposals:
+        if not isinstance(proposal, dict):
+            continue
+        errors = _tool_proposal_errors(proposal, contract)
+        allowed = not errors
+        events.append(
+            decision_event(
+                {
+                    "ok": allowed,
+                    "status": "admitted" if allowed else "preflight_denied",
+                    "action_name": proposal.get("name"),
+                    "request_id": proposal.get("id"),
+                    "reasons": errors,
+                },
+                phase=phase,
+            )
+        )
+        if allowed:
+            admitted.append(proposal)
+    return admitted, events
+
+
 def canonical_json(value: Any) -> bytes:
     """Canonical bytes used for all action, evidence, and signature digests."""
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
