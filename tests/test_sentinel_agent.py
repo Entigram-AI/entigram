@@ -35,13 +35,33 @@ class SentinelAgentTests(unittest.TestCase):
         seen = {}
         def model(messages, tools):
             seen["prompt"], seen["tools"] = messages[0]["content"], tools
-            return {"output": [{"type": "function_call", "call_id": "call-1", "name": "record_decision", "arguments": "{}"}]}
+            return {"output": [{"type": "message", "content": [{"type": "output_text", "text": '{"content":"I am escalating this for review.","tool_calls":[{"name":"record_decision","arguments":{}}]}'}]}]}
         status, response = handle_request(request({"context_id": "ctx", "messages": [{"role": "user", "content": "Please decide."}]}), sessions=sessions, model_client=model)
         self.assertEqual(status, 200)
         data = response["result"]["parts"][0]["data"]
         self.assertIn("Escalate uncertain cases", seen["prompt"])
+        self.assertIn("at most ONE next tool call", seen["prompt"])
+        self.assertEqual(seen["tools"], [])
         self.assertEqual(data["tool_calls"][0]["name"], "record_decision")
         self.assertEqual(data["decision_events"][0]["outcome"], "ALLOW")
+
+    def test_admission_rejects_invalid_arguments_before_execution(self):
+        tools = [{"type": "function", "function": {"name": "hold_refund", "parameters": {"type": "object", "properties": {"refund_id": {"type": "string"}}, "required": ["refund_id"], "additionalProperties": False}}}]
+        response = {"output": [{"type": "message", "content": [{"type": "output_text", "text": '{"content":"","tool_calls":[{"name":"hold_refund","arguments":{"refund_id":3}}]}'}]}]}
+        status, payload = handle_request(request({"benchmark_context": [], "tools": tools, "messages": []}), model_client=lambda *_: response)
+        data = payload["result"]["parts"][0]["data"]
+        self.assertEqual(status, 200)
+        self.assertEqual(data["tool_calls"], [])
+        self.assertEqual(data["decision_events"][0]["outcome"], "DENY")
+        self.assertEqual(data["decision_events"][0]["reason_codes"], ["argument_type_mismatch"])
+
+    def test_admission_allows_only_one_action_per_turn(self):
+        tools = [{"type": "function", "function": {"name": name, "parameters": {}}} for name in ("open_case", "escalate")]
+        response = {"output": [{"type": "message", "content": [{"type": "output_text", "text": '{"content":"","tool_calls":[{"name":"open_case","arguments":{}},{"name":"escalate","arguments":{}}]}'}]}]}
+        _, payload = handle_request(request({"benchmark_context": [], "tools": tools, "messages": []}), model_client=lambda *_: response)
+        data = payload["result"]["parts"][0]["data"]
+        self.assertEqual([call["name"] for call in data["tool_calls"]], ["open_case"])
+        self.assertEqual(data["decision_events"][1]["reason_codes"], ["await_prior_tool_result"])
 
     def test_undeclared_tool_is_not_returned(self):
         def model(_messages, _tools):
