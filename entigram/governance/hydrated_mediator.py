@@ -26,6 +26,11 @@ PREREQUISITE_PATTERN = re.compile(
     r"(?:prerequisite|requires|must execute|after|following|depends on)\s*:?\s*([a-zA-Z0-9_.-]+)",
     re.IGNORECASE,
 )
+FINALIZATION_PATTERN = re.compile(
+    r"\b(?:record|log|finali[sz]e)\s+(?:your\s+)?final\s+(?:decision|outcome)\b"
+    r".*?\b(?:by\s+)?calling\s+(?:the\s+)?(?P<tool>[a-zA-Z0-9_.-]+)\s+tool\b",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 class PolicyEvidence:
@@ -159,6 +164,8 @@ class HydratedPolicyMediator:
         self.evidence_model: List[PolicyEvidence] = []
         self.explicit_rules: List[ExplicitRule] = []
         self.permitted_policy_references: List[str] = []
+        self.finalization_tool: Optional[str] = None
+        self.finalization_evidence_ids: List[str] = []
         self.state = SessionState()
 
         self._hydrate()
@@ -186,6 +193,10 @@ class HydratedPolicyMediator:
             "declared_tool_count": len(self.tools),
             "enabled_tool_count": len(enabled_tools),
             "state_transition_count": len(self.state.tool_results),
+            "completion_contract": {
+                "finalization_required": self.finalization_tool is not None,
+                "finalization_pending": self.finalization_pending(),
+            },
         }
 
     def _hydrate(self) -> None:
@@ -204,7 +215,19 @@ class HydratedPolicyMediator:
         # 3. Extract explicit rules from policy context and declared tools
         tool_names = {t["name"] for t in self.tools}
 
-        # 3a. From policy evidence
+        # 3a. Extract an explicitly declared completion contract from task
+        # context. This is intentionally evidence-linked and opt-in: a tool is
+        # never treated as a mandatory finalizer merely because of its name.
+        for evidence in self.evidence_model:
+            if evidence.kind.lower() not in {"task", "instruction", "workflow"}:
+                continue
+            match = FINALIZATION_PATTERN.search(evidence.content)
+            if match and match.group("tool") in tool_names:
+                self.finalization_tool = match.group("tool")
+                self.finalization_evidence_ids = [evidence.id]
+                break
+
+        # 3b. From policy evidence
         for evidence in self.evidence_model:
             if evidence.kind.lower() != "policy":
                 continue
@@ -276,7 +299,7 @@ class HydratedPolicyMediator:
                                 )
                             )
 
-        # 3b. From tool schema specifications / descriptions
+        # 3c. From tool schema specifications / descriptions
         for tool in self.tools:
             name = tool.get("name", "")
             desc = tool.get("description", "")
@@ -377,6 +400,42 @@ class HydratedPolicyMediator:
             if readiness["enabled"]:
                 enabled.append(tool)
         return enabled
+
+    def finalization_pending(self) -> bool:
+        """Whether a declared finalizer must follow an operational result."""
+        return bool(
+            self.finalization_tool
+            and self.finalization_tool not in self.state.executed_tools
+            and any(record.tool_name != self.finalization_tool for record in self.state.tool_results)
+        )
+
+    def tools_for_planning(self) -> List[Dict[str, Any]]:
+        """Constrain a completion phase to its explicit declared finalizer."""
+        if not self.finalization_pending():
+            return list(self.tools)
+        return [tool for tool in self.tools if tool["name"] == self.finalization_tool]
+
+    def required_tool_choice(self) -> Optional[Dict[str, str] | str]:
+        """Return a provider-neutral native-tool requirement for this phase."""
+        if self.finalization_pending() and self.finalization_tool:
+            return {"type": "function", "name": self.finalization_tool}
+        if self.finalization_tool and self.finalization_tool not in self.state.executed_tools:
+            return "required"
+        return None
+
+    def completion_guidance(self) -> str:
+        """Return model-facing lifecycle guidance without exposing policy text."""
+        if not self.finalization_tool:
+            return ""
+        if self.finalization_pending():
+            return (
+                "A declared finalization action is now pending after an operational result. "
+                "Call the remaining finalization tool with grounded arguments before returning user-facing text."
+            )
+        return (
+            "The supplied task declares a finalization tool. Complete any necessary inspection or "
+            "operational actions first, then record the final grounded outcome through that declared tool."
+        )
 
     def _proposal_denial_errors(self, proposal: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[str], List[str]]:
         """Validate proposal and return (errors, missing_prereqs, evidence_links)."""

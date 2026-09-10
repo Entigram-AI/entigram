@@ -21,6 +21,7 @@ class SentinelAgentTests(unittest.TestCase):
         card = agent_card("http://endpoint:9010/")
         self.assertEqual(card["name"], AGENT_NAME)
         self.assertEqual(card["url"], "http://endpoint:9010")
+        self.assertIn(POLICY_BOOTSTRAP_EXTENSION, card["extensions"])
         self.assertIn(POLICY_BOOTSTRAP_EXTENSION, [e["uri"] for e in card["capabilities"]["extensions"]])
 
     def test_bootstrap_hydrates_context_without_model_call(self):
@@ -106,8 +107,25 @@ class SentinelAgentTests(unittest.TestCase):
         self.assertEqual(seen["payload"]["model"], "gpt-5.2")
         self.assertEqual(seen["payload"]["tools"][0]["name"], "record_decision")
 
+    def test_openai_responses_passes_required_native_tool_choice(self):
+        seen = {}
+
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *_args): return False
+            def read(self): return b'{"output": []}'
+
+        def urlopen(request, timeout):
+            seen["payload"] = json.loads(request.data)
+            return Response()
+
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}, clear=True), patch("urllib.request.urlopen", urlopen):
+            openai_responses([], [], {"type": "function", "name": "record_decision"})
+
+        self.assertEqual(seen["payload"]["tool_choice"], {"type": "function", "name": "record_decision"})
+
     def test_router_prefers_openai_when_its_key_is_available(self):
         with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}, clear=True), patch("entigram.sentinel_agent.openai_responses", return_value={"output": []}) as openai, patch("entigram.sentinel_agent.cloudflare_responses") as cloudflare:
             self.assertEqual(model_responses([], []), {"output": []})
-        openai.assert_called_once_with([], [])
+        openai.assert_called_once_with([], [], None)
         cloudflare.assert_not_called()
