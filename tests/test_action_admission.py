@@ -22,6 +22,7 @@ from entigram.governance.action_admission import (
     admit_tool_proposals,
     decision_event,
     normalize_tool_contract,
+    policy_reference_ids,
 )
 from entigram.governance.warden import Warden
 
@@ -144,6 +145,15 @@ class ActionAdmissionTestCase(unittest.TestCase):
         )
         self.assertEqual(admitted, [])
         self.assertEqual([event["reason_codes"] for event in events], [["argument_type_mismatch"], ["undeclared_tool"]])
+
+    def test_policy_references_must_come_from_supplied_policy_context(self):
+        context = [{"kind": "policy", "content": "Refunds follow RET-REF-01 and RET-APP-02."}]
+        references = policy_reference_ids(context)
+        self.assertEqual(references, ["RET-APP-02", "RET-REF-01"])
+        tools = [{"type": "function", "function": {"name": "record", "parameters": {"type": "object", "properties": {"policy_sections_cited": {"type": "array"}}}}}]
+        admitted, events = admit_tool_proposals([{"id": "call-1", "name": "record", "arguments": {"policy_sections_cited": ["MADE-UP-99"]}}], tools, permitted_policy_references=references)
+        self.assertEqual(admitted, [])
+        self.assertEqual(events[0]["reason_codes"], ["unverified_policy_reference"])
 
     def sign_grant(self, scopes=None):
         return self.authority.issue_grant(
