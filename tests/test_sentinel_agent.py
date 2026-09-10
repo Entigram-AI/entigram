@@ -40,7 +40,7 @@ class SentinelAgentTests(unittest.TestCase):
         self.assertEqual(status, 200)
         data = response["result"]["parts"][0]["data"]
         self.assertIn("Escalate uncertain cases", seen["prompt"])
-        self.assertIn("at most ONE next tool call", seen["prompt"])
+        self.assertIn("complete admissible tool-call plan", seen["prompt"])
         self.assertEqual(seen["tools"], [])
         self.assertEqual(data["tool_calls"][0]["name"], "record_decision")
         self.assertEqual(data["decision_events"][0]["outcome"], "ALLOW")
@@ -55,13 +55,13 @@ class SentinelAgentTests(unittest.TestCase):
         self.assertEqual(data["decision_events"][0]["outcome"], "DENY")
         self.assertEqual(data["decision_events"][0]["reason_codes"], ["argument_type_mismatch"])
 
-    def test_admission_allows_only_one_action_per_turn(self):
+    def test_admission_preserves_schema_valid_action_order(self):
         tools = [{"type": "function", "function": {"name": name, "parameters": {}}} for name in ("open_case", "escalate")]
         response = {"output": [{"type": "message", "content": [{"type": "output_text", "text": '{"content":"","tool_calls":[{"name":"open_case","arguments":{}},{"name":"escalate","arguments":{}}]}'}]}]}
         _, payload = handle_request(request({"benchmark_context": [], "tools": tools, "messages": []}), model_client=lambda *_: response)
         data = payload["result"]["parts"][0]["data"]
-        self.assertEqual([call["name"] for call in data["tool_calls"]], ["open_case"])
-        self.assertEqual(data["decision_events"][1]["reason_codes"], ["await_prior_tool_result"])
+        self.assertEqual([call["name"] for call in data["tool_calls"]], ["open_case", "escalate"])
+        self.assertEqual([event["outcome"] for event in data["decision_events"]], ["ALLOW", "ALLOW"])
 
     def test_undeclared_tool_is_not_returned(self):
         def model(_messages, _tools):
