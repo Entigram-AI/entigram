@@ -1,147 +1,192 @@
-"""Minimal A2A service used to register Entigram Sentinel with AgentBeats.
+"""Bootstrap-aware A2A participant for PI-Bench.
 
-This service is deliberately side-effect free.  It establishes the transport
-and identity boundary for the benchmark participant; PiBench-specific policy
-and tool mediation are added separately before any scored submission.
+Only context supplied by the green benchmark agent is cached. This service
+never reads scenario files, labels, or evaluator criteria.
 """
-
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import urllib.error
+import urllib.request
 import uuid
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any
+from typing import Any, Callable
 
+from entigram.governance.action_admission import decision_event
 
 AGENT_NAME = "Entigram Sentinel"
-AGENT_VERSION = "0.1.0"
+AGENT_VERSION = "0.2.0"
+POLICY_BOOTSTRAP_EXTENSION = "urn:pi-bench:policy-bootstrap:v1"
+SessionStore = dict[str, dict[str, Any]]
+ModelClient = Callable[[list[dict[str, Any]], list[dict[str, Any]]], dict[str, Any]]
 
 
 def agent_card(card_url: str) -> dict[str, Any]:
-    """Return the public A2A Agent Card served by the container."""
     return {
-        "protocolVersion": "0.3.0",
-        "name": AGENT_NAME,
-        "description": (
-            "An Entigram-governed policy agent that interprets operational "
-            "rules and records safe ALLOW, DENY, or ESCALATE decisions."
-        ),
-        "url": card_url.rstrip("/"),
-        "version": AGENT_VERSION,
-        "capabilities": {"streaming": False, "pushNotifications": False},
-        "defaultInputModes": ["text/plain"],
-        "defaultOutputModes": ["text/plain"],
-        "skills": [
-            {
-                "id": "policy-governance",
-                "name": "Policy governance",
-                "description": "Safely evaluates policy-governed requests.",
-                "tags": ["policy", "governance", "safety"],
-            }
-        ],
+        "protocolVersion": "0.3.0", "name": AGENT_NAME,
+        "description": "An Entigram-governed policy agent that hydrates approved policy context and constrains declared tool calls.",
+        "url": card_url.rstrip("/"), "version": AGENT_VERSION,
+        "capabilities": {"streaming": False, "pushNotifications": False, "extensions": [{"uri": POLICY_BOOTSTRAP_EXTENSION}]},
+        "defaultInputModes": ["application/json"], "defaultOutputModes": ["application/json"],
+        "skills": [{"id": "policy-governance", "name": "Policy governance", "description": "Hydrates policy context and constrains declared tool calls.", "tags": ["policy", "governance", "safety", "pi-bench"]}],
     }
 
 
-def _text_from_message(params: dict[str, Any]) -> str:
+def _part_data(params: dict[str, Any]) -> dict[str, Any]:
     message = params.get("message", {})
-    return "\n".join(
-        str(part.get("text", ""))
-        for part in message.get("parts", [])
-        if isinstance(part, dict) and part.get("kind") == "text"
-    ).strip()
+    if not isinstance(message, dict):
+        return {}
+    for part in message.get("parts", []):
+        if isinstance(part, dict) and part.get("kind") == "data" and isinstance(part.get("data"), dict):
+            return part["data"]
+    return {}
 
 
-def handle_request(request: dict[str, Any]) -> tuple[int, dict[str, Any]]:
-    """Handle the small, non-streaming A2A JSON-RPC surface used for smoke tests."""
+def _context_prompt(context: list[dict[str, Any]]) -> str:
+    sections = [f"<{item.get('kind', 'context')}>\n{item.get('content', '')}\n</{item.get('kind', 'context')}>" for item in context if isinstance(item, dict)]
+    return "\n".join([
+        "You are Entigram Sentinel, an operational policy-compliance agent.",
+        "Use only supplied benchmark context, conversation, and declared tools.",
+        "Never invent authority or facts. Escalate when policy or authority is insufficient.",
+        "Call only declared tools and never claim a side effect completed without a tool result.",
+        "Benchmark context follows:", *sections,
+    ])
+
+
+def _responses_input(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    converted: list[dict[str, Any]] = []
+    for message in messages:
+        role = message.get("role")
+        if role in ("system", "user"):
+            converted.append({"role": role, "content": message.get("content", "")})
+        elif role == "assistant":
+            if message.get("tool_calls"):
+                for call in message["tool_calls"]:
+                    function = call.get("function", {})
+                    converted.append({"type": "function_call", "call_id": call.get("id", str(uuid.uuid4())), "name": function.get("name", ""), "arguments": function.get("arguments", "{}")})
+            elif message.get("content"):
+                converted.append({"role": "assistant", "content": message["content"]})
+        elif role == "tool":
+            converted.append({"type": "function_call_output", "call_id": message.get("tool_call_id", message.get("id", "")), "output": message.get("content", "")})
+    return converted
+
+
+def cloudflare_responses(messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
+    account, token = os.environ.get("CLOUDFLARE_ACCOUNT_ID"), os.environ.get("CLOUDFLARE_AUTH_TOKEN")
+    if not account or not token:
+        raise RuntimeError("CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_AUTH_TOKEN are required")
+    responses_tools = []
+    for tool in tools:
+        function = tool.get("function", tool)
+        responses_tools.append({
+            "type": "function",
+            "name": function.get("name", ""),
+            "description": function.get("description", ""),
+            "parameters": function.get("parameters", function.get("input_schema", {})),
+        })
+    payload = {"model": os.environ.get("CLOUDFLARE_MODEL", "openai/gpt-5.6-terra"), "input": _responses_input(messages), "tools": responses_tools, "max_output_tokens": 1200}
+    request = urllib.request.Request(f"https://api.cloudflare.com/client/v4/accounts/{account}/ai/v1/responses", data=json.dumps(payload).encode(), headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"Cloudflare Responses returned HTTP {exc.code}") from exc
+    except urllib.error.URLError as exc:
+        raise RuntimeError("Cloudflare Responses request failed") from exc
+
+
+def _response_content(response: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
+    text, calls = [], []
+    for item in response.get("output", []):
+        if item.get("type") == "message":
+            text.extend(str(part.get("text", "")) for part in item.get("content", []) if part.get("type") in ("output_text", "text"))
+        elif item.get("type") == "function_call":
+            arguments = item.get("arguments", {})
+            calls.append({"id": item.get("call_id") or item.get("id") or str(uuid.uuid4()), "name": item.get("name", ""), "arguments": json.loads(arguments) if isinstance(arguments, str) else arguments})
+    content = "\n".join(text).strip()
+    # PiBench classifies its stop signal before tool calls. A tool-only model
+    # turn must therefore stay content-empty rather than receiving the fallback
+    # stop marker.
+    if not content and not calls:
+        content = "###STOP###"
+    return content, calls
+
+
+def _mediate_tool_calls(calls: list[dict[str, Any]], tools: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Only return calls in the bootstrap's declared tool contract.
+
+    The PI-Bench green agent remains the external action executor. These events
+    prove proposal-time contract mediation; they do not claim external-action
+    prevention until the broker is installed at that executor boundary.
+    """
+    declared = {str(tool.get("function", tool).get("name", "")) for tool in tools}
+    admitted, events = [], []
+    for call in calls:
+        allowed = call["name"] in declared
+        events.append(decision_event({"ok": allowed, "status": "admitted" if allowed else "preflight_denied", "action_name": call["name"], "request_id": call["id"], "reasons": [] if allowed else [{"code": "undeclared_tool"}]}, phase="inference_proposal"))
+        if allowed:
+            admitted.append(call)
+    return admitted, events
+
+
+def _result(request_id: Any, data: dict[str, Any]) -> tuple[int, dict[str, Any]]:
+    return HTTPStatus.OK, {"jsonrpc": "2.0", "id": request_id, "result": {"parts": [{"kind": "data", "data": data}]}}
+
+
+def handle_request(request: dict[str, Any], sessions: SessionStore | None = None, model_client: ModelClient | None = None) -> tuple[int, dict[str, Any]]:
     request_id = request.get("id")
     if request.get("jsonrpc") != "2.0" or request.get("method") != "message/send":
-        return HTTPStatus.BAD_REQUEST, {
-            "jsonrpc": "2.0",
-            "id": request_id,
-            "error": {"code": -32601, "message": "Only message/send is supported."},
-        }
-
+        return HTTPStatus.BAD_REQUEST, {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32601, "message": "Only message/send is supported."}}
     params = request.get("params")
     if not isinstance(params, dict):
-        return HTTPStatus.BAD_REQUEST, {
-            "jsonrpc": "2.0",
-            "id": request_id,
-            "error": {"code": -32602, "message": "params must be an object."},
-        }
-
-    _text_from_message(params)  # Validate the supported input shape without retaining content.
-    task_id = str(uuid.uuid4())
-    response = (
-        "Entigram Sentinel is online. This registration build is side-effect "
-        "free; PiBench policy and tool mediation have not yet been enabled."
-    )
-    return HTTPStatus.OK, {
-        "jsonrpc": "2.0",
-        "id": request_id,
-        "result": {
-            "id": task_id,
-            "contextId": params.get("message", {}).get("contextId", task_id),
-            "status": {
-                "state": "completed",
-                "message": {"role": "agent", "parts": [{"kind": "text", "text": response}]},
-            },
-        },
-    }
+        return HTTPStatus.BAD_REQUEST, {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32602, "message": "params must be an object."}}
+    data, store = _part_data(params), sessions if sessions is not None else {}
+    if data.get("bootstrap") is True:
+        context, tools = data.get("benchmark_context", []), data.get("tools", [])
+        if not isinstance(context, list) or not isinstance(tools, list):
+            return HTTPStatus.BAD_REQUEST, {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32602, "message": "bootstrap context and tools must be lists."}}
+        context_id = str(uuid.uuid4())
+        store[context_id] = {"benchmark_context": context, "tools": tools}
+        return _result(request_id, {"bootstrapped": True, "context_id": context_id})
+    session = store.get(str(data.get("context_id")))
+    if session is None:
+        session = {"benchmark_context": data.get("benchmark_context", []), "tools": data.get("tools", [])}
+    messages = data.get("messages", [])
+    if not isinstance(messages, list):
+        return HTTPStatus.BAD_REQUEST, {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32602, "message": "messages must be a list."}}
+    response = (model_client or cloudflare_responses)([{"role": "system", "content": _context_prompt(session["benchmark_context"])}, *messages], session["tools"])
+    content, proposed_calls = _response_content(response)
+    calls, events = _mediate_tool_calls(proposed_calls, session["tools"])
+    return _result(request_id, {"content": content, "tool_calls": calls, "decision_events": events})
 
 
 class SentinelRequestHandler(BaseHTTPRequestHandler):
-    server_version = "EntigramSentinel/0.1"
-
+    server_version = "EntigramSentinel/0.2"
     def _send_json(self, status: int, payload: dict[str, Any]) -> None:
-        body = json.dumps(payload).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def do_GET(self) -> None:  # noqa: N802 - stdlib handler convention
-        if self.path == "/healthz":
-            self._send_json(HTTPStatus.OK, {"ok": True, "agent": AGENT_NAME})
-        elif self.path == "/.well-known/agent.json":
-            self._send_json(HTTPStatus.OK, agent_card(self.server.card_url))
-        else:
-            self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
-
-    def do_POST(self) -> None:  # noqa: N802 - stdlib handler convention
-        if self.path not in ("/", "/a2a"):
-            self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
-            return
-        try:
-            size = int(self.headers.get("Content-Length", "0"))
-            request = json.loads(self.rfile.read(size))
-        except (ValueError, json.JSONDecodeError):
-            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid JSON"})
-            return
-        if not isinstance(request, dict):
-            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "JSON object required"})
-            return
-        status, payload = handle_request(request)
+        body = json.dumps(payload).encode(); self.send_response(status); self.send_header("Content-Type", "application/json"); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+    def do_GET(self) -> None:  # noqa: N802
+        if self.path == "/healthz": self._send_json(HTTPStatus.OK, {"ok": True, "agent": AGENT_NAME})
+        elif self.path in ("/.well-known/agent.json", "/.well-known/agent-card.json"): self._send_json(HTTPStatus.OK, agent_card(self.server.card_url))
+        else: self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+    def do_POST(self) -> None:  # noqa: N802
+        if self.path not in ("/", "/a2a", "/a2a/message/send"):
+            self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"}); return
+        try: request = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+        except (ValueError, json.JSONDecodeError): self._send_json(HTTPStatus.BAD_REQUEST, {"error": "invalid JSON"}); return
+        if not isinstance(request, dict): self._send_json(HTTPStatus.BAD_REQUEST, {"error": "JSON object required"}); return
+        try: status, payload = handle_request(request, sessions=self.server.sessions)
+        except (RuntimeError, ValueError, KeyError) as exc: self._send_json(HTTPStatus.BAD_GATEWAY, {"error": str(exc)}); return
         self._send_json(status, payload)
-
     def log_message(self, format: str, *args: object) -> None:
-        if os.environ.get("ENTIGRAM_SENTINEL_LOG_REQUESTS") == "1":
-            super().log_message(format, *args)
+        if os.environ.get("ENTIGRAM_SENTINEL_LOG_REQUESTS") == "1": super().log_message(format, *args)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the Entigram Sentinel A2A service.")
-    parser.add_argument("--host", default="0.0.0.0")
-    parser.add_argument("--port", type=int, default=9010)
-    parser.add_argument("--card-url", default=os.environ.get("A2A_CARD_URL", "http://localhost:9010"))
-    args = parser.parse_args()
-    server = ThreadingHTTPServer((args.host, args.port), SentinelRequestHandler)
-    server.card_url = args.card_url
-    server.serve_forever()
+    parser.add_argument("--host", default="0.0.0.0"); parser.add_argument("--port", type=int, default=9010); parser.add_argument("--card-url", default=os.environ.get("A2A_CARD_URL", "http://localhost:9010"))
+    args = parser.parse_args(); server = ThreadingHTTPServer((args.host, args.port), SentinelRequestHandler); server.card_url = args.card_url; server.sessions = {}; server.serve_forever()
 
-
-if __name__ == "__main__":
-    main()
+if __name__ == "__main__": main()

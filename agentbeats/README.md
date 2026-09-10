@@ -7,7 +7,13 @@ The public Amber manifest for AgentBeats registration is:
 The manifest starts `ghcr.io/entigram-ai/entigram-sentinel:latest` and exposes
 an A2A agent card plus a non-streaming `message/send` endpoint on port 9010.
 
-This first image is deliberately side-effect free. It establishes the public
-identity and transport contract required for registration. Do not use it for a
-scored PI-Bench submission until the PI-Bench context bootstrap, policy-aware
-model adapter, and Entigram broker-mediated tool boundary are implemented.
+For PI-Bench, Sentinel advertises the policy-bootstrap extension. The green
+agent supplies policy/task context and declared tool schemas once, and Sentinel
+caches only that supplied context for the session. It calls the configured
+Cloudflare model and returns only tool calls contained in the declared contract,
+with a normalized Entigram decision event for every proposal.
+
+The PI-Bench green agent remains the external action executor. The current
+participant therefore proves proposal-time contract mediation; it does not
+claim external-action prevention until a broker-backed executor boundary is
+also deployed.
