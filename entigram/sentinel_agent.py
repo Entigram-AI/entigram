@@ -1,7 +1,8 @@
-"""Bootstrap-aware A2A participant for PI-Bench.
+"""Bootstrap-aware A2A participant for Entigram policy governance.
 
-Only context supplied by the green benchmark agent is cached. This service
-never reads scenario files, labels, or evaluator criteria.
+Only context supplied during bootstrap is cached and mediated. This service
+uses a session policy mediator without benchmark-specific names, labels,
+scenarios, or evaluator logic.
 """
 from __future__ import annotations
 
@@ -15,7 +16,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 
-from entigram.governance.action_admission import admit_tool_proposals, policy_reference_ids
+from entigram.governance.hydrated_mediator import HydratedPolicyMediator
 
 AGENT_NAME = "Entigram Sentinel"
 AGENT_VERSION = "0.4.1"
@@ -26,12 +27,15 @@ ModelClient = Callable[[list[dict[str, Any]], list[dict[str, Any]]], dict[str, A
 
 def agent_card(card_url: str) -> dict[str, Any]:
     return {
-        "protocolVersion": "0.3.0", "name": AGENT_NAME,
+        "protocolVersion": "0.3.0",
+        "name": AGENT_NAME,
         "description": "An Entigram-governed policy agent that hydrates approved policy context and constrains declared tool calls.",
-        "url": card_url.rstrip("/"), "version": AGENT_VERSION,
+        "url": card_url.rstrip("/"),
+        "version": AGENT_VERSION,
         "capabilities": {"streaming": False, "pushNotifications": False, "extensions": [{"uri": POLICY_BOOTSTRAP_EXTENSION}]},
-        "defaultInputModes": ["application/json"], "defaultOutputModes": ["application/json"],
-        "skills": [{"id": "policy-governance", "name": "Policy governance", "description": "Hydrates policy context and constrains declared tool calls.", "tags": ["policy", "governance", "safety", "pi-bench"]}],
+        "defaultInputModes": ["application/json"],
+        "defaultOutputModes": ["application/json"],
+        "skills": [{"id": "policy-governance", "name": "Policy governance", "description": "Hydrates policy context and constrains declared tool calls.", "tags": ["policy", "governance", "safety", "entigram"]}],
     }
 
 
@@ -49,21 +53,19 @@ def _context_prompt(context: list[dict[str, Any]]) -> str:
     sections = [f"<{item.get('kind', 'context')}>\n{item.get('content', '')}\n</{item.get('kind', 'context')}>" for item in context if isinstance(item, dict)]
     return "\n".join([
         "You are Entigram Sentinel, an operational policy-compliance agent.",
-        "Use only supplied benchmark context, conversation, and declared tools.",
+        "Use only supplied policy context, conversation, and declared tools.",
         "Never invent authority or facts. Escalate when policy or authority is insufficient.",
         "Call only declared tools and never claim a side effect completed without a tool result.",
-        "Benchmark context follows:", *sections,
+        "Policy context follows:", *sections,
     ])
 
 
 def _admission_prompt(context: list[dict[str, Any]], tools: list[dict[str, Any]]) -> str:
     """Create an isolated, policy-bound planning surface for one next action.
 
-    The participant is intentionally not told benchmark labels or evaluator
-    criteria.  It receives only the policy, conversation, and executable tool
-    contract supplied by the green agent. The emitted action list is an ordered
-    plan: Entigram validates every proposed transition before releasing it to
-    the executor.
+    The participant receives only the policy, conversation, and executable tool
+    contract. The emitted action list is an ordered plan: Entigram validates every
+    proposed transition before releasing it to the executor.
     """
     return "\n".join([
         _context_prompt(context),
@@ -165,9 +167,6 @@ def _response_content(response: dict[str, Any]) -> tuple[str, list[dict[str, Any
             arguments = item.get("arguments", {})
             calls.append({"id": item.get("call_id") or item.get("id") or str(uuid.uuid4()), "name": item.get("name", ""), "arguments": json.loads(arguments) if isinstance(arguments, str) else arguments})
     content = "\n".join(text).strip()
-    # PiBench classifies its stop signal before tool calls. A tool-only model
-    # turn must therefore stay content-empty rather than receiving the fallback
-    # stop marker.
     if not content and not calls:
         content = "###STOP###"
     return content, calls
@@ -186,21 +185,55 @@ def handle_request(request: dict[str, Any], sessions: SessionStore | None = None
         return HTTPStatus.BAD_REQUEST, {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32602, "message": "params must be an object."}}
     data, store = _part_data(params), sessions if sessions is not None else {}
     if data.get("bootstrap") is True:
-        context, tools = data.get("benchmark_context", []), data.get("tools", [])
-        if not isinstance(context, list) or not isinstance(tools, list):
+        context = data.get("policy_context") or data.get("benchmark_context") or data.get("context") or []
+        tools = data.get("tools") if isinstance(data.get("tools"), list) else []
+        if not isinstance(context, list):
             return HTTPStatus.BAD_REQUEST, {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32602, "message": "bootstrap context and tools must be lists."}}
+        mediator = HydratedPolicyMediator(context, tools)
         context_id = str(uuid.uuid4())
-        store[context_id] = {"benchmark_context": context, "tools": tools}
+        store[context_id] = {
+            "mediator": mediator,
+            "benchmark_context": context,
+            "policy_context": context,
+            "tools": tools,
+        }
         return _result(request_id, {"bootstrapped": True, "context_id": context_id})
+
     session = store.get(str(data.get("context_id")))
-    if session is None:
-        session = {"benchmark_context": data.get("benchmark_context", []), "tools": data.get("tools", [])}
+    if session is None or "mediator" not in session:
+        context = (session.get("benchmark_context") or session.get("policy_context")) if session else (data.get("policy_context") or data.get("benchmark_context") or data.get("context") or [])
+        tools = (session.get("tools") if session and "tools" in session else data.get("tools", []))
+        mediator = HydratedPolicyMediator(context or [], tools or [])
+        if session is not None:
+            session["mediator"] = mediator
+        else:
+            session = {
+                "mediator": mediator,
+                "benchmark_context": context or [],
+                "policy_context": context or [],
+                "tools": tools or [],
+            }
+    else:
+        mediator = session["mediator"]
+
     messages = data.get("messages", [])
     if not isinstance(messages, list):
         return HTTPStatus.BAD_REQUEST, {"jsonrpc": "2.0", "id": request_id, "error": {"code": -32602, "message": "messages must be a list."}}
-    response = (model_client or model_responses)([{"role": "system", "content": _admission_prompt(session["benchmark_context"], session["tools"])}, *messages], session["tools"])
+
+    # Track tool-result state and provenance from conversation history
+    mediator.update_state(messages)
+
+    context_list = session.get("benchmark_context") or session.get("policy_context") or []
+    tools_list = session.get("tools") or []
+
+    response = (model_client or model_responses)(
+        [{"role": "system", "content": _admission_prompt(context_list, tools_list)}, *messages],
+        tools_list,
+    )
     content, proposed_calls = _response_content(response)
-    calls, events = admit_tool_proposals(proposed_calls, session["tools"], permitted_policy_references=policy_reference_ids(session["benchmark_context"]))
+
+    # Use session mediator for pre-dispatch evaluation and admission
+    calls, events = mediator.admit_proposals(proposed_calls)
     return _result(request_id, {"content": content, "tool_calls": calls, "decision_events": events})
 
 
