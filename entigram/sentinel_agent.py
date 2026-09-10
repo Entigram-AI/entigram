@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import urllib.error
 import urllib.request
@@ -23,6 +24,7 @@ AGENT_VERSION = "0.4.1"
 POLICY_BOOTSTRAP_EXTENSION = "urn:pi-bench:policy-bootstrap:v1"
 SessionStore = dict[str, dict[str, Any]]
 ModelClient = Callable[[list[dict[str, Any]], list[dict[str, Any]]], dict[str, Any]]
+LOGGER = logging.getLogger(__name__)
 
 
 def agent_card(card_url: str) -> dict[str, Any]:
@@ -124,6 +126,21 @@ def _tool_name(tool: dict[str, Any]) -> str:
     """Return a declared native function name without altering its schema."""
     function = tool.get("function", tool)
     return str(function.get("name", "")) if isinstance(function, dict) else ""
+
+
+def _log_lifecycle(context_id: str, mediator: HydratedPolicyMediator, planning_tools: list[dict[str, Any]]) -> None:
+    """Emit non-sensitive execution diagnostics for a hydrated session."""
+    contract = mediator.telemetry()["completion_contract"]
+    LOGGER.info(
+        "sentinel_lifecycle context_id=%s finalization_required=%s finalization_tool=%s "
+        "completion_source=%s finalization_pending=%s planning_tool_count=%d",
+        context_id,
+        contract["finalization_required"],
+        contract["finalization_tool"],
+        contract["source"],
+        contract["finalization_pending"],
+        len(planning_tools),
+    )
 
 
 def _post_responses(url: str, token: str, payload: dict[str, Any], provider: str) -> dict[str, Any]:
@@ -228,6 +245,7 @@ def handle_request(request: dict[str, Any], sessions: SessionStore | None = None
             "policy_context": context,
             "tools": tools,
         }
+        _log_lifecycle(context_id, mediator, tools)
         return _result(
             request_id,
             {
@@ -269,6 +287,7 @@ def handle_request(request: dict[str, Any], sessions: SessionStore | None = None
     planning_tools = tools_list
     if mediator.finalization_pending() and mediator.finalization_tool:
         planning_tools = [tool for tool in tools_list if _tool_name(tool) == mediator.finalization_tool]
+    _log_lifecycle(str(data.get("context_id", "")), mediator, planning_tools)
     prompt = _admission_prompt(context_list, planning_tools, mediator.completion_guidance())
     if model_client is None:
         response = model_responses(
@@ -317,6 +336,8 @@ class SentinelRequestHandler(BaseHTTPRequestHandler):
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the Entigram Sentinel A2A service.")
     parser.add_argument("--host", default="0.0.0.0"); parser.add_argument("--port", type=int, default=9010); parser.add_argument("--card-url", default=os.environ.get("A2A_CARD_URL", "http://localhost:9010"))
-    args = parser.parse_args(); server = ThreadingHTTPServer((args.host, args.port), SentinelRequestHandler); server.card_url = args.card_url; server.sessions = {}; server.serve_forever()
+    args = parser.parse_args()
+    logging.basicConfig(level=os.environ.get("ENTIGRAM_SENTINEL_LOG_LEVEL", "INFO").upper())
+    server = ThreadingHTTPServer((args.host, args.port), SentinelRequestHandler); server.card_url = args.card_url; server.sessions = {}; server.serve_forever()
 
 if __name__ == "__main__": main()

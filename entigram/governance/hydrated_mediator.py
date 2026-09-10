@@ -31,6 +31,11 @@ FINALIZATION_PATTERN = re.compile(
     r".*?\b(?:by\s+)?calling\s+(?:the\s+)?(?P<tool>[a-zA-Z0-9_.-]+)\s+tool\b",
     re.IGNORECASE | re.DOTALL,
 )
+TOOL_FINALIZATION_PATTERN = re.compile(
+    r"\bcanonical\s+(?:final\s+)?(?:decision|outcome)\s+signal\b"
+    r"|\b(?:record|log|finali[sz]e)\s+(?:the\s+)?final\s+(?:decision|outcome)\b",
+    re.IGNORECASE,
+)
 
 
 class PolicyEvidence:
@@ -166,6 +171,7 @@ class HydratedPolicyMediator:
         self.permitted_policy_references: List[str] = []
         self.finalization_tool: Optional[str] = None
         self.finalization_evidence_ids: List[str] = []
+        self.finalization_contract_source: Optional[str] = None
         self.state = SessionState()
 
         self._hydrate()
@@ -195,6 +201,8 @@ class HydratedPolicyMediator:
             "state_transition_count": len(self.state.tool_results),
             "completion_contract": {
                 "finalization_required": self.finalization_tool is not None,
+                "finalization_tool": self.finalization_tool,
+                "source": self.finalization_contract_source,
                 "finalization_pending": self.finalization_pending(),
             },
         }
@@ -225,9 +233,38 @@ class HydratedPolicyMediator:
             if match and match.group("tool") in tool_names:
                 self.finalization_tool = match.group("tool")
                 self.finalization_evidence_ids = [evidence.id]
+                self.finalization_contract_source = "task_context"
                 break
 
-        # 3b. From policy evidence
+        # 3b. If task context does not state a finalizer, accept a terminal
+        # contract stated by a declared tool itself. This requires two
+        # independent, explicit signals: a terminal-decision description and
+        # a required decision enum. It deliberately does not infer behavior
+        # from a tool's name.
+        if self.finalization_tool is None:
+            for tool in self.tools:
+                parameters = tool.get("parameters")
+                if not isinstance(parameters, dict):
+                    continue
+                properties = parameters.get("properties", {})
+                if not isinstance(properties, dict):
+                    continue
+                decision_schema = properties.get("decision", {})
+                decision_values = decision_schema.get("enum", []) if isinstance(decision_schema, dict) else []
+                required = parameters.get("required", [])
+                has_required_decision = (
+                    isinstance(required, list)
+                    and "decision" in required
+                    and isinstance(decision_values, list)
+                    and len(decision_values) >= 2
+                    and all(isinstance(value, str) for value in decision_values)
+                )
+                if has_required_decision and TOOL_FINALIZATION_PATTERN.search(str(tool.get("description", ""))):
+                    self.finalization_tool = tool["name"]
+                    self.finalization_contract_source = "tool_contract"
+                    break
+
+        # 3c. From policy evidence
         for evidence in self.evidence_model:
             if evidence.kind.lower() != "policy":
                 continue
@@ -299,7 +336,7 @@ class HydratedPolicyMediator:
                                 )
                             )
 
-        # 3c. From tool schema specifications / descriptions
+        # 3d. From tool schema specifications / descriptions
         for tool in self.tools:
             name = tool.get("name", "")
             desc = tool.get("description", "")
