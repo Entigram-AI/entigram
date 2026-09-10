@@ -16,6 +16,13 @@
 * harden SQLite ledger concurrency with WAL mode and busy timeouts
 * close warning-producing registry, broker, router, and hydration resources
 
+## [2.13.1](https://github.com/Entigram-AI/entigram/compare/v2.13.0...v2.13.1) (2026-09-10)
+
+
+### Bug Fixes
+
+* preserve Sentinel action plan order ([#81](https://github.com/Entigram-AI/entigram/issues/81)) ([c52b15d](https://github.com/Entigram-AI/entigram/commit/c52b15de9f65974cb3ed2afe874de0944baed607))
+
 ## [2.13.0](https://github.com/Entigram-AI/entigram/compare/v2.12.2...v2.13.0) (2026-09-10)
 
 
