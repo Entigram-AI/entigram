@@ -32,6 +32,10 @@ def agent_card(card_url: str) -> dict[str, Any]:
         "description": "An Entigram-governed policy agent that hydrates approved policy context and constrains declared tool calls.",
         "url": card_url.rstrip("/"),
         "version": AGENT_VERSION,
+        # Some A2A adapters negotiate extensions from the top-level legacy
+        # field while newer cards use capabilities.extensions. Advertise both
+        # forms so bootstrap is interoperable without changing its semantics.
+        "extensions": [POLICY_BOOTSTRAP_EXTENSION],
         "capabilities": {"streaming": False, "pushNotifications": False, "extensions": [{"uri": POLICY_BOOTSTRAP_EXTENSION}]},
         "defaultInputModes": ["application/json"],
         "defaultOutputModes": ["application/json"],
@@ -60,7 +64,11 @@ def _context_prompt(context: list[dict[str, Any]]) -> str:
     ])
 
 
-def _admission_prompt(context: list[dict[str, Any]], tools: list[dict[str, Any]]) -> str:
+def _admission_prompt(
+    context: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    completion_guidance: str = "",
+) -> str:
     """Create an isolated, policy-bound planning surface for one next action.
 
     The participant receives only the policy, conversation, and executable tool
@@ -77,6 +85,7 @@ def _admission_prompt(context: list[dict[str, Any]], tools: list[dict[str, Any]]
         "When a declared tool has a policy, citation, section, or reference argument, cite only the exact identifier(s) present in supplied policy context; do not invent or paraphrase identifiers.",
         "Do not disclose internal investigations, sensitive classifications, policy keywords, or hidden rationale unless the supplied policy explicitly authorizes that disclosure.",
         "When no action is admissible, return a neutral allow, deny, or escalation outcome in plain text.",
+        completion_guidance,
     ])
 
 
@@ -111,6 +120,12 @@ def _responses_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return responses_tools
 
 
+def _tool_name(tool: dict[str, Any]) -> str:
+    """Return a declared native function name without altering its schema."""
+    function = tool.get("function", tool)
+    return str(function.get("name", "")) if isinstance(function, dict) else ""
+
+
 def _post_responses(url: str, token: str, payload: dict[str, Any], provider: str) -> dict[str, Any]:
     request = urllib.request.Request(url, data=json.dumps(payload).encode(), headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
     try:
@@ -122,7 +137,11 @@ def _post_responses(url: str, token: str, payload: dict[str, Any], provider: str
         raise RuntimeError(f"{provider} Responses request failed") from exc
 
 
-def openai_responses(messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
+def openai_responses(
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    tool_choice: dict[str, str] | str | None = None,
+) -> dict[str, Any]:
     token = os.environ.get("OPENAI_API_KEY")
     if not token:
         raise RuntimeError("OPENAI_API_KEY is required for the OpenAI Sentinel provider")
@@ -132,10 +151,16 @@ def openai_responses(messages: list[dict[str, Any]], tools: list[dict[str, Any]]
         "tools": _responses_tools(tools),
         "max_output_tokens": 1200,
     }
+    if tool_choice is not None:
+        payload["tool_choice"] = tool_choice
     return _post_responses("https://api.openai.com/v1/responses", token, payload, "OpenAI")
 
 
-def cloudflare_responses(messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
+def cloudflare_responses(
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    tool_choice: dict[str, str] | str | None = None,
+) -> dict[str, Any]:
     account, token = os.environ.get("CLOUDFLARE_ACCOUNT_ID"), os.environ.get("CLOUDFLARE_AUTH_TOKEN")
     if not account or not token:
         raise RuntimeError("CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_AUTH_TOKEN are required")
@@ -145,16 +170,22 @@ def cloudflare_responses(messages: list[dict[str, Any]], tools: list[dict[str, A
         "tools": _responses_tools(tools),
         "max_output_tokens": 1200,
     }
+    if tool_choice is not None:
+        payload["tool_choice"] = tool_choice
     return _post_responses(f"https://api.cloudflare.com/client/v4/accounts/{account}/ai/v1/responses", token, payload, "Cloudflare")
 
 
-def model_responses(messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
+def model_responses(
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    tool_choice: dict[str, str] | str | None = None,
+) -> dict[str, Any]:
     """Use an explicitly selected provider, or prefer configured OpenAI."""
     provider = os.environ.get("ENTIGRAM_SENTINEL_PROVIDER", "").strip().lower()
     if provider == "openai" or (not provider and os.environ.get("OPENAI_API_KEY")):
-        return openai_responses(messages, tools)
+        return openai_responses(messages, tools, tool_choice)
     if provider == "cloudflare" or not provider:
-        return cloudflare_responses(messages, tools)
+        return cloudflare_responses(messages, tools, tool_choice)
     raise RuntimeError("ENTIGRAM_SENTINEL_PROVIDER must be 'openai' or 'cloudflare'")
 
 
@@ -233,10 +264,20 @@ def handle_request(request: dict[str, Any], sessions: SessionStore | None = None
     context_list = session.get("benchmark_context") or session.get("policy_context") or []
     tools_list = session.get("tools") or []
 
-    response = (model_client or model_responses)(
-        [{"role": "system", "content": _admission_prompt(context_list, tools_list)}, *messages],
-        tools_list,
-    )
+    # Preserve the caller's original schema shape for the model provider. The
+    # mediator normalizes internally, so it is used only to select names here.
+    planning_tools = tools_list
+    if mediator.finalization_pending() and mediator.finalization_tool:
+        planning_tools = [tool for tool in tools_list if _tool_name(tool) == mediator.finalization_tool]
+    prompt = _admission_prompt(context_list, planning_tools, mediator.completion_guidance())
+    if model_client is None:
+        response = model_responses(
+            [{"role": "system", "content": prompt}, *messages],
+            planning_tools,
+            mediator.required_tool_choice(),
+        )
+    else:
+        response = model_client([{"role": "system", "content": prompt}, *messages], planning_tools)
     content, proposed_calls = _response_content(response)
 
     # Use session mediator for pre-dispatch evaluation and admission

@@ -290,6 +290,88 @@ class HydratedPolicyMediatorTests(unittest.TestCase):
         self.assertEqual(data2["decision_events"][0]["outcome"], "ALLOW")
         self.assertEqual(data2["hydration"]["state_transition_count"], 1)
 
+    def test_declared_completion_contract_constrains_follow_up_to_finalizer(self):
+        context = [
+            {"kind": "policy", "content": "POL-1 permits verified refunds."},
+            {
+                "kind": "task",
+                "content": (
+                    "Complete any operational action first. Record your final decision by calling "
+                    "the record_decision tool with grounded rationale."
+                ),
+            },
+        ]
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "process_action",
+                    "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "record_decision",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"decision": {"type": "string"}},
+                        "required": ["decision"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+        ]
+        sessions = {}
+        _, bootstrap = handle_request(make_request({"bootstrap": True, "policy_context": context, "tools": tools}), sessions=sessions)
+        context_id = bootstrap["result"]["parts"][0]["data"]["context_id"]
+
+        def operational_model(_messages, _tools):
+            return {"output": [{"type": "function_call", "call_id": "operate", "name": "process_action", "arguments": "{}"}]}
+
+        _, first = handle_request(
+            make_request({"context_id": context_id, "messages": [{"role": "user", "content": "Handle this case."}]}),
+            sessions=sessions,
+            model_client=operational_model,
+        )
+        self.assertEqual(first["result"]["parts"][0]["data"]["tool_calls"][0]["name"], "process_action")
+
+        observed = {}
+        def finalization_model(messages, active_tools):
+            observed["prompt"] = messages[0]["content"]
+            observed["tool_names"] = [tool["function"]["name"] for tool in active_tools]
+            return {"output": [{"type": "function_call", "call_id": "finalize", "name": "record_decision", "arguments": '{"decision": "ALLOW"}'}]}
+
+        messages = [
+            {"role": "user", "content": "Handle this case."},
+            {"role": "assistant", "tool_calls": [{"id": "operate", "function": {"name": "process_action", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "operate", "content": '{"status": "complete"}'},
+        ]
+        _, second = handle_request(
+            make_request({"context_id": context_id, "messages": messages}),
+            sessions=sessions,
+            model_client=finalization_model,
+        )
+        data = second["result"]["parts"][0]["data"]
+        self.assertEqual(observed["tool_names"], ["record_decision"])
+        self.assertIn("finalization action is now pending", observed["prompt"])
+        self.assertEqual(data["tool_calls"][0]["name"], "record_decision")
+        # A proposed finalizer remains pending until its executor result is
+        # observed on the next turn.
+        self.assertTrue(data["hydration"]["completion_contract"]["finalization_pending"])
+
+        finalized_messages = messages + [
+            {"role": "assistant", "tool_calls": [{"id": "finalize", "function": {"name": "record_decision", "arguments": '{"decision": "ALLOW"}'}}]},
+            {"role": "tool", "tool_call_id": "finalize", "content": '{"status": "recorded"}'},
+        ]
+        _, completed = handle_request(
+            make_request({"context_id": context_id, "messages": finalized_messages}),
+            sessions=sessions,
+            model_client=lambda _messages, _tools: {"output": []},
+        )
+        completed_data = completed["result"]["parts"][0]["data"]
+        self.assertFalse(completed_data["hydration"]["completion_contract"]["finalization_pending"])
+
 
 if __name__ == "__main__":
     unittest.main()
