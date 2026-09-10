@@ -372,6 +372,57 @@ class HydratedPolicyMediatorTests(unittest.TestCase):
         completed_data = completed["result"]["parts"][0]["data"]
         self.assertFalse(completed_data["hydration"]["completion_contract"]["finalization_pending"])
 
+    def test_declared_tool_contract_fallback_completes_pibench_style_turn(self):
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "process_refund",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "record_decision",
+                    "description": "Record the final decision. This is the canonical decision signal for the scenario.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"decision": {"type": "string", "enum": ["ALLOW", "DENY", "ESCALATE"]}},
+                        "required": ["decision"],
+                    },
+                },
+            },
+        ]
+        sessions = {}
+        _, bootstrap = handle_request(
+            make_request({"bootstrap": True, "benchmark_context": [{"kind": "policy", "content": "POL-1"}], "tools": tools}),
+            sessions=sessions,
+        )
+        context_id = bootstrap["result"]["parts"][0]["data"]["context_id"]
+        contract = bootstrap["result"]["parts"][0]["data"]["hydration"]["completion_contract"]
+        self.assertEqual(contract["finalization_tool"], "record_decision")
+        self.assertEqual(contract["source"], "tool_contract")
+
+        calls_seen = {}
+        def record_model(_messages, active_tools):
+            calls_seen["tools"] = [tool["function"]["name"] for tool in active_tools]
+            return {"output": [{"type": "function_call", "call_id": "record-1", "name": "record_decision", "arguments": '{"decision":"DENY"}'}]}
+
+        # This is the A2A/OpenAI form PiBench sends after an executor result.
+        messages = [
+            {"role": "user", "content": "Handle the return."},
+            {"role": "assistant", "tool_calls": [{"id": "refund-1", "function": {"name": "process_refund", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "refund-1", "content": '{"status":"processed"}'},
+        ]
+        _, response = handle_request(
+            make_request({"context_id": context_id, "messages": messages}), sessions=sessions, model_client=record_model
+        )
+        data = response["result"]["parts"][0]["data"]
+        self.assertEqual(calls_seen["tools"], ["record_decision"])
+        self.assertEqual(data["tool_calls"][0]["name"], "record_decision")
+        self.assertTrue(data["hydration"]["completion_contract"]["finalization_pending"])
+
 
 if __name__ == "__main__":
     unittest.main()
