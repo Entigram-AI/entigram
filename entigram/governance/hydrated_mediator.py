@@ -17,6 +17,7 @@ from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from .action_admission import (
     decision_event,
+    is_permitted_policy_reference,
     normalize_tool_contract,
     policy_reference_ids,
 )
@@ -549,7 +550,7 @@ class HydratedPolicyMediator:
 
                 if POLICY_REFERENCE_FIELD.search(arg_key) and self.permitted_policy_references:
                     cited = val if isinstance(val, list) else [val]
-                    if not all(isinstance(ref, str) and ref in self.permitted_policy_references for ref in cited):
+                    if not all(is_permitted_policy_reference(ref, self.permitted_policy_references) for ref in cited):
                         errors.append(
                             {
                                 "code": "unverified_policy_reference",

@@ -41,6 +41,7 @@ _SHA256 = re.compile(r"^[a-fA-F0-9]{64}$")
 MAX_EVIDENCE_CLOCK_SKEW_SECONDS = 30
 POLICY_REFERENCE = re.compile(r"\b[A-Z][A-Z0-9]+(?:-[A-Z0-9]+)+\b")
 POLICY_REFERENCE_FIELD = re.compile(r"(?:policy|citation|section|reference)", re.IGNORECASE)
+MAX_POLICY_CITATION_LENGTH = 4096
 
 
 class ActionContractError(ValueError):
@@ -110,7 +111,12 @@ def normalize_tool_contract(tools: Iterable[Dict[str, Any]]) -> List[Dict[str, A
 
 
 def policy_reference_ids(context: Iterable[Dict[str, Any]]) -> List[str]:
-    """Extract citation identifiers from supplied policy context, never model output."""
+    """Extract citation identifiers from supplied policy context, never model output.
+
+    A policy may use a document identifier (``ORG-SOP-001``), human-readable
+    section citations (``Section 7``), or both. Keep those formats explicit
+    and do not turn arbitrary prose into admissible references.
+    """
     identifiers = set()
     for item in context:
         if not isinstance(item, dict) or str(item.get("kind", "")).lower() != "policy":
@@ -118,7 +124,121 @@ def policy_reference_ids(context: Iterable[Dict[str, Any]]) -> List[str]:
         content = item.get("content", "")
         if isinstance(content, str):
             identifiers.update(POLICY_REFERENCE.findall(content))
+            identifiers.update(
+                f"Section {number}"
+                for number in _policy_section_numbers(content)
+            )
+            identifiers.update(
+                f"Section {number}"
+                for number in _policy_heading_numbers(content)
+            )
     return sorted(identifiers)
+
+
+def _skip_whitespace(value: str, index: int) -> int:
+    while index < len(value) and value[index].isspace():
+        index += 1
+    return index
+
+
+def _parse_section_number(value: str, index: int) -> Tuple[Optional[str], int]:
+    """Parse a bounded dotted section number without backtracking regexes."""
+    index = _skip_whitespace(value, index)
+    start = index
+    if index >= len(value) or not value[index].isdigit():
+        return None, index
+    while index < len(value) and value[index].isdigit():
+        index += 1
+    while index + 1 < len(value) and value[index] == "." and value[index + 1].isdigit():
+        index += 1
+        while index < len(value) and value[index].isdigit():
+            index += 1
+    if index < len(value) and value[index].isalpha():
+        index += 1
+    return value[start:index], index
+
+
+def _policy_section_numbers(value: str) -> List[str]:
+    """Return section numbers from conventional citations using linear parsing."""
+    value = value[:MAX_POLICY_CITATION_LENGTH]
+    lower_value = value.casefold()
+    numbers: List[str] = []
+    index = 0
+    while index < len(value):
+        section_index = lower_value.find("section", index)
+        symbol_index = value.find("§", index)
+        candidates = [candidate for candidate in (section_index, symbol_index) if candidate >= 0]
+        if not candidates:
+            break
+        start = min(candidates)
+        if start and value[start - 1].isalnum():
+            index = start + 1
+            continue
+        cursor = start + (1 if value[start] == "§" else len("section"))
+        if value[start] != "§" and cursor < len(value) and lower_value[cursor] == "s":
+            cursor += 1
+        if cursor < len(value) and value[cursor].isalpha():
+            index = cursor + 1
+            continue
+        number, cursor = _parse_section_number(value, cursor)
+        if number is None:
+            index = start + 1
+            continue
+        numbers.append(number)
+        while cursor < len(value):
+            separator_start = cursor
+            cursor = _skip_whitespace(value, cursor)
+            if value.startswith(",", cursor) or value.startswith("&", cursor):
+                cursor += 1
+            elif lower_value.startswith("and", cursor) and (cursor + 3 == len(value) or not value[cursor + 3].isalnum()):
+                cursor += 3
+            else:
+                cursor = separator_start
+                break
+            number, cursor = _parse_section_number(value, cursor)
+            if number is None:
+                cursor = separator_start
+                break
+            numbers.append(number)
+        index = max(cursor, start + 1)
+    return numbers
+
+
+def _policy_heading_numbers(value: str) -> List[str]:
+    """Extract Markdown or plain-text numbered policy headings linearly."""
+    numbers: List[str] = []
+    for line in value[:MAX_POLICY_CITATION_LENGTH].splitlines():
+        cursor = _skip_whitespace(line, 0)
+        while cursor < len(line) and line[cursor] == "#":
+            cursor += 1
+        cursor = _skip_whitespace(line, cursor)
+        number, cursor = _parse_section_number(line, cursor)
+        if number is not None and cursor < len(line) and line[cursor] == "." and cursor + 1 < len(line) and line[cursor + 1].isspace():
+            numbers.append(number)
+    return numbers
+
+
+def is_permitted_policy_reference(reference: Any, permitted_policy_references: Iterable[str]) -> bool:
+    """Verify a citation against supplied policy identifiers.
+
+    In addition to an exact identifier, permit a readable section citation
+    carrying a section number extracted from the supplied policy. This covers
+    forms such as ``Section 7: Account Review`` and ``BM-SOP-001 §7`` without
+    accepting a section number that the policy never supplied.
+    """
+    permitted = set(permitted_policy_references)
+    if not isinstance(reference, str):
+        return False
+    if reference in permitted:
+        return True
+    section_numbers = _policy_section_numbers(reference)
+    if not section_numbers:
+        reference = reference[:MAX_POLICY_CITATION_LENGTH]
+        cursor = _skip_whitespace(reference, 0)
+        heading, cursor = _parse_section_number(reference, cursor)
+        if heading is not None and cursor < len(reference) and reference[cursor] in ".)":
+            section_numbers = [heading]
+    return bool(section_numbers) and all(f"Section {number}" in permitted for number in section_numbers)
 
 
 def _tool_proposal_errors(proposal: Dict[str, Any], contract: List[Dict[str, Any]], permitted_policy_references: Iterable[str] = ()) -> List[Dict[str, str]]:
@@ -151,7 +271,7 @@ def _tool_proposal_errors(proposal: Dict[str, Any], contract: List[Dict[str, Any
             errors.append({"code": "argument_type_mismatch"})
         if POLICY_REFERENCE_FIELD.search(name) and permitted_policy_references:
             cited = value if isinstance(value, list) else [value]
-            if not all(isinstance(reference, str) and reference in permitted_policy_references for reference in cited):
+            if not all(is_permitted_policy_reference(reference, permitted_policy_references) for reference in cited):
                 errors.append({"code": "unverified_policy_reference"})
     return errors
 
