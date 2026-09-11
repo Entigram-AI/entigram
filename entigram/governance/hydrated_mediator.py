@@ -39,10 +39,6 @@ TOOL_FINALIZATION_PATTERN = re.compile(
     r"|\b(?:record|log|finali[sz]e)\s+(?:the\s+)?final\s+(?:decision|outcome)\b",
     re.IGNORECASE,
 )
-POLICY_HIERARCHY_PATTERN = re.compile(
-    r"[^.\n]*(?:take precedence|takes precedence|override|overrides|does not override|exception|conflict(?:s|ing)?)[^.\n]*[.]?",
-    re.IGNORECASE,
-)
 POLICY_SECTION_REFERENCE_PATTERN = re.compile(r"\bsection\s+(\d+(?:\.\d+)*)\b", re.IGNORECASE)
 POLICY_TOKEN_PATTERN = re.compile(r"[a-z0-9][a-z0-9_-]{2,}", re.IGNORECASE)
 POLICY_DIRECTIVE_PATTERN = re.compile(
@@ -76,6 +72,15 @@ POLICY_RETRIEVAL_STOP_WORDS = frozenset({
     "or", "our", "please", "return", "returns", "should", "that", "the", "their",
     "this", "was", "when", "with", "would", "your",
 })
+POLICY_HIERARCHY_PHRASES = (
+    "take precedence",
+    "takes precedence",
+    "does not override",
+    "overrides",
+    "override",
+    "exception",
+    "conflict",
+)
 
 
 def parse_policy_heading(line: str) -> Optional[Tuple[str, str]]:
@@ -104,6 +109,23 @@ def parse_policy_heading(line: str) -> Optional[Tuple[str, str]]:
     if not all(part.isdigit() for part in number_parts):
         return None
     return number, title.strip()
+
+
+def hierarchy_statements(line: str) -> List[str]:
+    """Extract explicit precedence sentences without backtracking regexes."""
+    statements: List[str] = []
+    start = 0
+    for index, character in enumerate(line):
+        if character not in ".!?":
+            continue
+        sentence = line[start:index + 1].strip()
+        start = index + 1
+        if sentence and any(phrase in sentence.casefold() for phrase in POLICY_HIERARCHY_PHRASES):
+            statements.append(sentence)
+    trailing = line[start:].strip()
+    if trailing and any(phrase in trailing.casefold() for phrase in POLICY_HIERARCHY_PHRASES):
+        statements.append(trailing)
+    return statements
 
 
 class PolicyEvidence:
@@ -305,7 +327,7 @@ class HydratedPolicyMediator:
                     number, title = parsed_heading
                     heading = f"Section {number}: {title}"
                     continue
-                for statement in POLICY_HIERARCHY_PATTERN.findall(line):
+                for statement in hierarchy_statements(line):
                     normalized = " ".join(statement.split())
                     if normalized:
                         excerpts.append(f"{heading} — {normalized}")
