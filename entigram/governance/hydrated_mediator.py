@@ -43,7 +43,6 @@ POLICY_HIERARCHY_PATTERN = re.compile(
     r"[^.\n]*(?:take precedence|takes precedence|override|overrides|does not override|exception|conflict(?:s|ing)?)[^.\n]*[.]?",
     re.IGNORECASE,
 )
-POLICY_HEADING_PATTERN = re.compile(r"^\s*#{1,6}\s*(?P<number>\d+(?:\.\d+)*)\.\s*(?P<title>.+?)\s*$")
 POLICY_SECTION_REFERENCE_PATTERN = re.compile(r"\bsection\s+(\d+(?:\.\d+)*)\b", re.IGNORECASE)
 POLICY_TOKEN_PATTERN = re.compile(r"[a-z0-9][a-z0-9_-]{2,}", re.IGNORECASE)
 POLICY_DIRECTIVE_PATTERN = re.compile(
@@ -77,6 +76,34 @@ POLICY_RETRIEVAL_STOP_WORDS = frozenset({
     "or", "our", "please", "return", "returns", "should", "that", "the", "their",
     "this", "was", "when", "with", "would", "your",
 })
+
+
+def parse_policy_heading(line: str) -> Optional[Tuple[str, str]]:
+    """Parse a numbered Markdown policy heading in linear time.
+
+    Policy evidence may originate outside the process, so this intentionally
+    avoids a nested regular expression over arbitrary whitespace. A heading is
+    recognized only in the conventional ``## 1.2. Title`` form.
+    """
+    candidate = line.lstrip()
+    marker_count = 0
+    while marker_count < len(candidate) and candidate[marker_count] == "#":
+        marker_count += 1
+    if not 1 <= marker_count <= 6:
+        return None
+    remainder = candidate[marker_count:].lstrip()
+    label_end = 0
+    while label_end < len(remainder) and (remainder[label_end].isdigit() or remainder[label_end] == "."):
+        label_end += 1
+    label = remainder[:label_end]
+    title = remainder[label_end:].strip()
+    if not label.endswith(".") or not title:
+        return None
+    number = label[:-1]
+    number_parts = number.split(".")
+    if not all(part.isdigit() for part in number_parts):
+        return None
+    return number, title.strip()
 
 
 class PolicyEvidence:
@@ -273,9 +300,10 @@ class HydratedPolicyMediator:
                 continue
             heading = "policy"
             for line in evidence.content.splitlines():
-                match = POLICY_HEADING_PATTERN.match(line)
-                if match:
-                    heading = f"Section {match.group('number')}: {match.group('title')}"
+                parsed_heading = parse_policy_heading(line)
+                if parsed_heading is not None:
+                    number, title = parsed_heading
+                    heading = f"Section {number}: {title}"
                     continue
                 for statement in POLICY_HIERARCHY_PATTERN.findall(line):
                     normalized = " ".join(statement.split())
@@ -309,11 +337,12 @@ class HydratedPolicyMediator:
             heading = "Policy"
             body: List[str] = []
             for line in evidence.content.splitlines():
-                match = POLICY_HEADING_PATTERN.match(line)
-                if match:
+                parsed_heading = parse_policy_heading(line)
+                if parsed_heading is not None:
                     if body:
                         sections.append((heading, "\n".join(body).strip()))
-                    heading = f"Section {match.group('number')}: {match.group('title')}"
+                    number, title = parsed_heading
+                    heading = f"Section {number}: {title}"
                     body = []
                 else:
                     body.append(line)
