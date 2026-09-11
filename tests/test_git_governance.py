@@ -36,7 +36,13 @@ class GitGovernanceTests(unittest.TestCase):
         self.base_branch = self.git("branch", "--show-current").stdout.strip()
 
     def tearDown(self):
-        shutil.rmtree(self.root)
+        def ignore_concurrent_removal(operation, path, exc_info):
+            """Tolerate Git removing a packed object during Python 3.10 cleanup."""
+            if isinstance(exc_info[1], FileNotFoundError):
+                return
+            raise exc_info[1]
+
+        shutil.rmtree(self.root, onerror=ignore_concurrent_removal)
 
     def git(self, *args):
         return subprocess.run(["git", "-C", str(self.root), *args], check=True, capture_output=True, text=True)

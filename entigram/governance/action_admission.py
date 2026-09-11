@@ -9,6 +9,7 @@ the contract's ``assurance`` value and enforced by a future action runner.
 from __future__ import annotations
 
 import base64
+import copy
 import hashlib
 import json
 import os
@@ -19,6 +20,11 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 import yaml
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import SchemaError
+from jsonschema.validators import validator_for
+from referencing import Registry
+from referencing.exceptions import Unresolvable
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
@@ -40,8 +46,24 @@ _VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:+-]*$")
 _SHA256 = re.compile(r"^[a-fA-F0-9]{64}$")
 MAX_EVIDENCE_CLOCK_SKEW_SECONDS = 30
 POLICY_REFERENCE = re.compile(r"\b[A-Z][A-Z0-9]+(?:-[A-Z0-9]+)+\b")
-POLICY_REFERENCE_FIELD = re.compile(r"(?:policy|citation|section|reference)", re.IGNORECASE)
 MAX_POLICY_CITATION_LENGTH = 4096
+MAX_POLICY_CONTEXT_LENGTH = 1_000_000
+
+
+def is_policy_reference_field(name: str, schema: Any = None) -> bool:
+    """Identify citation semantics without classifying arbitrary references.
+
+    Producers can explicitly mark any property with the boolean annotation
+    ``x-entigram-policy-reference``. Otherwise only unambiguous citation names
+    are recognized; a customer reference or document section is not authority.
+    """
+    if isinstance(schema, dict) and isinstance(schema.get("x-entigram-policy-reference"), bool):
+        return schema["x-entigram-policy-reference"]
+    separated = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", name)
+    tokens = set(re.findall(r"[a-z]+", separated.casefold()))
+    return bool(tokens & {"citation", "citations"}) or (
+        "policy" in tokens and bool(tokens & {"reference", "references", "section", "sections", "clause", "clauses", "id", "ids"})
+    )
 
 
 class ActionContractError(ValueError):
@@ -85,6 +107,29 @@ def decision_event(decision: Dict[str, Any], *, phase: str = "preflight") -> Dic
     }
 
 
+def normalize_tool_parameters(parameters: Any) -> Any:
+    """Use one parameter contract for portable adapters and admission.
+
+    Translate unambiguous flattened field maps, preserving native JSON Schema
+    (including boolean schemas and local references) without reinterpretation.
+    """
+    if not isinstance(parameters, dict) or not parameters:
+        return copy.deepcopy(parameters)
+    schema_keywords = set(Draft202012Validator.VALIDATORS) | {"$schema", "$id", "$defs", "definitions", "title", "description"}
+    if schema_keywords.intersection(parameters) or not all(isinstance(value, dict) for value in parameters.values()):
+        return copy.deepcopy(parameters)
+    properties, required = {}, []
+    for name, field in parameters.items():
+        prop = copy.deepcopy(field)
+        if prop.pop("required", False) is True:
+            required.append(name)
+        properties[name] = prop
+    schema = {"type": "object", "properties": properties}
+    if required:
+        schema["required"] = required
+    return schema
+
+
 def normalize_tool_contract(tools: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Return a portable declared-function contract from provider tool shapes.
 
@@ -104,7 +149,7 @@ def normalize_tool_contract(tools: Iterable[Dict[str, Any]]) -> List[Dict[str, A
             {
                 "name": function["name"],
                 "description": function.get("description", ""),
-                "parameters": function.get("parameters", function.get("input_schema", {})),
+                "parameters": normalize_tool_parameters(function.get("parameters", function.get("input_schema", {}))),
             }
         )
     return contract
@@ -114,8 +159,11 @@ def policy_reference_ids(context: Iterable[Dict[str, Any]]) -> List[str]:
     """Extract citation identifiers from supplied policy context, never model output.
 
     A policy may use a document identifier (``ORG-SOP-001``), human-readable
-    section citations (``Section 7``), or both. Keep those formats explicit
-    and do not turn arbitrary prose into admissible references.
+    section citations (``Section 7``), or structured reference mappings. Keep
+    those formats explicit and do not turn arbitrary prose into admissible
+    references. Structured mappings are authoritative only when supplied in
+    the policy-context item itself (or its metadata); a format pattern is
+    deliberately not sufficient to synthesize an identifier.
     """
     identifiers = set()
     for item in context:
@@ -123,16 +171,57 @@ def policy_reference_ids(context: Iterable[Dict[str, Any]]) -> List[str]:
             continue
         content = item.get("content", "")
         if isinstance(content, str):
-            identifiers.update(POLICY_REFERENCE.findall(content))
+            policy_content = content[:MAX_POLICY_CONTEXT_LENGTH]
+            identifiers.update(POLICY_REFERENCE.findall(policy_content))
             identifiers.update(
                 f"Section {number}"
-                for number in _policy_section_numbers(content)
+                for number in _policy_section_numbers(policy_content, max_length=MAX_POLICY_CONTEXT_LENGTH)
             )
             identifiers.update(
                 f"Section {number}"
-                for number in _policy_heading_numbers(content)
+                for number in _policy_heading_numbers(policy_content, max_length=MAX_POLICY_CONTEXT_LENGTH)
             )
+        identifiers.update(structured_policy_reference_ids([item]))
     return sorted(identifiers)
+
+
+def structured_policy_reference_ids(context: Iterable[Dict[str, Any]]) -> List[str]:
+    """Return exact reference values attached to supplied policy items.
+
+    ``policy_references`` is the portable contract name. ``policy_clauses``
+    and ``references`` support equivalent producer vocabularies without tying
+    Entigram to any particular benchmark. A mapping may expose its exact value
+    via ``id``, ``reference_id``, ``clause_id``, or ``value``. Labels, section
+    names, and regex/template fields are intentionally not treated as values.
+    """
+    values: set[str] = set()
+    for item in context:
+        if not isinstance(item, dict) or str(item.get("kind", "")).lower() != "policy":
+            continue
+        containers = [item]
+        metadata = item.get("metadata")
+        if isinstance(metadata, dict):
+            containers.append(metadata)
+        for container in containers:
+            for field in ("policy_references", "policy_clauses", "references"):
+                entries = container.get(field)
+                if not isinstance(entries, list):
+                    continue
+                for entry in entries:
+                    if isinstance(entry, str):
+                        candidate = entry
+                    elif isinstance(entry, dict):
+                        candidate = next(
+                            (entry[key] for key in ("id", "reference_id", "clause_id", "value") if isinstance(entry.get(key), str)),
+                            None,
+                        )
+                    else:
+                        candidate = None
+                    if isinstance(candidate, str):
+                        candidate = candidate.strip()
+                        if candidate and len(candidate) <= MAX_POLICY_CITATION_LENGTH:
+                            values.add(candidate)
+    return sorted(values)
 
 
 def _skip_whitespace(value: str, index: int) -> int:
@@ -158,9 +247,9 @@ def _parse_section_number(value: str, index: int) -> Tuple[Optional[str], int]:
     return value[start:index], index
 
 
-def _policy_section_numbers(value: str) -> List[str]:
+def _policy_section_numbers(value: str, *, max_length: int = MAX_POLICY_CITATION_LENGTH) -> List[str]:
     """Return section numbers from conventional citations using linear parsing."""
-    value = value[:MAX_POLICY_CITATION_LENGTH]
+    value = value[:max_length]
     lower_value = value.casefold()
     numbers: List[str] = []
     index = 0
@@ -204,10 +293,10 @@ def _policy_section_numbers(value: str) -> List[str]:
     return numbers
 
 
-def _policy_heading_numbers(value: str) -> List[str]:
+def _policy_heading_numbers(value: str, *, max_length: int = MAX_POLICY_CITATION_LENGTH) -> List[str]:
     """Extract Markdown or plain-text numbered policy headings linearly."""
     numbers: List[str] = []
-    for line in value[:MAX_POLICY_CITATION_LENGTH].splitlines():
+    for line in value[:max_length].splitlines():
         cursor = _skip_whitespace(line, 0)
         while cursor < len(line) and line[cursor] == "#":
             cursor += 1
@@ -238,10 +327,52 @@ def is_permitted_policy_reference(reference: Any, permitted_policy_references: I
         heading, cursor = _parse_section_number(reference, cursor)
         if heading is not None and cursor < len(reference) and reference[cursor] in ".)":
             section_numbers = [heading]
+        elif heading is not None and cursor == len(reference):
+            # A citation-only field commonly uses a bare section number. It is
+            # grounded only when that number is a section extracted from the
+            # supplied policy, never merely because it is numeric.
+            section_numbers = [heading]
     return bool(section_numbers) and all(f"Section {number}" in permitted for number in section_numbers)
 
 
-def _tool_proposal_errors(proposal: Dict[str, Any], contract: List[Dict[str, Any]], permitted_policy_references: Iterable[str] = ()) -> List[Dict[str, str]]:
+def tool_argument_errors(arguments: Dict[str, Any], schema: Any) -> List[Dict[str, Any]]:
+    """Validate the complete declared JSON Schema without fetching references.
+
+    Unknown dialects, malformed schemas, and unresolved references fail closed.
+    Error events contain paths and constraint names, not potentially sensitive
+    argument values. Format remains an annotation unless the producer supplies
+    an enforceable pattern or other assertion.
+    """
+    if schema is None:
+        return []
+    if not isinstance(schema, (dict, bool)):
+        return [{"code": "invalid_tool_schema"}]
+    validator_class = validator_for(schema, default=None) if isinstance(schema, dict) and "$schema" in schema else Draft202012Validator
+    if validator_class is None:
+        return [{"code": "unsupported_schema_dialect"}]
+    codes = {
+        "required": "required_argument_missing", "additionalProperties": "undeclared_argument",
+        "type": "argument_type_mismatch", "enum": "argument_enum_mismatch", "const": "argument_const_mismatch",
+    }
+    try:
+        validator_class.check_schema(schema)
+        validator = validator_class(schema, registry=Registry())
+        errors = []
+        for error in validator.iter_errors(arguments):
+            errors.append({"code": codes.get(error.validator, "argument_schema_mismatch"),
+                           "path": list(error.absolute_path), "constraint": error.validator})
+            if len(errors) >= 32:
+                break
+        return errors
+    except SchemaError:
+        return [{"code": "invalid_tool_schema"}]
+    except Unresolvable:
+        return [{"code": "unresolved_schema_reference"}]
+    except (RecursionError, TypeError, ValueError):
+        return [{"code": "invalid_tool_schema"}]
+
+
+def _tool_proposal_errors(proposal: Dict[str, Any], contract: List[Dict[str, Any]], permitted_policy_references: Iterable[str] = ()) -> List[Dict[str, Any]]:
     declared = {entry["name"]: entry for entry in contract}
     tool = declared.get(proposal.get("name"))
     if tool is None:
@@ -249,27 +380,14 @@ def _tool_proposal_errors(proposal: Dict[str, Any], contract: List[Dict[str, Any
     arguments, schema = proposal.get("arguments"), tool.get("parameters")
     if not isinstance(arguments, dict):
         return [{"code": "invalid_arguments"}]
+    errors = tool_argument_errors(arguments, schema)
     if not isinstance(schema, dict):
-        return []
-    required = schema.get("required", [])
+        return errors
     properties = schema.get("properties", {})
-    errors = [{"code": "required_argument_missing"} for name in required if name not in arguments]
-    if schema.get("additionalProperties") is False:
-        errors.extend({"code": "undeclared_argument"} for name in arguments if name not in properties)
+    if not isinstance(properties, dict):
+        return errors
     for name, value in arguments.items():
-        expected = properties.get(name, {}).get("type") if isinstance(properties.get(name), dict) else None
-        valid = (
-            expected is None
-            or (expected == "string" and isinstance(value, str))
-            or (expected == "boolean" and isinstance(value, bool))
-            or (expected == "number" and isinstance(value, (int, float)) and not isinstance(value, bool))
-            or (expected == "integer" and isinstance(value, int) and not isinstance(value, bool))
-            or (expected == "object" and isinstance(value, dict))
-            or (expected == "array" and isinstance(value, list))
-        )
-        if not valid:
-            errors.append({"code": "argument_type_mismatch"})
-        if POLICY_REFERENCE_FIELD.search(name) and permitted_policy_references:
+        if is_policy_reference_field(name, properties.get(name)) and permitted_policy_references:
             cited = value if isinstance(value, list) else [value]
             if not all(is_permitted_policy_reference(reference, permitted_policy_references) for reference in cited):
                 errors.append({"code": "unverified_policy_reference"})

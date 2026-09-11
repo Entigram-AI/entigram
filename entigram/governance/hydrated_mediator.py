@@ -18,11 +18,13 @@ from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 from .action_admission import (
     decision_event,
     is_permitted_policy_reference,
+    is_policy_reference_field,
     normalize_tool_contract,
     policy_reference_ids,
+    structured_policy_reference_ids,
+    tool_argument_errors,
 )
 
-POLICY_REFERENCE_FIELD = re.compile(r"(?:policy|citation|section|reference)", re.IGNORECASE)
 PREREQUISITE_PATTERN = re.compile(
     r"(?:prerequisite|requires|must execute|after|following|depends on)\s*:?\s*([a-zA-Z0-9_.-]+)",
     re.IGNORECASE,
@@ -37,6 +39,93 @@ TOOL_FINALIZATION_PATTERN = re.compile(
     r"|\b(?:record|log|finali[sz]e)\s+(?:the\s+)?final\s+(?:decision|outcome)\b",
     re.IGNORECASE,
 )
+POLICY_SECTION_REFERENCE_PATTERN = re.compile(r"\bsection\s+(\d+(?:\.\d+)*)\b", re.IGNORECASE)
+POLICY_TOKEN_PATTERN = re.compile(r"[a-z0-9][a-z0-9_-]{2,}", re.IGNORECASE)
+POLICY_DIRECTIVE_PATTERN = re.compile(
+    r"\b(?:must|shall|should|do\s+not|don't|cannot|can't|not\s+process|not\s+disclose|"
+    r"required|only\s+if|unless|escalat\w*|non-returnable|not\s+eligible|prohibit\w*)\b",
+    re.IGNORECASE,
+)
+POLICY_AMBIGUITY_PATTERN = re.compile(
+    r"\b(?:conflict(?:s|ing)?|contradict(?:s|ory)?|ambiguous|uncertain|when\s+in\s+doubt|not\s+clearly\s+covered)\b",
+    re.IGNORECASE,
+)
+POLICY_ESCALATION_PATTERN = re.compile(r"\bescalat\w*\b", re.IGNORECASE)
+INSPECTION_TOOL_PATTERN = re.compile(
+    r"\b(?:look\s*up|lookup|check|verify|search|retrieve|read|get)\b",
+    re.IGNORECASE,
+)
+CONSEQUENTIAL_TOOL_PATTERN = re.compile(
+    r"\b(?:process|apply|issue|deny|approve|escalate|hold|flag|create|update|delete|record|finali[sz]e)\b",
+    re.IGNORECASE,
+)
+EFFECT_IDENTITY_FIELD_PATTERN = re.compile(r"(?:^|[_-])id$", re.IGNORECASE)
+EFFECT_OUTCOME_FIELD_PATTERN = re.compile(
+    r"^(?:decision|outcome|resolution|disposition|status)$", re.IGNORECASE
+)
+
+# These terms describe the policy-writing frame rather than the decision at
+# hand.  They would otherwise make every section appear equally relevant.
+POLICY_RETRIEVAL_STOP_WORDS = frozenset({
+    "about", "also", "and", "are", "been", "but", "can", "customer", "for",
+    "from", "has", "have", "into", "item", "items", "may", "not", "only",
+    "or", "our", "please", "return", "returns", "should", "that", "the", "their",
+    "this", "was", "when", "with", "would", "your",
+})
+POLICY_HIERARCHY_PHRASES = (
+    "take precedence",
+    "takes precedence",
+    "does not override",
+    "overrides",
+    "override",
+    "exception",
+    "conflict",
+)
+
+
+def parse_policy_heading(line: str) -> Optional[Tuple[str, str]]:
+    """Parse a numbered Markdown policy heading in linear time.
+
+    Policy evidence may originate outside the process, so this intentionally
+    avoids a nested regular expression over arbitrary whitespace. A heading is
+    recognized only in the conventional ``## 1.2. Title`` form.
+    """
+    candidate = line.lstrip()
+    marker_count = 0
+    while marker_count < len(candidate) and candidate[marker_count] == "#":
+        marker_count += 1
+    if not 1 <= marker_count <= 6:
+        return None
+    remainder = candidate[marker_count:].lstrip()
+    label_end = 0
+    while label_end < len(remainder) and (remainder[label_end].isdigit() or remainder[label_end] == "."):
+        label_end += 1
+    label = remainder[:label_end]
+    title = remainder[label_end:].strip()
+    if not label.endswith(".") or not title:
+        return None
+    number = label[:-1]
+    number_parts = number.split(".")
+    if not all(part.isdigit() for part in number_parts):
+        return None
+    return number, title.strip()
+
+
+def hierarchy_statements(line: str) -> List[str]:
+    """Extract explicit precedence sentences without backtracking regexes."""
+    statements: List[str] = []
+    start = 0
+    for index, character in enumerate(line):
+        if character not in ".!?":
+            continue
+        sentence = line[start:index + 1].strip()
+        start = index + 1
+        if sentence and any(phrase in sentence.casefold() for phrase in POLICY_HIERARCHY_PHRASES):
+            statements.append(sentence)
+    trailing = line[start:].strip()
+    if trailing and any(phrase in trailing.casefold() for phrase in POLICY_HIERARCHY_PHRASES):
+        statements.append(trailing)
+    return statements
 
 
 class PolicyEvidence:
@@ -170,6 +259,7 @@ class HydratedPolicyMediator:
         self.evidence_model: List[PolicyEvidence] = []
         self.explicit_rules: List[ExplicitRule] = []
         self.permitted_policy_references: List[str] = []
+        self.explicit_policy_references: List[str] = []
         self.finalization_tool: Optional[str] = None
         self.finalization_evidence_ids: List[str] = []
         self.finalization_contract_source: Optional[str] = None
@@ -197,6 +287,7 @@ class HydratedPolicyMediator:
             "policy_evidence_count": len(self.evidence_model),
             "explicit_rule_count": len(self.explicit_rules),
             "permitted_policy_reference_count": len(self.permitted_policy_references),
+            "structured_policy_reference_count": len(self.explicit_policy_references),
             "declared_tool_count": len(self.tools),
             "enabled_tool_count": len(enabled_tools),
             "state_transition_count": len(self.state.tool_results),
@@ -207,6 +298,228 @@ class HydratedPolicyMediator:
                 "finalization_pending": self.finalization_pending(),
             },
         }
+
+    def citation_guidance(self) -> str:
+        """Return a bounded, policy-derived citation contract for the planner."""
+        references = self.explicit_policy_references or self.permitted_policy_references
+        if not references:
+            return ""
+        rendered_references = references[:32]
+        rendered = ", ".join(json.dumps(reference) for reference in rendered_references)
+        suffix = "" if len(rendered_references) == len(references) else ", ..."
+        authority = "producer-supplied structured" if self.explicit_policy_references else "policy-derived"
+        return (
+            "For parameters explicitly representing policy citations, "
+            f"use only one or more exact values from this {authority} allowlist: {rendered}{suffix}. "
+            "Do not add titles, prose, punctuation, or inferred identifiers."
+        )
+
+    def hierarchy_guidance(self) -> str:
+        """Summarize explicit policy precedence without inferring new rules."""
+        excerpts: List[str] = []
+        for evidence in self.evidence_model:
+            if evidence.kind.lower() != "policy":
+                continue
+            heading = "policy"
+            for line in evidence.content.splitlines():
+                parsed_heading = parse_policy_heading(line)
+                if parsed_heading is not None:
+                    number, title = parsed_heading
+                    heading = f"Section {number}: {title}"
+                    continue
+                for statement in hierarchy_statements(line):
+                    normalized = " ".join(statement.split())
+                    if normalized:
+                        excerpts.append(f"{heading} — {normalized}")
+                        if len(excerpts) == 12:
+                            break
+                if len(excerpts) == 12:
+                    break
+            if len(excerpts) == 12:
+                break
+        if not excerpts:
+            return ""
+        return "Apply only these explicit precedence statements when policy provisions interact:\n- " + "\n- ".join(excerpts)
+
+    @staticmethod
+    def _policy_tokens(text: str) -> Set[str]:
+        """Return decision-bearing lexical terms from supplied text only."""
+        return {
+            token.casefold()
+            for token in POLICY_TOKEN_PATTERN.findall(text)
+            if token.casefold() not in POLICY_RETRIEVAL_STOP_WORDS
+        }
+
+    def _policy_sections(self) -> List[Tuple[str, str]]:
+        """Split supplied Markdown policy evidence into heading-bound sections."""
+        sections: List[Tuple[str, str]] = []
+        for evidence in self.evidence_model:
+            if evidence.kind.lower() != "policy":
+                continue
+            heading = "Policy"
+            body: List[str] = []
+            for line in evidence.content.splitlines():
+                parsed_heading = parse_policy_heading(line)
+                if parsed_heading is not None:
+                    if body:
+                        sections.append((heading, "\n".join(body).strip()))
+                    number, title = parsed_heading
+                    heading = f"Section {number}: {title}"
+                    body = []
+                else:
+                    body.append(line)
+            if body:
+                sections.append((heading, "\n".join(body).strip()))
+        return sections
+
+    def _relevant_policy_sections(self, messages: Iterable[Dict[str, Any]]) -> List[Tuple[str, str]]:
+        """Rank source policy sections using request and observed-evidence terms."""
+        query_parts: List[str] = []
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            # Assistant prose is a proposed interpretation, not ground truth.
+            # Retrieval is driven by the request and observed runtime evidence
+            # so an earlier model mistake cannot self-reinforce on later turns.
+            if message.get("role") not in {"user", "tool"} and message.get("type") != "function_call_output":
+                continue
+            content = message.get("content", message.get("output", ""))
+            if isinstance(content, str):
+                query_parts.append(content)
+        query_tokens = self._policy_tokens("\n".join(query_parts))
+        if not query_tokens:
+            return []
+        sections = self._policy_sections()
+        if not sections:
+            return []
+        document_frequency = {
+            token: sum(token in self._policy_tokens(f"{heading}\n{body}") for heading, body in sections)
+            for token in query_tokens
+        }
+        scored: List[Tuple[float, str, str]] = []
+        for heading, body in sections:
+            heading_tokens = self._policy_tokens(heading)
+            section_tokens = self._policy_tokens(body)
+            # A policy heading often carries the only explicit domain term
+            # (for example, "Defective Electronics"). Treat it as source
+            # evidence for retrieval, not merely as a score booster.
+            shared = query_tokens & (section_tokens | heading_tokens)
+            if not shared:
+                continue
+            # Rare matching terms discriminate sections; heading matches are
+            # stronger but still retain their source text instead of becoming
+            # a synthetic rule or classification.
+            score = sum(1.0 / document_frequency[token] for token in shared)
+            score += sum(2.0 / document_frequency[token] for token in query_tokens & heading_tokens)
+            scored.append((score, heading, body))
+        selected = [(heading, body) for _, heading, body in sorted(scored, key=lambda item: (-item[0], item[1]))[:4]]
+
+        # A policy frequently states a general rule and then explicitly points
+        # to the section defining a qualifying exception.  Follow only those
+        # producer-authored links; this adds source evidence to the planner
+        # without inferring that the exception applies.  It is deliberately
+        # shallow and bounded so a broad overview section cannot pull in a
+        # whole manual.
+        section_by_number = {}
+        for heading, body in sections:
+            match = re.match(r"Section\s+(\d+(?:\.\d+)*):", heading, re.IGNORECASE)
+            if match:
+                section_by_number[match.group(1)] = (heading, body)
+        selected_headings = {heading for heading, _ in selected}
+        for _, body in list(selected):
+            for reference in POLICY_SECTION_REFERENCE_PATTERN.findall(body):
+                linked = section_by_number.get(reference)
+                if linked is not None and linked[0] not in selected_headings:
+                    selected.append(linked)
+                    selected_headings.add(linked[0])
+                    if len(selected) == 6:
+                        return selected
+        return selected
+
+    def relevant_policy_guidance(self, messages: Iterable[Dict[str, Any]]) -> str:
+        """Surface the most relevant supplied policy sections for this turn.
+
+        This is intentionally an extractive, deterministic retrieval step: it
+        never creates a policy rule, reference ID, or outcome.  The full policy
+        remains controlling; excerpts make the evidence most connected to the
+        current conversation visible near the decision point.
+        """
+        selected = self._relevant_policy_sections(messages)
+        if not selected:
+            return ""
+        excerpts = [f"{heading}\n{body[:1800]}" for heading, body in selected]
+        return (
+            "Relevant policy evidence for the current turn (extractive; the full supplied policy remains controlling):\n"
+            + "\n\n---\n\n".join(excerpts)
+        )
+
+    def directive_guidance(self, messages: Iterable[Dict[str, Any]]) -> str:
+        """Highlight binding sentences from relevant source policy evidence.
+
+        This is deliberately a salience aid, not a rules engine: the returned
+        statements are verbatim policy sentences, each attached to the section
+        from which it came.  It does not infer conditions, tool order, or a
+        decision from prose.
+        """
+        directives: List[str] = []
+        for heading, body in self._relevant_policy_sections(messages):
+            for sentence in re.split(r"(?<=[.!?])\s+", " ".join(body.split())):
+                if POLICY_DIRECTIVE_PATTERN.search(sentence):
+                    directives.append(f"{heading} — {sentence}")
+                    if len(directives) == 12:
+                        break
+            if len(directives) == 12:
+                break
+        if not directives:
+            return ""
+        return "Binding policy statements relevant to this turn (apply their conditions exactly):\n- " + "\n- ".join(directives)
+
+    def ambiguity_guidance(self, messages: Iterable[Dict[str, Any]]) -> str:
+        """Surface explicit policy clauses that require escalation for ambiguity.
+
+        This is an extractive caution signal, not a classifier: it neither
+        decides that a case is ambiguous nor invents an escalation requirement.
+        It keeps source clauses that expressly connect ambiguity or conflict to
+        escalation adjacent to the proposed action sequence.
+        """
+        clauses: List[str] = []
+        for heading, body in self._relevant_policy_sections(messages):
+            for sentence in re.split(r"(?<=[.!?])\s+", " ".join(body.split())):
+                if POLICY_AMBIGUITY_PATTERN.search(sentence) and POLICY_ESCALATION_PATTERN.search(sentence):
+                    clauses.append(f"{heading} — {sentence}")
+                    if len(clauses) == 8:
+                        break
+            if len(clauses) == 8:
+                break
+        if not clauses:
+            return ""
+        return (
+            "Explicit ambiguity/conflict escalation clauses relevant to this turn (apply only when their stated "
+            "conditions are present; do not substitute a direct irreversible action for their declared review path):\n- "
+            + "\n- ".join(clauses)
+        )
+
+    def relevant_structured_references(self, messages: Iterable[Dict[str, Any]]) -> List[str]:
+        """Return provider-declared clause IDs whose labels match retrieved evidence."""
+        headings = {heading.casefold() for heading, _ in self._relevant_policy_sections(messages)}
+        references: List[str] = []
+        for item in self.policy_context:
+            metadata = item.get("metadata", {}) if isinstance(item, dict) else {}
+            clauses = metadata.get("policy_clauses", []) if isinstance(metadata, dict) else []
+            if not isinstance(clauses, list):
+                continue
+            for clause in clauses:
+                if not isinstance(clause, dict):
+                    continue
+                clause_id = clause.get("clause_id") or clause.get("id")
+                label = clause.get("section") or clause.get("label")
+                if not isinstance(clause_id, str) or not isinstance(label, str):
+                    continue
+                normalized = label.casefold().replace("##", "").strip()
+                if any(normalized == heading or normalized in heading or heading in normalized for heading in headings):
+                    if clause_id not in references:
+                        references.append(clause_id)
+        return references
 
     def _hydrate(self) -> None:
         """Build evidence-linked policy model and extract explicit rules."""
@@ -220,6 +533,7 @@ class HydratedPolicyMediator:
 
         # 2. Extract permitted policy references from policy context
         self.permitted_policy_references = policy_reference_ids(self.policy_context)
+        self.explicit_policy_references = structured_policy_reference_ids(self.policy_context)
 
         # 3. Extract explicit rules from policy context and declared tools
         tool_names = {t["name"] for t in self.tools}
@@ -384,12 +698,30 @@ class HydratedPolicyMediator:
                 output = msg.get("content") or msg.get("output", "")
                 if cid and cid in call_map:
                     info = call_map[cid]
+                    parsed_output = output
+                    if isinstance(output, str):
+                        try:
+                            parsed_output = json.loads(output)
+                        except (ValueError, TypeError):
+                            pass
+                    failed = msg.get("isError") is True or msg.get("error") is True
+                    if isinstance(parsed_output, dict):
+                        failed = failed or (
+                            parsed_output.get("success") is False
+                            or parsed_output.get("ok") is False
+                            or parsed_output.get("isError") is True
+                            or bool(parsed_output.get("error"))
+                            or str(parsed_output.get("status", "")).casefold()
+                            # Denial/cancellation can be successful business
+                            # outcomes. They are not transport/execution errors.
+                            in {"failed", "failure", "error"}
+                        )
                     self.state.record_tool_result(
                         call_id=cid,
                         tool_name=info["name"],
                         arguments=info["arguments"],
                         output=output,
-                        status="success",
+                        status="failed" if failed else "success",
                     )
 
     def get_explicit_prerequisites(self, tool_name: str) -> List[str]:
@@ -439,41 +771,164 @@ class HydratedPolicyMediator:
                 enabled.append(tool)
         return enabled
 
-    def finalization_pending(self) -> bool:
-        """Whether a declared finalizer must follow an operational result."""
+    def inspection_tool_names(self) -> List[str]:
+        """Identify declared read-only evidence tools from their contracts.
+
+        This is deliberately conservative: a tool must advertise an inspection
+        verb and must not advertise a consequential verb in its name or
+        description. Producers can avoid heuristic classification by exposing
+        explicit prerequisites, which continue to take precedence.
+        """
+        names: List[str] = []
+        for tool in self.tools:
+            text = f"{tool['name']} {tool.get('description', '')}"
+            if INSPECTION_TOOL_PATTERN.search(text) and not CONSEQUENTIAL_TOOL_PATTERN.search(text):
+                names.append(tool["name"])
+        return names
+
+    def initial_inspection_pending(self) -> bool:
+        """Whether declared private state has an available evidence path."""
+        inspection_names = set(self.inspection_tool_names())
         return bool(
-            self.finalization_tool
-            and self.finalization_tool not in self.state.executed_tools
-            and any(record.tool_name != self.finalization_tool for record in self.state.tool_results)
+            inspection_names
+            and not any(record.tool_name in inspection_names for record in self.state.tool_results)
         )
 
+    def finalization_pending(self) -> bool:
+        """Whether observed work follows the latest successful finalization.
+
+        This is session-local receipt ordering, not an entity-scoped commit or
+        proof that every semantic obligation has been fulfilled. A failed
+        finalizer cannot cover preceding work; a successful one cannot cover
+        operations observed later.
+        """
+        if not self.finalization_tool:
+            return False
+        for record in reversed(self.state.tool_results):
+            if record.tool_name != self.finalization_tool:
+                return True
+            if record.status == "success":
+                return False
+        return False
+
     def tools_for_planning(self) -> List[Dict[str, Any]]:
-        """Constrain a completion phase to its explicit declared finalizer."""
-        if not self.finalization_pending():
-            return list(self.tools)
-        return [tool for tool in self.tools if tool["name"] == self.finalization_tool]
+        """Return all declared tools throughout a multi-step workflow.
+
+        A finalization record documents a completed workflow; it is not a
+        barrier that may prematurely terminate subsequent required operations.
+        """
+        return list(self.tools)
 
     def required_tool_choice(self) -> Optional[Dict[str, str] | str]:
-        """Return a provider-neutral native-tool requirement for this phase."""
-        if self.finalization_pending() and self.finalization_tool:
-            return {"type": "function", "name": self.finalization_tool}
-        if self.finalization_tool and self.finalization_tool not in self.state.executed_tools:
-            return "required"
-        return None
+        """Avoid provider-level tool forcing for workflows with final records.
+
+        The model needs to select the next grounded operation from the declared
+        workflow; forcing an arbitrary function call or the finalizer can skip
+        required inspection and multi-action procedures.
+        """
+        return "required" if self.initial_inspection_pending() else None
 
     def completion_guidance(self) -> str:
         """Return model-facing lifecycle guidance without exposing policy text."""
         if not self.finalization_tool:
             return ""
+        if self.initial_inspection_pending():
+            return (
+                "Declared inspection tools can obtain material runtime state. "
+                "Perform an admissible inspection before proposing an operational or finalization action."
+            )
         if self.finalization_pending():
             return (
-                "A declared finalization action is now pending after an operational result. "
-                "Call the remaining finalization tool with grounded arguments before returning user-facing text."
+                "Operational work has begun and a declared finalization record remains outstanding. "
+                "Continue any remaining declared inspection or operational actions before recording the final outcome. "
+                "Record only after the required action sequence is complete; its outcome must agree with all observed operations and results."
+            )
+        if self.finalization_tool in self.state.executed_tools:
+            return (
+                "Finalization has already succeeded for the preceding observed work. "
+                "Answer a conversational follow-up from observed results without repeating operations or replacing "
+                "the recorded outcome merely to acknowledge, explain, or close the conversation. "
+                "A genuinely new request, material evidence, an authorized correction, or an explicit ongoing-record "
+                "requirement may justify further work under the original contract. Do not treat a request for "
+                "information about completed work as evidence that its outcome changed."
             )
         return (
             "The supplied task declares a finalization tool. Complete any necessary inspection or "
             "operational actions first, then record the final grounded outcome through that declared tool."
         )
+
+    @staticmethod
+    def _identity_value(value: Any) -> str | None:
+        """Render a stable, scalar producer value for an effect identity."""
+        if value is None or isinstance(value, (dict, list, tuple, set)):
+            return None
+        if isinstance(value, str):
+            return value if value else None
+        if isinstance(value, (bool, int, float)):
+            return json.dumps(value, sort_keys=True, separators=(",", ":"))
+        return None
+
+    def _effect_identity(self, tool: Dict[str, Any], arguments: Dict[str, Any]) -> Tuple[Tuple[str, str], ...]:
+        """Derive a conservative identity for a declared business effect.
+
+        Producers can explicitly declare ``x-entigram-idempotency-key`` as a
+        string or list of argument names.  Otherwise stable ``*_id`` fields are
+        used. A changed decision does not itself authorize a second effect:
+        producers must explicitly declare ``x-entigram-allow-correction`` for
+        an auditable correction path. Free text, policy citations,
+        quantities, and model-generated explanations intentionally do not
+        change the identity of an effect.
+        Returning an empty tuple means the contract provides no safe identity;
+        callers then only guard an exact duplicate.
+        """
+        schema = tool.get("parameters", {})
+        configured = schema.get("x-entigram-idempotency-key") if isinstance(schema, dict) else None
+        if isinstance(configured, str):
+            names = [configured]
+        elif isinstance(configured, list) and all(isinstance(name, str) for name in configured):
+            names = configured
+        else:
+            names = sorted(name for name in arguments if EFFECT_IDENTITY_FIELD_PATTERN.search(name))
+        values = []
+        for name in names:
+            value = self._identity_value(arguments.get(name))
+            if value is None:
+                if configured is not None:
+                    return ()
+                continue
+            values.append((name, value))
+        return tuple(values)
+
+    def _completed_effect(self, tool: Dict[str, Any], arguments: Dict[str, Any]) -> ToolResultProvenance | None:
+        """Return an equivalent successful effect unless its contract is repeatable.
+
+        The executor has already observed the original receipt, so this is not
+        a prediction of entity state. It prevents a model from replaying the
+        same declared effect merely because a conversation is retransmitted or
+        a follow-up asks for an explanation. Producers retain authority to mark
+        an operation repeatable when repeated effects are valid by design.
+        """
+        schema = tool.get("parameters", {})
+        if isinstance(schema, dict) and schema.get("x-entigram-repeatable") is True:
+            return None
+        allow_correction = isinstance(schema, dict) and schema.get("x-entigram-allow-correction") is True
+        identity = self._effect_identity(tool, arguments)
+        for receipt in self.state.tool_results:
+            if receipt.status != "success" or receipt.tool_name != tool["name"]:
+                continue
+            if identity:
+                if self._effect_identity(tool, receipt.arguments) == identity:
+                    if allow_correction:
+                        outcome_names = {
+                            name for name in set(arguments) | set(receipt.arguments)
+                            if EFFECT_OUTCOME_FIELD_PATTERN.fullmatch(name)
+                        }
+                        if outcome_names and any(arguments.get(name) != receipt.arguments.get(name) for name in outcome_names):
+                            continue
+                    return receipt
+            elif receipt.arguments == arguments:
+                return receipt
+        return None
 
     def _proposal_denial_errors(self, proposal: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[str], List[str]]:
         """Validate proposal and return (errors, missing_prereqs, evidence_links)."""
@@ -512,51 +967,38 @@ class HydratedPolicyMediator:
             errors.append({"code": "invalid_arguments", "message": "Arguments must be an object."})
             return errors, missing_prereqs, evidence_links
 
+        errors.extend(tool_argument_errors(arguments, schema))
         if isinstance(schema, dict):
-            required = schema.get("required", [])
             properties = schema.get("properties", {})
-            for req in required:
-                if req not in arguments:
-                    errors.append(
-                        {"code": "required_argument_missing", "message": f"Missing required parameter: {req}"}
-                    )
-            if schema.get("additionalProperties") is False:
-                for arg_key in arguments:
-                    if arg_key not in properties:
-                        errors.append(
-                            {"code": "undeclared_argument", "message": f"Undeclared argument: {arg_key}"}
-                        )
+            if not isinstance(properties, dict):
+                return errors, missing_prereqs, sorted(set(evidence_links))
 
             for arg_key, val in arguments.items():
                 expected_prop = properties.get(arg_key)
-                if isinstance(expected_prop, dict):
-                    expected = expected_prop.get("type")
-                    valid = (
-                        expected is None
-                        or (expected == "string" and isinstance(val, str))
-                        or (expected == "boolean" and isinstance(val, bool))
-                        or (expected == "number" and isinstance(val, (int, float)) and not isinstance(val, bool))
-                        or (expected == "integer" and isinstance(val, int) and not isinstance(val, bool))
-                        or (expected == "object" and isinstance(val, dict))
-                        or (expected == "array" and isinstance(val, list))
-                    )
-                    if not valid:
-                        errors.append(
-                            {
-                                "code": "argument_type_mismatch",
-                                "message": f"Type mismatch for parameter '{arg_key}': expected {expected}, got {type(val).__name__}.",
-                            }
-                        )
 
-                if POLICY_REFERENCE_FIELD.search(arg_key) and self.permitted_policy_references:
+                references = self.explicit_policy_references or self.permitted_policy_references
+                if is_policy_reference_field(arg_key, expected_prop) and references:
                     cited = val if isinstance(val, list) else [val]
-                    if not all(is_permitted_policy_reference(ref, self.permitted_policy_references) for ref in cited):
+                    if not all(is_permitted_policy_reference(ref, references) for ref in cited):
                         errors.append(
                             {
                                 "code": "unverified_policy_reference",
                                 "message": f"Parameter '{arg_key}' contains policy references not present in policy context.",
                             }
                         )
+
+        completed = self._completed_effect(tool, arguments)
+        if completed is not None:
+            errors.append(
+                {
+                    "code": "duplicate_completed_action",
+                    "message": (
+                        f"Tool '{name}' already completed the same declared effect "
+                        f"in receipt '{completed.call_id}'."
+                    ),
+                    "completed_call_id": completed.call_id,
+                }
+            )
 
         return errors, missing_prereqs, sorted(set(evidence_links))
 
