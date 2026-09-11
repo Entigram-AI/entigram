@@ -213,3 +213,84 @@ etg warden unlock
 # review the action-contract change
 etg broker handoff --accept-contract-change
 ```
+
+## Native tool parameter admission
+
+The portable `admit_tool_proposals` API and the hydrated Sentinel mediator use
+the same parameter normalization and JSON Schema validation. Flattened field
+maps (`{field: {type: ..., required: true}}`) are normalized for both the model
+provider and admission, so provider-facing constraints are not lost at the gate.
+Native schemas retain nested constraints, composition, nullable types, and local
+references. Invalid schemas, unknown dialects, and unresolved references deny
+the proposal. Validation does not fetch referenced schemas over the network or
+from local files. `format` is an annotation, not an enforced assertion; use
+explicit assertion keywords when a format must be enforced.
+
+The Responses adapter explicitly defaults function tools to `strict: false`
+to prevent implicit provider normalization from making optional fields required.
+An explicit producer `strict: true` declaration is preserved. Entigram still
+validates proposed calls against the original contract; non-strict generation
+does not disable admission checks.
+
+Policy citation checks apply to citation names such as `policy_reference` and
+`policy_sections_cited`, not arbitrary business references such as
+`customer_reference`. A producer can declare a property's semantics explicitly
+with the boolean `x-entigram-policy-reference` annotation. Model-facing citation
+constraints never expand an existing producer enum, and admission does not
+rewrite argument values. These checks validate a proposed call; they do not
+prove its semantic correctness or that the complete workflow has finished.
+
+Sentinel gives a rejected action draft one repair attempt. If any call fails
+admission, the entire original batch is withheld before dispatch; the planner
+receives the denial codes and missing prerequisites and may propose a replacement.
+Every replacement is checked again against the unchanged contract and observed
+state. Repeated rejection or provider failure releases no calls. Decision events
+for these attempts include `proposal_attempt` and `dispatch_released`, separating
+individual-call admission from actual release of the batch. This is not a
+transaction guarantee for failures that occur after the external host executes
+an admitted batch.
+
+### Experimental sequential plan execution
+
+`ENTIGRAM_SENTINEL_PLAN_EXECUTION=sequential` opts Sentinel into a session-local
+ordered plan instead of a second model independently selecting calls from an
+advisory draft. Every action still passes the same admission gate. Only one call
+is released at a time; the next step requires a successful receipt matching the
+previous call ID, tool name, and arguments. Failed or mismatched receipts discard
+the remaining plan. New user instructions invalidate pending work; an already
+dispatched call must return before replanning, because it cannot be canceled by
+discarding a local queue.
+
+On the unchanged request, a completed plan enters a tool-free response phase.
+Across follow-up messages, sequential mode rejects exact repeats of successful
+calls in the same session unless the producer's parameter schema explicitly
+declares `x-entigram-repeatable: true` (for example, for polling). This guards
+identical replays, not semantically equivalent calls with different arguments;
+target-side idempotency remains necessary for consequential effects.
+
+The default remains `advisory` pending evaluation. Sequential mode requires the
+bootstrap session protocol to preserve its queue across requests. It is not a
+durable execution ledger, does not infer missing policy obligations, and does not
+make model-proposed plans authoritative. Tool-result success conventions and the
+existing mediator's policy interpretation retain their documented limitations.
+
+`ENTIGRAM_SENTINEL_PLAN_REVIEW=1` adds an experimental semantic veto in sequential
+mode. A separate model invocation reviews the exact proposed plan, including
+text-only replies, against runtime policy, declared contracts, and conversation
+evidence before it enters the queue. Completed-plan customer responses are also
+reviewed. The reviewer has no business tools, cannot rewrite actions, and cannot
+override native admission. Malformed, contradictory, incomplete, unavailable,
+or negative verdicts withhold the draft. A rejected new plan gets one replanning
+attempt; a rejected completed-plan response becomes a neutral fallback. Events
+report review approval and scope without exposing reviewer rationale.
+Server logs distinguish parsing, review-format, semantic-review, and native
+admission failures using bounded gate metadata; draft contents, policy text,
+reviewer rationale, and provider exception bodies are not included in review logs.
+
+This is a fallible model-based check for semantic errors and missing obligations,
+not a verified policy compiler, independent human approval, or production safety
+guarantee. It uses the configured Sentinel model and adds latency and inference
+cost. Approval of an ordered plan does not prove future results: the existing
+receipt gate still governs progression, but semantic conditions that change on
+an otherwise successful receipt require richer conditional planning. No benchmark
+identifiers, hidden fixtures, or externally preloaded policy mappings are supplied.
