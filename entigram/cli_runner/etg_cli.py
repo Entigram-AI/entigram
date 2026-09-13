@@ -2017,6 +2017,25 @@ def _main():
     task_enqueue_parser.add_argument("--details", help="JSON details to persist with the task")
     task_enqueue_parser.add_argument("--json", action="store_true", dest="json_output", help="Print result as JSON")
 
+    task_request_parser = broker_subparsers.add_parser(
+        "task-request",
+        help="Create an idempotent scoped task request without launching an agent",
+    )
+    task_request_parser.add_argument("--id", required=True, help="Stable task ID")
+    task_request_parser.add_argument("--entity", required=True, help="Entity boundary, e.g. entigram-ai or household")
+    task_request_parser.add_argument("--workspace", required=True, help="Governed target workspace ID")
+    task_request_parser.add_argument("--requested-by", required=True, help="Human or enrolled agent principal")
+    task_request_parser.add_argument("--idempotency-key", required=True, help="Stable key that prevents duplicate work")
+    task_request_parser.add_argument("--title", required=True, help="Human-readable task title")
+    task_request_parser.add_argument("--type", required=True, dest="task_type", help="Task type, e.g. tests, docs, terraform")
+    task_request_parser.add_argument("--agent", help="Optional required target agent")
+    task_request_parser.add_argument("--risk", default="low_risk", choices=["read_only", "low_risk", "medium_risk", "high_risk", "critical"])
+    task_request_parser.add_argument("--required-score", type=float, help="Minimum capability score override")
+    task_request_parser.add_argument("--details", help="Structured JSON metadata; never raw prompt or email content")
+    task_request_parser.add_argument("--approval", default="NotRequired", choices=["NotRequired", "Pending", "Approved", "Denied"])
+    task_request_parser.add_argument("--action-contract", help="Optional governed action contract reference")
+    task_request_parser.add_argument("--json", action="store_true", dest="json_output", help="Print result as JSON")
+
     task_assign_parser = broker_subparsers.add_parser(
         "task-assign",
         help="Assign a task to an agent only if capability gates pass",
@@ -2024,6 +2043,42 @@ def _main():
     task_assign_parser.add_argument("--id", required=True, help="Task ID")
     task_assign_parser.add_argument("--agent", required=True, help="Agent ID")
     task_assign_parser.add_argument("--json", action="store_true", dest="json_output", help="Print result as JSON")
+
+    task_claim_parser = broker_subparsers.add_parser("task-claim", help="Atomically lease a ready task to an eligible agent")
+    task_claim_parser.add_argument("--id", required=True, help="Task ID")
+    task_claim_parser.add_argument("--agent", required=True, help="Registered agent ID")
+    task_claim_parser.add_argument("--lease-seconds", type=int, default=300, help="Lease duration from 30 to 3600 seconds")
+    task_claim_parser.add_argument("--json", action="store_true", dest="json_output", help="Print result as JSON")
+
+    task_heartbeat_parser = broker_subparsers.add_parser("task-heartbeat", help="Renew an active task lease")
+    task_heartbeat_parser.add_argument("--id", required=True, help="Task ID")
+    task_heartbeat_parser.add_argument("--agent", required=True, help="Claiming agent ID")
+    task_heartbeat_parser.add_argument("--lease-seconds", type=int, default=300, help="Lease duration from 30 to 3600 seconds")
+    task_heartbeat_parser.add_argument("--summary", default="", help="Safe progress summary")
+    task_heartbeat_parser.add_argument("--json", action="store_true", dest="json_output", help="Print result as JSON")
+
+    task_complete_parser = broker_subparsers.add_parser("task-complete", help="Record completion of a claimed task")
+    task_complete_parser.add_argument("--id", required=True, help="Task ID")
+    task_complete_parser.add_argument("--agent", required=True, help="Claiming agent ID")
+    task_complete_parser.add_argument("--summary", required=True, help="Safe result summary")
+    task_complete_parser.add_argument("--json", action="store_true", dest="json_output", help="Print result as JSON")
+
+    task_fail_parser = broker_subparsers.add_parser("task-fail", help="Record a claimed task failure")
+    task_fail_parser.add_argument("--id", required=True, help="Task ID")
+    task_fail_parser.add_argument("--agent", required=True, help="Claiming agent ID")
+    task_fail_parser.add_argument("--summary", required=True, help="Safe failure summary")
+    task_fail_parser.add_argument("--retryable", action="store_true", help="Return the task to Queued without auto-dispatch")
+    task_fail_parser.add_argument("--json", action="store_true", dest="json_output", help="Print result as JSON")
+
+    task_review_parser = broker_subparsers.add_parser("task-review", help="Escalate a task to operator review without executing it")
+    task_review_parser.add_argument("--id", required=True, help="Task ID")
+    task_review_parser.add_argument("--actor", required=True, help="Agent or human escalating the review")
+    task_review_parser.add_argument("--summary", required=True, help="Safe explanation of the policy or evidence conflict")
+    task_review_parser.add_argument("--json", action="store_true", dest="json_output", help="Print result as JSON")
+
+    task_events_parser = broker_subparsers.add_parser("task-events", help="List the immutable lifecycle events for one task")
+    task_events_parser.add_argument("--id", required=True, help="Task ID")
+    task_events_parser.add_argument("--json", action="store_true", dest="json_output", help="Print result as JSON")
 
     task_list_parser = broker_subparsers.add_parser(
         "task-list",
@@ -4678,6 +4733,32 @@ RELATIONSHIPS:
                 )
             else:
                 sys.exit(1)
+        elif args.broker_command == "task-request":
+            try:
+                result = broker.ledger.request_agent_task(
+                    args.id, args.title, args.task_type,
+                    entity_id=args.entity,
+                    workspace_id=args.workspace,
+                    requested_by=args.requested_by,
+                    idempotency_key=args.idempotency_key,
+                    target_agent_id=getattr(args, "agent", None),
+                    risk_level=args.risk,
+                    required_score=getattr(args, "required_score", None),
+                    details=_parse_json_arg(getattr(args, "details", None), default={}),
+                    approval_status=args.approval,
+                    action_contract_ref=getattr(args, "action_contract", None),
+                )
+            except ValueError as exc:
+                print(str(exc))
+                sys.exit(1)
+            if getattr(args, "json_output", False):
+                print(json.dumps(result, indent=2, sort_keys=True))
+            elif result.get("ok"):
+                print(f"✅ Task {'requested' if result.get('created') else 'already recorded'}: {args.id}")
+            else:
+                print(f"❌ Task request rejected: {result.get('reason')}")
+            if not result.get("ok"):
+                sys.exit(1)
         elif args.broker_command == "task-assign":
             result = broker.ledger.assign_agent_task(args.id, args.agent)
             if getattr(args, "json_output", False):
@@ -4690,6 +4771,65 @@ RELATIONSHIPS:
                 print(f"❌ Assignment rejected: {result.get('rationale') or result.get('reason')}")
             if not result.get("ok"):
                 sys.exit(1)
+        elif args.broker_command == "task-claim":
+            result = broker.ledger.claim_agent_task(args.id, args.agent, lease_seconds=args.lease_seconds)
+            if getattr(args, "json_output", False):
+                print(json.dumps(result, indent=2, sort_keys=True))
+            elif result.get("ok"):
+                print(f"✅ Claimed {args.id} for {args.agent}")
+            else:
+                print(f"❌ Claim rejected: {result.get('reason')}")
+            if not result.get("ok"):
+                sys.exit(1)
+        elif args.broker_command == "task-heartbeat":
+            result = broker.ledger.heartbeat_agent_task(args.id, args.agent, lease_seconds=args.lease_seconds, summary=args.summary)
+            if getattr(args, "json_output", False):
+                print(json.dumps(result, indent=2, sort_keys=True))
+            elif result.get("ok"):
+                print(f"✅ Heartbeat recorded for {args.id}")
+            else:
+                print(f"❌ Heartbeat rejected: {result.get('reason')}")
+            if not result.get("ok"):
+                sys.exit(1)
+        elif args.broker_command == "task-complete":
+            result = broker.ledger.complete_agent_task(args.id, args.agent, args.summary)
+            if getattr(args, "json_output", False):
+                print(json.dumps(result, indent=2, sort_keys=True))
+            elif result.get("ok"):
+                print(f"✅ Completed {args.id}")
+            else:
+                print(f"❌ Completion rejected: {result.get('reason')}")
+            if not result.get("ok"):
+                sys.exit(1)
+        elif args.broker_command == "task-fail":
+            result = broker.ledger.fail_agent_task(args.id, args.agent, args.summary, retryable=args.retryable)
+            if getattr(args, "json_output", False):
+                print(json.dumps(result, indent=2, sort_keys=True))
+            elif result.get("ok"):
+                print(f"✅ Failure recorded for {args.id}")
+            else:
+                print(f"❌ Failure rejected: {result.get('reason')}")
+            if not result.get("ok"):
+                sys.exit(1)
+        elif args.broker_command == "task-review":
+            result = broker.ledger.request_task_review(args.id, args.actor, args.summary)
+            if getattr(args, "json_output", False):
+                print(json.dumps(result, indent=2, sort_keys=True))
+            elif result.get("ok"):
+                print(f"⚠️  {args.id} now needs operator review")
+            else:
+                print(f"❌ Review escalation rejected: {result.get('reason')}")
+            if not result.get("ok"):
+                sys.exit(1)
+        elif args.broker_command == "task-events":
+            events = broker.ledger.get_agent_task_events(args.id)
+            if getattr(args, "json_output", False):
+                print(json.dumps(events, indent=2, sort_keys=True))
+            elif not events:
+                print("No task events found.")
+            else:
+                for event in events:
+                    print(f"{event['observed_at']} | {event['event_type']} | {event['actor_id']} | {event['summary']}")
         elif args.broker_command == "task-list":
             tasks = broker.ledger.get_agent_tasks(status=getattr(args, "status", None))
             if getattr(args, "json_output", False):
