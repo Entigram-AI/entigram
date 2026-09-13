@@ -16,6 +16,13 @@
 * harden SQLite ledger concurrency with WAL mode and busy timeouts
 * close warning-producing registry, broker, router, and hydration resources
 
+## [2.19.0](https://github.com/Entigram-AI/entigram/compare/v2.18.0...v2.19.0) (2026-09-13)
+
+
+### Features
+
+* add explicit workspace links ([#99](https://github.com/Entigram-AI/entigram/issues/99)) ([9d79346](https://github.com/Entigram-AI/entigram/commit/9d793467f0efca0857cd5149b2a1e8f3c214db88))
+
 ## [2.18.0](https://github.com/Entigram-AI/entigram/compare/v2.17.3...v2.18.0) (2026-09-11)
 
 
