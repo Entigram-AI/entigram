@@ -2076,6 +2076,12 @@ def _main():
     task_review_parser.add_argument("--summary", required=True, help="Safe explanation of the policy or evidence conflict")
     task_review_parser.add_argument("--json", action="store_true", dest="json_output", help="Print result as JSON")
 
+    task_dismiss_parser = broker_subparsers.add_parser("task-dismiss", help="Close obsolete work with an auditable operator reason")
+    task_dismiss_parser.add_argument("--id", required=True, help="Task ID")
+    task_dismiss_parser.add_argument("--actor", required=True, help="Operator or agent closing the task")
+    task_dismiss_parser.add_argument("--summary", required=True, help="Why this work is no longer needed")
+    task_dismiss_parser.add_argument("--json", action="store_true", dest="json_output", help="Print result as JSON")
+
     task_events_parser = broker_subparsers.add_parser("task-events", help="List the immutable lifecycle events for one task")
     task_events_parser.add_argument("--id", required=True, help="Task ID")
     task_events_parser.add_argument("--json", action="store_true", dest="json_output", help="Print result as JSON")
@@ -4819,6 +4825,16 @@ RELATIONSHIPS:
                 print(f"⚠️  {args.id} now needs operator review")
             else:
                 print(f"❌ Review escalation rejected: {result.get('reason')}")
+            if not result.get("ok"):
+                sys.exit(1)
+        elif args.broker_command == "task-dismiss":
+            result = broker.ledger.dismiss_agent_task(args.id, args.actor, args.summary)
+            if getattr(args, "json_output", False):
+                print(json.dumps(result, indent=2, sort_keys=True))
+            elif result.get("ok"):
+                print(f"✅ Closed {args.id}")
+            else:
+                print(f"❌ Close rejected: {result.get('reason')}")
             if not result.get("ok"):
                 sys.exit(1)
         elif args.broker_command == "task-events":

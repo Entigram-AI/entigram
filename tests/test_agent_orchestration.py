@@ -129,9 +129,14 @@ class TestAgentOrchestrationLedger(unittest.TestCase):
         self.assertTrue(review["ok"])
         self.assertEqual(review["task"]["status"], "NeedsReview")
         self.assertEqual(review["task"]["approval_status"], "Pending")
+        dismissed = self.ledger.dismiss_agent_task(
+            "task-supply-review", "user:founder", "This review is no longer needed."
+        )
+        self.assertTrue(dismissed["ok"])
+        self.assertEqual(dismissed["task"]["status"], "Cancelled")
         self.assertEqual(
             [event["event_type"] for event in self.ledger.get_agent_task_events("task-supply-review")],
-            ["requested", "claimed", "heartbeat", "needs_review"],
+            ["requested", "claimed", "heartbeat", "needs_review", "dismissed"],
         )
 
         self.ledger.request_agent_task(
@@ -260,6 +265,12 @@ class TestAgentOrchestrationCLI(unittest.TestCase):
         ])
         self.assertTrue(success)
         self.assertIn("needs operator review", output)
+        success, output = self.run_cli([
+            "broker", "task-dismiss", "--id", "task-cli", "--actor", "user:founder",
+            "--summary", "No action is pending.",
+        ])
+        self.assertTrue(success)
+        self.assertIn("Closed task-cli", output)
         success, output = self.run_cli(["broker", "task-events", "--id", "task-cli"])
         self.assertTrue(success)
         self.assertIn("needs_review", output)

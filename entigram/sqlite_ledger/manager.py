@@ -1699,6 +1699,28 @@ class LedgerManager:
         finally:
             if self.db_path != ":memory:": conn.close()
 
+    def dismiss_agent_task(self, task_id: str, actor_id: str, summary: str) -> Dict[str, Any]:
+        """Close obsolete work with an auditable human reason; never delete it."""
+        if not isinstance(summary, str) or not summary.strip():
+            return {"ok": False, "reason": "TASK_SUMMARY_REQUIRED"}
+        conn = self._get_connection()
+        try:
+            with conn:
+                result = conn.execute(
+                    """
+                    UPDATE agent_tasks
+                    SET status = 'Cancelled', approval_status = 'Denied', result_summary = ?,
+                        last_error = NULL, claimed_by = NULL, lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP
+                    WHERE task_id = ? AND status NOT IN ('Completed', 'Cancelled', 'DeadLetter')
+                    """, (summary, task_id),
+                )
+                if result.rowcount != 1:
+                    return {"ok": False, "reason": "TASK_DISMISS_REJECTED"}
+                self._record_agent_task_event(conn, task_id, "dismissed", actor_id, summary, {"status": "Cancelled"})
+            return {"ok": True, "task": self.get_agent_task(task_id)}
+        finally:
+            if self.db_path != ":memory:": conn.close()
+
     def get_agent_task_events(self, task_id: str, *, limit: int = 100) -> List[Dict[str, Any]]:
         conn = self._get_connection()
         try:
