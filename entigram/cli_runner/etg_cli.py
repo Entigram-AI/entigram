@@ -1052,6 +1052,20 @@ def _main():
     usage_parser.add_argument("--total-tokens", type=int, help="Total session tokens for percentage attribution")
     usage_parser.add_argument("--json", action="store_true", dest="json_output", help="Output stable JSON")
 
+    workspace_parser = subparsers.add_parser(
+        "workspace",
+        help="Discover and explicitly link governed child workspaces",
+    )
+    workspace_subparsers = workspace_parser.add_subparsers(dest="workspace_command", required=True)
+    workspace_discover_parser = workspace_subparsers.add_parser("discover", help="List initialized child folders and link decisions")
+    workspace_discover_parser.add_argument("--dir", help="Parent workspace directory (defaults to current directory)")
+    workspace_discover_parser.add_argument("--json", action="store_true", dest="json_output", help="Output stable JSON")
+    for decision in ("allow", "deny"):
+        decision_parser = workspace_subparsers.add_parser(decision, help=f"Explicitly {decision} one child workspace link")
+        decision_parser.add_argument("--dir", help="Parent workspace directory (defaults to current directory)")
+        decision_parser.add_argument("--child", required=True, help="Child workspace path inside the parent")
+        decision_parser.add_argument("--json", action="store_true", dest="json_output", help="Output stable JSON")
+
     task_parser = subparsers.add_parser(
         "task",
         help="Prepare a deterministic task context before governed agent writes",
@@ -2603,6 +2617,32 @@ def _main():
             if args.json_output
             else format_usage_report(report)
         )
+    elif args.command == "workspace":
+        from entigram.workspace_links import decide, discover
+
+        workspace = _resolve_workspace_dir(args.dir)
+        try:
+            if args.workspace_command == "discover":
+                result = {"ok": True, "parent": str(workspace), "children": discover(workspace)}
+            else:
+                outcome = decide(workspace, args.child, "allowed" if args.workspace_command == "allow" else "denied")
+                result = {"ok": True, "parent": str(workspace), "child": outcome}
+            if getattr(args, "json_output", False):
+                print(json.dumps(result, indent=2, sort_keys=True))
+            elif args.workspace_command == "discover":
+                if not result["children"]:
+                    print("No Entigram-initialized child workspaces found.")
+                else:
+                    for child in result["children"]:
+                        print(f"{child['decision']} | {child['path']}")
+            else:
+                print(f"✅ Child workspace {outcome['decision']}: {outcome['path']}")
+        except (OSError, ValueError) as exc:
+            if getattr(args, "json_output", False):
+                print(json.dumps({"ok": False, "error": str(exc)}, indent=2, sort_keys=True))
+            else:
+                print(f"❌ Workspace link error: {exc}")
+            sys.exit(1)
     elif args.command == "pause":
         from entigram.workspace_lifecycle import WorkspaceLifecycleError, pause_workspace
 
