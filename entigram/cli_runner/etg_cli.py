@@ -2093,6 +2093,11 @@ def _main():
     task_list_parser.add_argument("--status", help="Filter by task status")
     task_list_parser.add_argument("--json", action="store_true", dest="json_output", help="Print result as JSON")
 
+    task_recover_parser = broker_subparsers.add_parser(
+        "task-recover-expired", help="Return expired leased work to the queue with its checkpoints intact",
+    )
+    task_recover_parser.add_argument("--json", action="store_true", dest="json_output", help="Print result as JSON")
+
     hibernate_parser = broker_subparsers.add_parser(
         "hibernate",
         help="Persist a low-token checkpoint for external scheduler resume",
@@ -4859,6 +4864,14 @@ RELATIONSHIPS:
                         f"{task['task_id']} | {task['status']} | {task['risk_level']} "
                         f"| requires={task['required_score']:.2f} | agent={owner} | {task['title']}"
                     )
+        elif args.broker_command == "task-recover-expired":
+            tasks = broker.ledger.recover_expired_agent_tasks()
+            if getattr(args, "json_output", False):
+                print(json.dumps({"ok": True, "recovered": tasks}, indent=2, sort_keys=True))
+            elif tasks:
+                print(f"↻ Recovered {len(tasks)} expired task{'s' if len(tasks) != 1 else ''} for resume.")
+            else:
+                print("No expired task leases to recover.")
         elif args.broker_command == "hibernate":
             plan = broker.ledger.record_agent_hibernation(
                 args.agent,

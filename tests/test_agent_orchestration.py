@@ -150,6 +150,29 @@ class TestAgentOrchestrationLedger(unittest.TestCase):
         self.assertEqual(completed["task"]["status"], "Completed")
         self.assertEqual(completed["task"]["result_summary"], "Focused tests passed.")
 
+    def test_expired_task_lease_is_requeued_with_a_continuity_event(self):
+        self.assertTrue(self.ledger.record_agent(
+            "codex-local", agent_class="strong", reliability_score=0.95,
+            capability_scores={"work": 1.0}, allowed_task_classes=["work"],
+        ))
+        self.assertTrue(self.ledger.request_agent_task(
+            "task-recover", "Resume a governed review", "work", entity_id="workspace",
+            workspace_id="entigram", requested_by="user:owner", idempotency_key="recover-v1",
+        )["ok"])
+        self.assertTrue(self.ledger.assign_agent_task("task-recover", "codex-local")["ok"])
+        self.assertTrue(self.ledger.claim_agent_task("task-recover", "codex-local")["ok"])
+        conn = self.ledger._get_connection()
+        with conn:
+            conn.execute("UPDATE agent_tasks SET lease_expires_at = ? WHERE task_id = ?", ("2000-01-01T00:00:00+00:00", "task-recover"))
+
+        recovered = self.ledger.recover_expired_agent_tasks()
+
+        self.assertEqual([task["task_id"] for task in recovered], ["task-recover"])
+        task = self.ledger.get_agent_task("task-recover")
+        self.assertEqual(task["status"], "Queued")
+        self.assertIn("resume from recorded checkpoints", task["last_error"])
+        self.assertEqual(self.ledger.get_agent_task_events("task-recover")[-1]["event_type"], "lease_expired")
+
 
 class TestAgentOrchestrationCLI(unittest.TestCase):
     def setUp(self):

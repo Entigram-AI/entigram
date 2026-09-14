@@ -1673,6 +1673,37 @@ class LedgerManager:
         finally:
             if self.db_path != ":memory:": conn.close()
 
+    def recover_expired_agent_tasks(self) -> List[Dict[str, Any]]:
+        """Return abandoned leased work to the queue without discarding its checkpoints.
+
+        A local host may be restarted while an external CLI is working.  The
+        immutable task events remain the continuity record; recovery makes the
+        interruption visible and resumable instead of leaving a false Running
+        status indefinitely.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        conn = self._get_connection()
+        try:
+            with conn:
+                rows = conn.execute(
+                    "SELECT task_id, claimed_by FROM agent_tasks "
+                    "WHERE status IN ('Claimed', 'Running') AND lease_expires_at IS NOT NULL AND lease_expires_at < ?",
+                    (now,),
+                ).fetchall()
+                for task_id, agent_id in rows:
+                    conn.execute(
+                        "UPDATE agent_tasks SET status = 'Queued', claimed_by = NULL, lease_expires_at = NULL, "
+                        "last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE task_id = ?",
+                        ("Agent lease expired; resume from recorded checkpoints.", task_id),
+                    )
+                    self._record_agent_task_event(
+                        conn, task_id, "lease_expired", str(agent_id or "Entigram"),
+                        "Agent connection ended; work is ready to resume from its last checkpoint.", {},
+                    )
+            return [self.get_agent_task(str(row[0])) for row in rows if self.get_agent_task(str(row[0]))]
+        finally:
+            if self.db_path != ":memory:": conn.close()
+
     def complete_agent_task(self, task_id: str, agent_id: str, summary: str) -> Dict[str, Any]:
         return self._finish_agent_task(task_id, agent_id, "Completed", "completed", summary)
 
