@@ -185,9 +185,6 @@ class TestAgentOrchestrationLedger(unittest.TestCase):
         self.assertEqual(approved["task"]["status"], "Queued")
         self.assertEqual(ledger.get_agent_task_events("task-approval")[-1]["event_type"], "approved")
         self.assertTrue(ledger.verify_task_approval(approved["task"])["ok"])
-        replay = ledger.approve_agent_task("task-approval", owner.sign("task_approval", claims), "Approved after review.")
-        self.assertFalse(replay["ok"])
-
         self.assertTrue(ledger.request_agent_task(
             "task-mismatch", "Send another release", "test_run", entity_id="entigram-ai",
             workspace_id="entigram", requested_by="user:founder", idempotency_key="task-mismatch-v1",
@@ -201,6 +198,21 @@ class TestAgentOrchestrationLedger(unittest.TestCase):
         self.assertFalse(mismatched["ok"])
         self.assertEqual(mismatched["reason"], "TASK_APPROVAL_ASSERTION_MISMATCH")
 
+        self.assertTrue(ledger.record_agent(
+            "release-agent", reliability_score=1.0,
+            capability_scores={"test_run": 1.0}, allowed_task_classes=["test_run"],
+        ))
+        revoke = registry.make_change(
+            operation="revoke_key", signer_id="user:founder",
+            key_id_to_revoke=owner.public_record()["key_id"],
+        )
+        registry.apply_change(revoke, [registry.approve_change(revoke, owner)])
+        revoked_claim = ledger.claim_agent_task("task-approval", "release-agent")
+        self.assertFalse(revoked_claim["ok"])
+        self.assertEqual(revoked_claim["reason"], "TASK_APPROVAL_SIGNATURE_INVALID")
+        replay = ledger.approve_agent_task("task-approval", owner.sign("task_approval", claims), "Approved after review.")
+        self.assertFalse(replay["ok"])
+
     def test_high_risk_task_cannot_self_approve_at_creation(self):
         rejected = self.ledger.request_agent_task(
             "self-approved", "Publish release", "release", entity_id="entigram",
@@ -209,6 +221,18 @@ class TestAgentOrchestrationLedger(unittest.TestCase):
         )
         self.assertFalse(rejected["ok"])
         self.assertEqual(rejected["reason"], "TASK_APPROVAL_MUST_BE_RECORDED")
+
+    def test_legacy_enqueue_keeps_high_risk_tasks_pending(self):
+        self.assertTrue(self.ledger.record_agent(
+            "release-agent", reliability_score=1.0,
+            capability_scores={"release": 1.0}, allowed_task_classes=["release"],
+        ))
+        self.assertTrue(self.ledger.enqueue_agent_task(
+            "legacy-high-risk", "Publish release", "release", risk_level="high_risk",
+        ))
+        task = self.ledger.get_agent_task("legacy-high-risk")
+        self.assertEqual(task["approval_status"], "Pending")
+        self.assertFalse(self.ledger.claim_agent_task("legacy-high-risk", "release-agent")["ok"])
 
     def test_high_risk_task_is_pending_until_approval_is_recorded(self):
         self.assertTrue(self.ledger.record_agent(

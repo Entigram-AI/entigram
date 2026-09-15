@@ -1966,6 +1966,7 @@ class LedgerManager:
     ) -> bool:
         """Persists a task that can be assigned through capability gating."""
         normalized_risk = self._normalize_risk_level(risk_level)
+        approval_status = "Pending" if normalized_risk in {"high_risk", "critical"} else "NotRequired"
         minimum = TASK_RISK_REQUIRED_SCORE[normalized_risk]
         score = minimum if required_score is None else max(minimum, min(1.0, float(required_score)))
         conn = self._get_connection()
@@ -1975,9 +1976,9 @@ class LedgerManager:
                     '''
                     INSERT INTO agent_tasks (
                         task_id, title, task_type, risk_level, required_score,
-                        details, status
+                        details, status, approval_status
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(task_id) DO UPDATE SET
                         title=excluded.title,
                         task_type=excluded.task_type,
@@ -1985,6 +1986,7 @@ class LedgerManager:
                         required_score=excluded.required_score,
                         details=excluded.details,
                         status=excluded.status,
+                        approval_status=excluded.approval_status,
                         updated_at=CURRENT_TIMESTAMP
                     ''',
                     (
@@ -1995,6 +1997,7 @@ class LedgerManager:
                         score,
                         json.dumps(details or {}, sort_keys=True),
                         status,
+                        approval_status,
                     ),
                 )
             return True
