@@ -94,7 +94,9 @@ llama3.2:latest   def456          2.0 GB    1 week ago
 
         self.assertEqual(output, "ENTITY: Safe")
         command = run.call_args.args[0]
-        self.assertEqual(command, ["agy", "--sandbox", "--mode", "plan", "--print"])
+        self.assertEqual(command[:5], ["agy", "--sandbox", "--mode", "plan", "--print"])
+        self.assertEqual(command[-1], "model this")
+        self.assertEqual(run.call_args.kwargs["input"], None)
         self.assertNotIn("--dangerously-skip-permissions", command)
 
     def test_headless_runner_uses_selected_engine_in_read_only_mode(self):

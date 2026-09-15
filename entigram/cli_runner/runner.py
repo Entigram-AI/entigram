@@ -112,12 +112,21 @@ def execute_headless_model(
     print(f"[ENTIGRAM] Igniting headless {engine} engine...")
     target_path = Path(target_dir).absolute()
     command = _headless_engine_command(engine, model, yolo=yolo)
+    normalized_engine = (engine or "").strip().lower()
+    # Antigravity's print mode takes the prompt as its required flag argument;
+    # unlike Codex it does not read the one-shot prompt from standard input.
+    # Dispatch supplies only bounded structured task metadata here, never the
+    # user's raw remote-control conversation.
+    input_text = prompt
+    if normalized_engine in {"antigravity", "agy"}:
+        command.append(_sanitize_initial_prompt(prompt))
+        input_text = None
     try:
         # We pass the prompt via 'input', NOT as a command-line argument.
         # This breaks the TTY and forces a one-shot execution.
         result = subprocess.run(
             command,
-            input=prompt,
+            input=input_text,
             capture_output=True,
             text=True,
             check=True,
