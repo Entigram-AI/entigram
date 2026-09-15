@@ -169,7 +169,7 @@ class AgentTaskDispatcher:
     def _model_argument(agent: Dict[str, Any], runtime: str) -> Optional[str]:
         """Avoid passing a legacy runtime label as though it were a model ID."""
         model = str(agent.get("model") or "").strip()
-        if not model or model.casefold() in {runtime.casefold(), "claude code"}:
+        if not model or model.casefold() in {runtime.casefold(), "claude", "claude code"}:
             return None
         return model
 

@@ -269,6 +269,7 @@ class TestAgentOrchestrationLedger(unittest.TestCase):
             "Antigravity",
         )
         self.assertIsNone(AgentTaskDispatcher._model_argument({"model": "Antigravity"}, "Antigravity"))
+        self.assertIsNone(AgentTaskDispatcher._model_argument({"model": "Claude"}, "Claude Code"))
 
     def test_dispatcher_leaves_pending_approval_queued_without_retry_noise(self):
         self.ledger.record_agent(
