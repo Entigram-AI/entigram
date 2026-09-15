@@ -145,7 +145,8 @@ def execute_headless_model(
         # Defensive: If the engine echoes the prompt, strip it
         if output.startswith(prompt):
             output = output[len(prompt):].strip()
-            
+        if not output:
+            raise RuntimeError(f"Headless {engine} engine completed without a response.")
         return output
     except (OSError, subprocess.CalledProcessError) as exc:
         detail = getattr(exc, "stderr", None) or str(exc)

@@ -218,7 +218,7 @@ class TestAgentOrchestrationLedger(unittest.TestCase):
 
         self.assertEqual(outcomes[0]["status"], "Completed")
         self.assertEqual(calls[0][1]["target_dir"], str(child.resolve()))
-        self.assertIn("read-only execution", calls[0][0])
+        self.assertIn("host already bound", calls[0][0])
         task = self.ledger.get_agent_task("review-console")
         self.assertEqual(task["status"], "Completed")
         self.assertEqual(task["result_output"], "Review complete. One low-risk label issue found.")

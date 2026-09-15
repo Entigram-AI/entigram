@@ -114,6 +114,11 @@ llama3.2:latest   def456          2.0 GB    1 week ago
 
         self.assertEqual(output, "Review result")
 
+    def test_headless_runner_rejects_empty_response(self):
+        with patch("subprocess.run", return_value=SimpleNamespace(stdout="", stderr="")):
+            with self.assertRaisesRegex(RuntimeError, "without a response"):
+                execute_headless_model("model this", engine="Antigravity")
+
 
 if __name__ == "__main__":
     unittest.main()
