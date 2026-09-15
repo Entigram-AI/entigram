@@ -94,7 +94,7 @@ llama3.2:latest   def456          2.0 GB    1 week ago
 
         self.assertEqual(output, "ENTITY: Safe")
         command = run.call_args.args[0]
-        self.assertEqual(command[:5], ["agy", "--sandbox", "--mode", "plan", "--print"])
+        self.assertEqual(command[:7], ["agy", "--sandbox", "--mode", "plan", "--output-format", "json", "--print"])
         self.assertEqual(command[-1], "model this")
         self.assertEqual(run.call_args.kwargs["input"], None)
         self.assertNotIn("--dangerously-skip-permissions", command)
@@ -106,6 +106,13 @@ llama3.2:latest   def456          2.0 GB    1 week ago
         command = run.call_args.args[0]
         self.assertEqual(command[:4], ["codex", "exec", "--sandbox", "read-only"])
         self.assertIn("gpt-5", command)
+
+    def test_headless_antigravity_extracts_structured_print_response(self):
+        payload = '{"status":"SUCCESS","response":"Review result\\n"}'
+        with patch("subprocess.run", return_value=SimpleNamespace(stdout=payload, stderr="")):
+            output = execute_headless_model("model this", engine="Antigravity")
+
+        self.assertEqual(output, "Review result")
 
 
 if __name__ == "__main__":

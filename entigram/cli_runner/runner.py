@@ -4,6 +4,7 @@ import subprocess
 import platform
 import tempfile
 import stat
+import json
 from pathlib import Path
 
 OLLAMA_LAUNCH_OPTIONS = {
@@ -79,7 +80,7 @@ def _headless_engine_command(engine: str, model: str = None, *, yolo: bool = Fal
     if normalized in {"antigravity", "agy"}:
         # Reviews and dispatched analysis must receive Antigravity's actual
         # terminal sandbox, not just prose asking the model to be careful.
-        command = ["agy", "--sandbox", "--mode", "plan", "--print"]
+        command = ["agy", "--sandbox", "--mode", "plan", "--output-format", "json", "--print"]
         if model:
             command.extend(["--model", model])
         if yolo:
@@ -132,7 +133,14 @@ def execute_headless_model(
             check=True,
             cwd=str(target_path)
         )
-        output = result.stdout.strip()
+        output = (result.stdout or result.stderr or "").strip()
+        if normalized_engine in {"antigravity", "agy"}:
+            try:
+                payload = json.loads(output)
+                if isinstance(payload, dict) and isinstance(payload.get("response"), str):
+                    output = payload["response"].strip()
+            except json.JSONDecodeError:
+                pass
         
         # Defensive: If the engine echoes the prompt, strip it
         if output.startswith(prompt):
