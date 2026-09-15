@@ -77,7 +77,9 @@ def _headless_engine_command(engine: str, model: str = None, *, yolo: bool = Fal
     """Build a one-shot command that is read-only unless yolo is explicit."""
     normalized = (engine or "").strip().lower()
     if normalized in {"antigravity", "agy"}:
-        command = ["agy", "run"]
+        # Reviews and dispatched analysis must receive Antigravity's actual
+        # terminal sandbox, not just prose asking the model to be careful.
+        command = ["agy", "--sandbox", "--mode", "plan", "--print"]
         if model:
             command.extend(["--model", model])
         if yolo:

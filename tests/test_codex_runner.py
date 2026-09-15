@@ -88,13 +88,13 @@ llama3.2:latest   def456          2.0 GB    1 week ago
         with patch("subprocess.run", return_value=SimpleNamespace(stdout=output)):
             self.assertEqual(list_ollama_models(), ["qwen3:latest", "llama3.2:latest"])
 
-    def test_headless_antigravity_keeps_permissions_enabled_by_default(self):
+    def test_headless_antigravity_uses_sandboxed_plan_mode_by_default(self):
         with patch("subprocess.run", return_value=SimpleNamespace(stdout="ENTITY: Safe")) as run:
             output = execute_headless_model("model this", engine="Antigravity")
 
         self.assertEqual(output, "ENTITY: Safe")
         command = run.call_args.args[0]
-        self.assertEqual(command, ["agy", "run"])
+        self.assertEqual(command, ["agy", "--sandbox", "--mode", "plan", "--print"])
         self.assertNotIn("--dangerously-skip-permissions", command)
 
     def test_headless_runner_uses_selected_engine_in_read_only_mode(self):
