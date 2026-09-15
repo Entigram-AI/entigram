@@ -284,6 +284,24 @@ class TestAgentOrchestrationLedger(unittest.TestCase):
         self.assertEqual(outcomes[0]["reason"], "AGENT_EXECUTION_FAILED")
         self.assertEqual(self.ledger.get_agent_task("failing-review")["status"], "Failed")
 
+    def test_dispatcher_applies_owner_declared_reviewer_persona(self):
+        root = Path(tempfile.mkdtemp())
+        workspace = root / "project"
+        (workspace / ".etg").mkdir(parents=True)
+        (workspace / ".etg" / "agent-personas.yaml").write_text(
+            "personas:\n  codex-reviewer:\n    name: Independent code reviewer\n    task_types: [read_only]\n    context: Review independently. Identify concrete defects and do not implement fixes.\n"
+        )
+        self.addCleanup(shutil.rmtree, root)
+        persona = AgentTaskDispatcher._persona_for(workspace, "codex-reviewer", "read_only")
+        prompt = AgentTaskDispatcher._agent_prompt(
+            {"task_id": "review", "title": "Review change", "task_type": "read_only", "risk_level": "read_only", "details": {}},
+            workspace,
+            persona,
+        )
+        self.assertEqual(persona["name"], "Independent code reviewer")
+        self.assertIn("Review independently", prompt)
+        self.assertIn("does not grant additional authority", prompt)
+
 
 class TestAgentOrchestrationCLI(unittest.TestCase):
     def setUp(self):
