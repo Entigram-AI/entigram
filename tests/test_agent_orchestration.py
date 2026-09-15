@@ -249,6 +249,41 @@ class TestAgentOrchestrationLedger(unittest.TestCase):
         )
         self.assertIsNone(AgentTaskDispatcher._model_argument({"model": "Antigravity"}, "Antigravity"))
 
+    def test_dispatcher_leaves_pending_approval_queued_without_retry_noise(self):
+        self.ledger.record_agent(
+            "antigravity-local", provider="antigravity", reliability_score=0.95,
+            capability_scores={"code_review": 0.95}, allowed_task_classes=["code_review"],
+        )
+        self.ledger.request_agent_task(
+            "pending-review", "Await owner approval", "code_review", entity_id="entigram",
+            workspace_id="project", requested_by="user:owner", idempotency_key="pending-review-v1",
+            target_agent_id="antigravity-local", risk_level="read_only", approval_status="Pending",
+        )
+        outcomes = AgentTaskDispatcher(self.ledger, tempfile.mkdtemp()).dispatch_once()
+        self.assertEqual(outcomes, [])
+        self.assertEqual(self.ledger.get_agent_task("pending-review")["status"], "Queued")
+
+    def test_dispatcher_escalates_executor_failure(self):
+        root = Path(tempfile.mkdtemp())
+        child = root / "project"
+        (child / ".etg").mkdir(parents=True)
+        (child / ".etg" / "entigram.yaml").write_text("workspace_schema_version: 1\n")
+        self.addCleanup(shutil.rmtree, root)
+        self.ledger.record_agent(
+            "antigravity-local", provider="antigravity", reliability_score=0.95,
+            capability_scores={"code_review": 0.95}, allowed_task_classes=["code_review"],
+        )
+        self.ledger.request_agent_task(
+            "failing-review", "Run a review", "code_review", entity_id="entigram", workspace_id="project",
+            requested_by="user:owner", idempotency_key="failing-review-v1", target_agent_id="antigravity-local",
+            risk_level="read_only", details={"workspace_path": "project"},
+        )
+        outcomes = AgentTaskDispatcher(
+            self.ledger, root, executor=lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("adapter stopped"))
+        ).dispatch_once()
+        self.assertEqual(outcomes[0]["reason"], "AGENT_EXECUTION_FAILED")
+        self.assertEqual(self.ledger.get_agent_task("failing-review")["status"], "Failed")
+
 
 class TestAgentOrchestrationCLI(unittest.TestCase):
     def setUp(self):

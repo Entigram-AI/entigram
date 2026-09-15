@@ -9,6 +9,7 @@ as shell syntax.
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -37,7 +38,17 @@ class AgentTaskDispatcher:
         """Run each eligible assignment once and return durable dispatch receipts."""
         self.ledger.recover_expired_agent_tasks()
         outcomes: List[Dict[str, Any]] = []
-        for task in self.ledger.get_agent_tasks(status="Queued", limit=100) + self.ledger.get_agent_tasks(status="Assigned", limit=100):
+        candidates = self.ledger.get_agent_tasks(status="Queued", limit=100) + self.ledger.get_agent_tasks(status="Assigned", limit=100)
+        seen_task_ids = set()
+        for task in candidates:
+            if task["task_id"] in seen_task_ids:
+                continue
+            seen_task_ids.add(task["task_id"])
+            # A pending approval is deliberately quiet: it is visible to the
+            # owner, but it is not runnable work and must not generate a noisy
+            # failed-dispatch event every ten seconds.
+            if task.get("approval_status") not in {"NotRequired", "Approved"}:
+                continue
             assigned = task.get("assigned_agent_id")
             if not assigned or (agent_id and assigned != agent_id):
                 continue
@@ -47,10 +58,18 @@ class AgentTaskDispatcher:
     def _dispatch_task(self, task: Dict[str, Any], agent_id: str) -> Dict[str, Any]:
         agent = self.ledger.get_agent(agent_id)
         if not agent:
+            self.ledger.request_task_review(task["task_id"], "EntigramDispatcher", "Assigned local agent is not registered on this host.")
             return {"task_id": task["task_id"], "ok": False, "reason": "AGENT_NOT_REGISTERED"}
         runtime = self._runtime_for_agent(agent)
         if not runtime:
+            self.ledger.request_task_review(task["task_id"], "EntigramDispatcher", "Assigned agent has no supported local runtime.")
             return {"task_id": task["task_id"], "ok": False, "reason": "UNSUPPORTED_AGENT_RUNTIME"}
+        if task.get("risk_level") != "read_only":
+            self.ledger.request_task_review(
+                task["task_id"], "EntigramDispatcher",
+                "Automatic local dispatch is currently limited to read-only work; approve a governed action adapter before implementation work runs.",
+            )
+            return {"task_id": task["task_id"], "ok": False, "reason": "MUTATING_DISPATCH_NOT_AUTHORIZED"}
         try:
             workspace = self._resolve_workspace(task)
         except ValueError as exc:
@@ -62,10 +81,22 @@ class AgentTaskDispatcher:
 
         claimed = self.ledger.claim_agent_task(task["task_id"], agent_id)
         if not claimed.get("ok"):
+            self.ledger.request_task_review(
+                task["task_id"], "EntigramDispatcher",
+                f"The assigned agent could not claim this task: {claimed.get('reason', 'unknown reason')}.",
+            )
             return {"task_id": task["task_id"], "ok": False, "reason": claimed.get("reason", "TASK_NOT_CLAIMABLE")}
         self.ledger.heartbeat_agent_task(
             task["task_id"], agent_id, summary="Preparing the governed workspace for this task."
         )
+        stop_heartbeats = threading.Event()
+        heartbeat_thread = threading.Thread(
+            target=self._renew_lease,
+            args=(task["task_id"], agent_id, stop_heartbeats),
+            daemon=True,
+            name=f"entigram-task-heartbeat-{task['task_id'][:24]}",
+        )
+        heartbeat_thread.start()
         try:
             output = self.executor(
                 self._agent_prompt(task, workspace),
@@ -78,12 +109,23 @@ class AgentTaskDispatcher:
             summary = f"{runtime} could not complete the task: {exc}"
             self.ledger.fail_agent_task(task["task_id"], agent_id, summary)
             return {"task_id": task["task_id"], "ok": False, "reason": "AGENT_EXECUTION_FAILED", "details": str(exc)}
+        finally:
+            stop_heartbeats.set()
+            heartbeat_thread.join(timeout=1)
 
         text = str(output or "").strip() or "Agent completed without a written result."
         self.ledger.complete_agent_task(
             task["task_id"], agent_id, self._summary(text), output=text
         )
         return {"task_id": task["task_id"], "ok": True, "status": "Completed", "workspace": str(workspace)}
+
+    def _renew_lease(self, task_id: str, agent_id: str, stop: threading.Event) -> None:
+        while not stop.wait(10):
+            result = self.ledger.heartbeat_agent_task(
+                task_id, agent_id, summary="The local agent is still working on this task."
+            )
+            if not result.get("ok"):
+                return
 
     @staticmethod
     def _runtime_for_agent(agent: Dict[str, Any]) -> Optional[str]:
