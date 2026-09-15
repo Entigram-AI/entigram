@@ -166,6 +166,20 @@ class TestAgentOrchestrationLedger(unittest.TestCase):
         self.assertEqual(approved["task"]["status"], "Queued")
         self.assertEqual(self.ledger.get_agent_task_events("task-approval")[-1]["event_type"], "approved")
 
+    def test_high_risk_task_is_pending_until_approval_is_recorded(self):
+        self.assertTrue(self.ledger.record_agent(
+            "release-agent", reliability_score=1.0,
+            capability_scores={"release": 1.0}, allowed_task_classes=["release"],
+        ))
+        requested = self.ledger.request_agent_task(
+            "approval-required-release", "Publish release", "release",
+            entity_id="entigram", workspace_id="project", requested_by="user:owner",
+            idempotency_key="approval-required-release-v1", risk_level="high_risk",
+        )
+        self.assertTrue(requested["ok"])
+        self.assertEqual(requested["task"]["approval_status"], "Pending")
+        self.assertFalse(self.ledger.claim_agent_task("approval-required-release", "release-agent")["ok"])
+
     def test_expired_task_lease_is_requeued_with_a_continuity_event(self):
         self.assertTrue(self.ledger.record_agent(
             "codex-local", agent_class="strong", reliability_score=0.95,

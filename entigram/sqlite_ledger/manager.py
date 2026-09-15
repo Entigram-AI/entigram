@@ -1568,6 +1568,10 @@ class LedgerManager:
         if approval_status not in {"NotRequired", "Pending", "Approved", "Denied"}:
             return {"ok": False, "reason": "INVALID_APPROVAL_STATUS"}
         normalized_risk = self._normalize_risk_level(risk_level)
+        if normalized_risk in {"high_risk", "critical"} and approval_status == "NotRequired":
+            # High-impact work cannot enter the claim path on a caller's
+            # assertion alone. It remains pending until an approval is recorded.
+            approval_status = "Pending"
         minimum = TASK_RISK_REQUIRED_SCORE[normalized_risk]
         score = minimum if required_score is None else max(minimum, min(1.0, float(required_score)))
         conn = self._get_connection()
