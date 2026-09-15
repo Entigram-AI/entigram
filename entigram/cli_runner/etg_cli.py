@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import time
+import uuid
 from pathlib import Path
 from datetime import datetime
 from entigram.schema_compiler import compile_schema_file
@@ -2095,9 +2096,10 @@ def _main():
     task_review_parser.add_argument("--summary", required=True, help="Safe explanation of the policy or evidence conflict")
     task_review_parser.add_argument("--json", action="store_true", dest="json_output", help="Print result as JSON")
 
-    task_approve_parser = broker_subparsers.add_parser("task-approve", help="Record an owner's approval without dispatching work")
+    task_approve_parser = broker_subparsers.add_parser("task-approve", help="Sign and record a trusted task approval without dispatching work")
     task_approve_parser.add_argument("--id", required=True, help="Task ID")
-    task_approve_parser.add_argument("--actor", required=True, help="Owner principal, e.g. user:founder")
+    task_approve_parser.add_argument("--signer", required=True, help="Trusted human signer, e.g. user:founder")
+    task_approve_parser.add_argument("--identity-key", help="Optional path to the signer's private key outside this workspace")
     task_approve_parser.add_argument("--summary", required=True, help="Safe approval note")
     task_approve_parser.add_argument("--json", action="store_true", dest="json_output", help="Print result as JSON")
 
@@ -4639,6 +4641,7 @@ RELATIONSHIPS:
 
     elif args.command == "broker":
         from entigram.broker import EntigramBroker
+        workspace = _resolve_workspace_dir(args.dir)
         broker = EntigramBroker(args.dir)
         
         if args.broker_command == "decide":
@@ -4933,7 +4936,20 @@ RELATIONSHIPS:
             if not result.get("ok"):
                 sys.exit(1)
         elif args.broker_command == "task-approve":
-            result = broker.ledger.approve_agent_task(args.id, args.actor, args.summary)
+            task = broker.ledger.get_agent_task(args.id)
+            if not task:
+                result = {"ok": False, "reason": "TASK_NOT_FOUND"}
+            else:
+                try:
+                    identity = _personal_identity(workspace, args.signer, args.identity_key)
+                    claims = broker.ledger.task_approval_claims(
+                        task, args.summary, f"approval-{uuid.uuid4()}"
+                    )
+                    result = broker.ledger.approve_agent_task(
+                        args.id, identity.sign("task_approval", claims), args.summary
+                    )
+                except (ValueError, OSError) as exc:
+                    result = {"ok": False, "reason": "TASK_APPROVAL_SIGNING_FAILED", "details": str(exc)}
             if getattr(args, "json_output", False):
                 print(json.dumps(result, indent=2, sort_keys=True))
             elif result.get("ok"):

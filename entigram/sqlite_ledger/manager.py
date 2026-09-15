@@ -1,6 +1,7 @@
 import json
 import sqlite3
 import uuid
+import hashlib
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Dict, Any
@@ -1568,9 +1569,13 @@ class LedgerManager:
         if approval_status not in {"NotRequired", "Pending", "Approved", "Denied"}:
             return {"ok": False, "reason": "INVALID_APPROVAL_STATUS"}
         normalized_risk = self._normalize_risk_level(risk_level)
-        if normalized_risk in {"high_risk", "critical"} and approval_status == "NotRequired":
-            # High-impact work cannot enter the claim path on a caller's
-            # assertion alone. It remains pending until an approval is recorded.
+        if approval_status == "Approved":
+            # Approval is an auditable, signed transition, never a property a
+            # requester can assert while creating work.
+            return {"ok": False, "reason": "TASK_APPROVAL_MUST_BE_RECORDED"}
+        if normalized_risk in {"high_risk", "critical"}:
+            # High-impact work can never enter the claim path on a caller's
+            # assertion alone.
             approval_status = "Pending"
         minimum = TASK_RISK_REQUIRED_SCORE[normalized_risk]
         score = minimum if required_score is None else max(minimum, min(1.0, float(required_score)))
@@ -1621,6 +1626,10 @@ class LedgerManager:
             return {"ok": False, "reason": "AGENT_NOT_REGISTERED", "agent_id": agent_id}
         if task["approval_status"] not in {"NotRequired", "Approved"}:
             return {"ok": False, "reason": "TASK_APPROVAL_REQUIRED", "task": task}
+        if task["approval_status"] == "Approved":
+            approval = self.verify_task_approval(task)
+            if not approval.get("ok"):
+                return {"ok": False, "reason": approval["reason"], "task": task}
         if task["assigned_agent_id"] and task["assigned_agent_id"] != agent_id:
             return {"ok": False, "reason": "TASK_ASSIGNED_TO_OTHER_AGENT", "task": task}
         decision = self.evaluate_agent_assignment(agent, task)
@@ -1740,16 +1749,96 @@ class LedgerManager:
         finally:
             if self.db_path != ":memory:": conn.close()
 
-    def approve_agent_task(self, task_id: str, actor_id: str, summary: str) -> Dict[str, Any]:
-        """Record an owner's explicit approval without dispatching the task.
+    @staticmethod
+    def task_approval_claims(task: Dict[str, Any], summary: str, approval_id: str) -> Dict[str, Any]:
+        """Produce the canonical, immutable task projection a person signs."""
+        if not isinstance(task, dict):
+            raise ValueError("task approval requires a task record")
+        if not isinstance(summary, str) or not summary.strip():
+            raise ValueError("task approval requires a summary")
+        if not isinstance(approval_id, str) or not approval_id.strip():
+            raise ValueError("task approval requires an approval id")
+        request = {
+            key: task.get(key)
+            for key in (
+                "task_id", "entity_id", "workspace_id", "requested_by", "idempotency_key",
+                "title", "task_type", "risk_level", "required_score", "details", "action_contract_ref",
+            )
+        }
+        request_json = json.dumps(request, sort_keys=True, separators=(",", ":"), default=str)
+        return {
+            "task_id": task["task_id"],
+            "task_digest": hashlib.sha256(request_json.encode("utf-8")).hexdigest(),
+            "summary_digest": hashlib.sha256(summary.strip().encode("utf-8")).hexdigest(),
+            "approval_id": approval_id,
+        }
 
-        Approval changes authority, not execution state. The normal
-        capability-gated assign/claim path must still succeed afterward.
+    def _task_approval_registry(self):
+        """Resolve the public trust registry paired with a workspace ledger."""
+        if self.db_path == ":memory:":
+            raise ValueError("signed task approval requires a workspace-backed ledger")
+        ledger_path = Path(self.db_path).expanduser().resolve()
+        if ledger_path.parent.name != ".etg":
+            raise ValueError("task ledger is not located in a governed .etg directory")
+        from entigram.governance.trust import ProjectTrustRegistry
+        registry = ProjectTrustRegistry(ledger_path.parent.parent)
+        if not registry.exists():
+            raise ValueError("workspace trust is not configured; run `etg trust setup --owner user:<you>`")
+        return registry
+
+    def verify_task_approval(self, task: Dict[str, Any]) -> Dict[str, Any]:
+        """Re-verify a signed receipt before consequential task claims."""
+        if task.get("approval_status") != "Approved":
+            return {"ok": False, "reason": "TASK_APPROVAL_REQUIRED"}
+        if task.get("risk_level") not in {"high_risk", "critical"}:
+            return {"ok": True}
+        events = self.get_agent_task_events(task["task_id"])
+        approval = next((event for event in reversed(events) if event["event_type"] == "approved"), None)
+        if not approval:
+            return {"ok": False, "reason": "TASK_APPROVAL_EVIDENCE_MISSING"}
+        assertion = (approval.get("metadata") or {}).get("assertion")
+        if not isinstance(assertion, dict):
+            return {"ok": False, "reason": "TASK_APPROVAL_EVIDENCE_MISSING"}
+        try:
+            registry = self._task_approval_registry()
+            verified, claims, reason = registry.verify(assertion, "task_approval")
+            if not verified or not claims:
+                return {"ok": False, "reason": "TASK_APPROVAL_SIGNATURE_INVALID", "details": reason}
+            signer_id = claims.get("_signer_id")
+            if not isinstance(signer_id, str) or not registry.signer_has_role(signer_id, "task_approver"):
+                return {"ok": False, "reason": "TASK_APPROVER_NOT_AUTHORIZED"}
+            expected = self.task_approval_claims(task, approval["summary"], str(claims.get("approval_id", "")))
+            if any(claims.get(key) != value for key, value in expected.items()):
+                return {"ok": False, "reason": "TASK_APPROVAL_ASSERTION_MISMATCH"}
+            return {"ok": True, "signer_id": signer_id}
+        except (ValueError, OSError) as exc:
+            return {"ok": False, "reason": "TASK_APPROVAL_TRUST_UNAVAILABLE", "details": str(exc)}
+
+    def approve_agent_task(self, task_id: str, approval_assertion: Dict[str, Any], summary: str) -> Dict[str, Any]:
+        """Record a signed, trust-authorized approval without dispatching work.
+
+        Assertions bind an active ``task_approver`` to the exact task request
+        and approval note. A task can only make this transition once, so a
+        valid assertion cannot be replayed after its approval is consumed.
         """
-        if not actor_id.startswith("user:"):
-            return {"ok": False, "reason": "OWNER_APPROVAL_REQUIRED"}
         if not isinstance(summary, str) or not summary.strip():
             return {"ok": False, "reason": "TASK_SUMMARY_REQUIRED"}
+        task = self.get_agent_task(task_id)
+        if not task:
+            return {"ok": False, "reason": "TASK_NOT_FOUND"}
+        try:
+            registry = self._task_approval_registry()
+            verified, claims, reason = registry.verify(approval_assertion, "task_approval")
+            if not verified or not claims:
+                return {"ok": False, "reason": "TASK_APPROVAL_SIGNATURE_INVALID", "details": reason}
+            signer_id = claims.get("_signer_id")
+            if not isinstance(signer_id, str) or not registry.signer_has_role(signer_id, "task_approver"):
+                return {"ok": False, "reason": "TASK_APPROVER_NOT_AUTHORIZED"}
+            expected = self.task_approval_claims(task, summary, str(claims.get("approval_id", "")))
+            if any(claims.get(key) != value for key, value in expected.items()):
+                return {"ok": False, "reason": "TASK_APPROVAL_ASSERTION_MISMATCH"}
+        except (ValueError, OSError) as exc:
+            return {"ok": False, "reason": "TASK_APPROVAL_TRUST_UNAVAILABLE", "details": str(exc)}
         conn = self._get_connection()
         try:
             with conn:
@@ -1766,7 +1855,11 @@ class LedgerManager:
                 )
                 if result.rowcount != 1:
                     return {"ok": False, "reason": "TASK_APPROVAL_REJECTED"}
-                self._record_agent_task_event(conn, task_id, "approved", actor_id, summary, {})
+                self._record_agent_task_event(
+                    conn, task_id, "approved", signer_id, summary,
+                    {"approval_id": claims["approval_id"], "task_digest": claims["task_digest"],
+                     "key_id": claims.get("_key_id"), "assertion": approval_assertion},
+                )
             return {"ok": True, "task": self.get_agent_task(task_id)}
         finally:
             if self.db_path != ":memory:": conn.close()

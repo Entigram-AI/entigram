@@ -11,6 +11,7 @@ from entigram.cli_runner.etg_cli import main
 from entigram.agent_dispatch import AgentTaskDispatcher
 from entigram.reviewer_personas import create_reviewer_persona
 from entigram.sqlite_ledger.manager import LedgerManager
+from entigram.governance.trust import PersonalIdentity, ProjectTrustRegistry
 
 
 class TestAgentOrchestrationLedger(unittest.TestCase):
@@ -152,19 +153,62 @@ class TestAgentOrchestrationLedger(unittest.TestCase):
         self.assertEqual(completed["task"]["status"], "Completed")
         self.assertEqual(completed["task"]["result_summary"], "Focused tests passed.")
 
-    def test_only_an_owner_can_approve_a_pending_task_without_dispatching_it(self):
-        self.assertTrue(self.ledger.request_agent_task(
+    def test_signed_task_approval_requires_trusted_approver_and_rejects_replay(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root)
+        anchor_patch = patch.dict(os.environ, {"ENTIGRAM_TRUST_ANCHOR_DIR": str(root / "anchors")})
+        anchor_patch.start()
+        self.addCleanup(anchor_patch.stop)
+        workspace = root / "workspace"
+        (workspace / ".etg").mkdir(parents=True)
+        owner = PersonalIdentity("user:founder", root / "keys" / "founder.pem")
+        owner.create()
+        registry = ProjectTrustRegistry(workspace)
+        registry.initialize(
+            project_id="workspace", owner_public_key=owner.public_record(),
+            owner_roles=["trust_admin", "task_approver", "recovery_admin"], owner_identity=owner,
+        )
+        ledger = LedgerManager(str(workspace / ".etg" / "state.db"))
+        self.addCleanup(ledger.close)
+        self.assertTrue(ledger.request_agent_task(
             "task-approval", "Send a prepared release", "test_run",
             entity_id="entigram-ai", workspace_id="entigram", requested_by="user:founder",
             idempotency_key="task-approval-v1", risk_level="high_risk", approval_status="Pending",
         )["ok"])
-        denied = self.ledger.approve_agent_task("task-approval", "agent:codex", "Ready to send.")
+        denied = ledger.approve_agent_task("task-approval", {"signer_id": "user:anyone"}, "Ready to send.")
         self.assertFalse(denied["ok"])
-        approved = self.ledger.approve_agent_task("task-approval", "user:founder", "Approved after review.")
+        task = ledger.get_agent_task("task-approval")
+        claims = ledger.task_approval_claims(task, "Approved after review.", "approval-test-1")
+        approved = ledger.approve_agent_task("task-approval", owner.sign("task_approval", claims), "Approved after review.")
         self.assertTrue(approved["ok"])
         self.assertEqual(approved["task"]["approval_status"], "Approved")
         self.assertEqual(approved["task"]["status"], "Queued")
-        self.assertEqual(self.ledger.get_agent_task_events("task-approval")[-1]["event_type"], "approved")
+        self.assertEqual(ledger.get_agent_task_events("task-approval")[-1]["event_type"], "approved")
+        self.assertTrue(ledger.verify_task_approval(approved["task"])["ok"])
+        replay = ledger.approve_agent_task("task-approval", owner.sign("task_approval", claims), "Approved after review.")
+        self.assertFalse(replay["ok"])
+
+        self.assertTrue(ledger.request_agent_task(
+            "task-mismatch", "Send another release", "test_run", entity_id="entigram-ai",
+            workspace_id="entigram", requested_by="user:founder", idempotency_key="task-mismatch-v1",
+            risk_level="high_risk", approval_status="Pending",
+        )["ok"])
+        mismatch_task = ledger.get_agent_task("task-mismatch")
+        mismatch_claims = ledger.task_approval_claims(mismatch_task, "Approved note.", "approval-test-2")
+        mismatched = ledger.approve_agent_task(
+            "task-mismatch", owner.sign("task_approval", mismatch_claims), "Different approval note."
+        )
+        self.assertFalse(mismatched["ok"])
+        self.assertEqual(mismatched["reason"], "TASK_APPROVAL_ASSERTION_MISMATCH")
+
+    def test_high_risk_task_cannot_self_approve_at_creation(self):
+        rejected = self.ledger.request_agent_task(
+            "self-approved", "Publish release", "release", entity_id="entigram",
+            workspace_id="project", requested_by="user:owner", idempotency_key="self-approved-v1",
+            risk_level="high_risk", approval_status="Approved",
+        )
+        self.assertFalse(rejected["ok"])
+        self.assertEqual(rejected["reason"], "TASK_APPROVAL_MUST_BE_RECORDED")
 
     def test_high_risk_task_is_pending_until_approval_is_recorded(self):
         self.assertTrue(self.ledger.record_agent(
