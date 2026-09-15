@@ -2,6 +2,7 @@ import unittest
 import json
 import sqlite3
 from pathlib import Path
+from entigram.sqlite_ledger.manager import LedgerManager
 from entigram.schema_compiler.compiler import SchemaCompiler
 from entigram.schema_compiler.parser import SchemaParser
 
@@ -73,20 +74,31 @@ class TestHealthLogic(unittest.TestCase):
             "observation_value": "118" # Conflict!
         }
         
-        # We simulate the Broker's detection logic
+        # Exercise only the sensing path against an isolated ledger.  Using
+        # the repository workspace here made this test depend on whichever
+        # preceding test last changed the real governed ledger or Warden
+        # state, which caused the CI matrix to intermittently see no
+        # alignment at all.
         from entigram.broker import EntigramBroker
-        broker = EntigramBroker(str(self.workspace_root))
-        
-        # Manually authorize an alignment in the ledger for this test
-        broker.authorize_alignment(
+        ledger = LedgerManager(":memory:")
+        self.addCleanup(ledger.close)
+        broker = EntigramBroker(str(self.test_dir), ledger=ledger, seed_synonyms=False)
+
+        # Seed the already-verified alignment required by the sensing path;
+        # alignment authorization itself is covered independently by broker
+        # and governance tests.
+        self.assertTrue(ledger.record_alignment(
             source_domain="EHRExtraction",
             target_domain="ClinicalValidation",
             source_concept="observation_value",
             target_concept="observation_value",
             confidence=1.0,
             rationale="Direct mapping of raw value to validated value.",
-            validate_schema=False,
-        )
+            lifecycle_status="verified",
+            evidence_type="integration_test",
+            verified=True,
+            verified_by="test:health-logic",
+        ))
         
         conflicts = broker.detect_cross_domain_conflict(
             "EHRExtraction", "ClinicalValidation", ehr_state, cv_state
