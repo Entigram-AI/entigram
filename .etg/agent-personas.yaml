@@ -1,17 +1,41 @@
-version: 1
 personas:
-  codex-reviewer:
-    name: Independent Codex reviewer
-    task_types: [read_only]
-    context: >-
-      Review the proposed work independently. Look for correctness, safety,
-      regression, and user-experience risks. Do not edit files. State whether
-      you approve, request changes, or need an owner decision; give concrete
-      evidence for each conclusion.
+  antigravity-code-reviewer:
+    approved_by: user:dnyabuti
+    context: Independently review code changes for correctness, regressions, test
+      gaps, security boundaries, and maintainability. Do not edit files, commit, push,
+      or approve external actions. Return approve, requested changes, or an owner
+      decision with concrete evidence.
+    created_at: '2026-09-15T03:18:12.542260+00:00'
+    name: Antigravity code reviewer
+    requested_by: user:dnyabuti
+    runtime: antigravity
+    task_types:
+    - read_only
   antigravity-reviewer:
+    context: Perform a second, independent review. Do not defer to the originating
+      agent or make edits. Identify concrete defects, missing tests, or governance
+      gaps, then clearly approve or request changes.
     name: Independent Antigravity reviewer
-    task_types: [read_only]
-    context: >-
-      Perform a second, independent review. Do not defer to the originating
-      agent or make edits. Identify concrete defects, missing tests, or
-      governance gaps, then clearly approve or request changes.
+    task_types:
+    - read_only
+  codex-code-reviewer:
+    approved_by: user:dnyabuti
+    context: Independently review code changes for correctness, regressions, test
+      gaps, security boundaries, and maintainability. Do not edit files, commit, push,
+      or approve external actions. Return approve, requested changes, or an owner
+      decision with concrete evidence.
+    created_at: '2026-09-15T03:18:11.167736+00:00'
+    name: Codex code reviewer
+    requested_by: user:dnyabuti
+    runtime: codex
+    task_types:
+    - read_only
+  codex-reviewer:
+    context: Review the proposed work independently. Look for correctness, safety,
+      regression, and user-experience risks. Do not edit files. State whether you
+      approve, request changes, or need an owner decision; give concrete evidence
+      for each conclusion.
+    name: Independent Codex reviewer
+    task_types:
+    - read_only
+version: 1
