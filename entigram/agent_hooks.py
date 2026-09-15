@@ -447,6 +447,14 @@ def _startup_context(target_dir: Path, result: Dict[str, Any]) -> str:
             messages.append(str(step["ephemeralMessage"]))
     policy_path = root / ".etg" / "agent_policy.md"
     policy = policy_path.read_text() if policy_path.is_file() else ""
+    # A workspace may be initialized before its first local schema is written.
+    # The lifecycle mediator can therefore omit it from injectSteps even though
+    # it exists by SessionStart. Include the conventional closed-world schema
+    # when present so an adapter receives the same authoritative context as a
+    # direct hydrate invocation.
+    conventional_schema = root / "schema.lds"
+    if conventional_schema.is_file() and conventional_schema.resolve() not in schema_paths:
+        schema_paths.append(conventional_schema.resolve())
     schemas = []
     for schema_path in schema_paths:
         if schema_path.is_file() and (schema_path == root or root in schema_path.parents):

@@ -85,6 +85,108 @@ class TestAgentOrchestrationLedger(unittest.TestCase):
         self.assertTrue(self.ledger.mark_hibernation_resumed(plan["hibernate_id"]))
         self.assertIsNone(self.ledger.get_resume_plan(agent_id="codex-strong"))
 
+    def test_scoped_task_lifecycle_records_visibility_and_review(self):
+        self.ledger.record_agent(
+            "codex-local",
+            agent_class="strong",
+            reliability_score=0.9,
+            capability_scores={"household_review": 0.9, "test_run": 0.9},
+            allowed_task_classes=["household_review", "test_run"],
+        )
+        requested = self.ledger.request_agent_task(
+            "task-supply-review",
+            "Review a requested supply deletion",
+            "household_review",
+            entity_id="household",
+            workspace_id="home-dashboard",
+            requested_by="agent:mail-intake",
+            idempotency_key="mail-message-123:supply-review",
+            risk_level="low_risk",
+        )
+        self.assertTrue(requested["ok"])
+        self.assertTrue(requested["created"])
+        duplicate = self.ledger.request_agent_task(
+            "ignored-duplicate-id", "Ignored", "household_review",
+            entity_id="household", workspace_id="home-dashboard",
+            requested_by="agent:mail-intake", idempotency_key="mail-message-123:supply-review",
+        )
+        self.assertTrue(duplicate["ok"])
+        self.assertFalse(duplicate["created"])
+        self.assertEqual(duplicate["task"]["task_id"], "task-supply-review")
+
+        claimed = self.ledger.claim_agent_task("task-supply-review", "codex-local")
+        self.assertTrue(claimed["ok"])
+        self.assertEqual(claimed["task"]["status"], "Claimed")
+        self.assertFalse(self.ledger.claim_agent_task("task-supply-review", "codex-local")["ok"])
+        heartbeated = self.ledger.heartbeat_agent_task(
+            "task-supply-review", "codex-local", summary="Checking linked maintenance protocol."
+        )
+        self.assertTrue(heartbeated["ok"])
+        self.assertEqual(heartbeated["task"]["status"], "Running")
+        review = self.ledger.request_task_review(
+            "task-supply-review", "codex-local", "The supply is referenced by a maintenance protocol."
+        )
+        self.assertTrue(review["ok"])
+        self.assertEqual(review["task"]["status"], "NeedsReview")
+        self.assertEqual(review["task"]["approval_status"], "Pending")
+        dismissed = self.ledger.dismiss_agent_task(
+            "task-supply-review", "user:founder", "This review is no longer needed."
+        )
+        self.assertTrue(dismissed["ok"])
+        self.assertEqual(dismissed["task"]["status"], "Cancelled")
+        self.assertEqual(
+            [event["event_type"] for event in self.ledger.get_agent_task_events("task-supply-review")],
+            ["requested", "claimed", "heartbeat", "needs_review", "dismissed"],
+        )
+
+        self.ledger.request_agent_task(
+            "task-focused-tests", "Run focused tests", "test_run",
+            entity_id="entigram-ai", workspace_id="entigram", requested_by="user:founder",
+            idempotency_key="task-focused-tests-v1", risk_level="read_only",
+        )
+        self.assertTrue(self.ledger.claim_agent_task("task-focused-tests", "codex-local")["ok"])
+        completed = self.ledger.complete_agent_task("task-focused-tests", "codex-local", "Focused tests passed.")
+        self.assertTrue(completed["ok"])
+        self.assertEqual(completed["task"]["status"], "Completed")
+        self.assertEqual(completed["task"]["result_summary"], "Focused tests passed.")
+
+    def test_only_an_owner_can_approve_a_pending_task_without_dispatching_it(self):
+        self.assertTrue(self.ledger.request_agent_task(
+            "task-approval", "Send a prepared release", "test_run",
+            entity_id="entigram-ai", workspace_id="entigram", requested_by="user:founder",
+            idempotency_key="task-approval-v1", risk_level="high_risk", approval_status="Pending",
+        )["ok"])
+        denied = self.ledger.approve_agent_task("task-approval", "agent:codex", "Ready to send.")
+        self.assertFalse(denied["ok"])
+        approved = self.ledger.approve_agent_task("task-approval", "user:founder", "Approved after review.")
+        self.assertTrue(approved["ok"])
+        self.assertEqual(approved["task"]["approval_status"], "Approved")
+        self.assertEqual(approved["task"]["status"], "Queued")
+        self.assertEqual(self.ledger.get_agent_task_events("task-approval")[-1]["event_type"], "approved")
+
+    def test_expired_task_lease_is_requeued_with_a_continuity_event(self):
+        self.assertTrue(self.ledger.record_agent(
+            "codex-local", agent_class="strong", reliability_score=0.95,
+            capability_scores={"work": 1.0}, allowed_task_classes=["work"],
+        ))
+        self.assertTrue(self.ledger.request_agent_task(
+            "task-recover", "Resume a governed review", "work", entity_id="workspace",
+            workspace_id="entigram", requested_by="user:owner", idempotency_key="recover-v1",
+        )["ok"])
+        self.assertTrue(self.ledger.assign_agent_task("task-recover", "codex-local")["ok"])
+        self.assertTrue(self.ledger.claim_agent_task("task-recover", "codex-local")["ok"])
+        conn = self.ledger._get_connection()
+        with conn:
+            conn.execute("UPDATE agent_tasks SET lease_expires_at = ? WHERE task_id = ?", ("2000-01-01T00:00:00+00:00", "task-recover"))
+
+        recovered = self.ledger.recover_expired_agent_tasks()
+
+        self.assertEqual([task["task_id"] for task in recovered], ["task-recover"])
+        task = self.ledger.get_agent_task("task-recover")
+        self.assertEqual(task["status"], "Queued")
+        self.assertIn("resume from recorded checkpoints", task["last_error"])
+        self.assertEqual(self.ledger.get_agent_task_events("task-recover")[-1]["event_type"], "lease_expired")
+
 
 class TestAgentOrchestrationCLI(unittest.TestCase):
     def setUp(self):
@@ -174,6 +276,41 @@ class TestAgentOrchestrationCLI(unittest.TestCase):
         self.assertTrue(success)
         self.assertIn("Resume checkpoint", output)
         self.assertIn("Run broker status.", output)
+
+    def test_broker_task_lifecycle_commands(self):
+        success, _ = self.run_cli(["init", "--dir", ".", "--force"])
+        self.assertTrue(success)
+        success, _ = self.run_cli([
+            "broker", "agent-register", "--agent", "codex-local", "--score", "0.9",
+            "--capability", "test_run=0.9", "--allow", "test_run",
+        ])
+        self.assertTrue(success)
+        success, output = self.run_cli([
+            "broker", "task-request", "--id", "task-cli", "--entity", "entigram-ai",
+            "--workspace", "entigram", "--requested-by", "user:founder",
+            "--idempotency-key", "task-cli-v1", "--title", "Run focused tests",
+            "--type", "test_run", "--risk", "read_only",
+        ])
+        self.assertTrue(success)
+        self.assertIn("Task requested", output)
+        success, output = self.run_cli(["broker", "task-claim", "--id", "task-cli", "--agent", "codex-local"])
+        self.assertTrue(success)
+        self.assertIn("Claimed task-cli", output)
+        success, output = self.run_cli([
+            "broker", "task-review", "--id", "task-cli", "--actor", "codex-local",
+            "--summary", "The request conflicts with the workspace maintenance policy.",
+        ])
+        self.assertTrue(success)
+        self.assertIn("needs operator review", output)
+        success, output = self.run_cli([
+            "broker", "task-dismiss", "--id", "task-cli", "--actor", "user:founder",
+            "--summary", "No action is pending.",
+        ])
+        self.assertTrue(success)
+        self.assertIn("Closed task-cli", output)
+        success, output = self.run_cli(["broker", "task-events", "--id", "task-cli"])
+        self.assertTrue(success)
+        self.assertIn("needs_review", output)
 
 
 if __name__ == "__main__":

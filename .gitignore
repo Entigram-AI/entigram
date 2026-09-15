@@ -41,6 +41,11 @@ interview_prompt.md
 cross_domain_demo/
 ci_log.txt
 
+# Agent-runtime hook configuration is generated per workspace and embeds the
+# local workspace path. Keep agent instructions portable, but never commit the
+# machine-specific hook command.
+.agents/hooks.json
+
 # Private strategy and open-source preparation notes
 /private/
 /ENTIGRAM_VALUE_RESEARCH.md

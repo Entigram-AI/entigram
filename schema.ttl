@@ -28,6 +28,9 @@ mk:Entigram_Agent a owl:Class ;
 mk:Entigram_Agent_Task a owl:Class ;
     rdfs:label "Entigram_Agent_Task" .
 
+mk:Entigram_Agent_Task_Event a owl:Class ;
+    rdfs:label "Entigram_Agent_Task_Event" .
+
 mk:Entigram_Agent_Hibernation a owl:Class ;
     rdfs:label "Entigram_Agent_Hibernation" .
 
@@ -304,6 +307,26 @@ mk:Entigram_Agent_Task_task_id a owl:DatatypeProperty ;
     rdfs:range xsd:string ;
     rdfs:label "task_id" .
 
+mk:Entigram_Agent_Task_entity_id a owl:DatatypeProperty ;
+    rdfs:domain mk:Entigram_Agent_Task ;
+    rdfs:range xsd:string ;
+    rdfs:label "entity_id" .
+
+mk:Entigram_Agent_Task_workspace_id a owl:DatatypeProperty ;
+    rdfs:domain mk:Entigram_Agent_Task ;
+    rdfs:range xsd:string ;
+    rdfs:label "workspace_id" .
+
+mk:Entigram_Agent_Task_requested_by a owl:DatatypeProperty ;
+    rdfs:domain mk:Entigram_Agent_Task ;
+    rdfs:range xsd:string ;
+    rdfs:label "requested_by" .
+
+mk:Entigram_Agent_Task_idempotency_key a owl:DatatypeProperty ;
+    rdfs:domain mk:Entigram_Agent_Task ;
+    rdfs:range xsd:string ;
+    rdfs:label "idempotency_key" .
+
 mk:Entigram_Agent_Task_title a owl:DatatypeProperty ;
     rdfs:domain mk:Entigram_Agent_Task ;
     rdfs:range xsd:string ;
@@ -334,6 +357,16 @@ mk:Entigram_Agent_Task_status a owl:DatatypeProperty ;
     rdfs:range xsd:string ;
     rdfs:label "status" .
 
+mk:Entigram_Agent_Task_approval_status a owl:DatatypeProperty ;
+    rdfs:domain mk:Entigram_Agent_Task ;
+    rdfs:range xsd:string ;
+    rdfs:label "approval_status" .
+
+mk:Entigram_Agent_Task_action_contract_ref a owl:DatatypeProperty ;
+    rdfs:domain mk:Entigram_Agent_Task ;
+    rdfs:range xsd:string ;
+    rdfs:label "action_contract_ref" .
+
 mk:Entigram_Agent_Task_assigned_agent_id a owl:DatatypeProperty ;
     rdfs:domain mk:Entigram_Agent_Task ;
     rdfs:range xsd:string ;
@@ -344,6 +377,36 @@ mk:Entigram_Agent_Task_assignment_rationale a owl:DatatypeProperty ;
     rdfs:range xsd:string ;
     rdfs:label "assignment_rationale" .
 
+mk:Entigram_Agent_Task_claimed_by a owl:DatatypeProperty ;
+    rdfs:domain mk:Entigram_Agent_Task ;
+    rdfs:range xsd:string ;
+    rdfs:label "claimed_by" .
+
+mk:Entigram_Agent_Task_lease_expires_at a owl:DatatypeProperty ;
+    rdfs:domain mk:Entigram_Agent_Task ;
+    rdfs:range xsd:dateTime ;
+    rdfs:label "lease_expires_at" .
+
+mk:Entigram_Agent_Task_last_heartbeat_at a owl:DatatypeProperty ;
+    rdfs:domain mk:Entigram_Agent_Task ;
+    rdfs:range xsd:dateTime ;
+    rdfs:label "last_heartbeat_at" .
+
+mk:Entigram_Agent_Task_attempt_count a owl:DatatypeProperty ;
+    rdfs:domain mk:Entigram_Agent_Task ;
+    rdfs:range xsd:integer ;
+    rdfs:label "attempt_count" .
+
+mk:Entigram_Agent_Task_last_error a owl:DatatypeProperty ;
+    rdfs:domain mk:Entigram_Agent_Task ;
+    rdfs:range xsd:string ;
+    rdfs:label "last_error" .
+
+mk:Entigram_Agent_Task_result_summary a owl:DatatypeProperty ;
+    rdfs:domain mk:Entigram_Agent_Task ;
+    rdfs:range xsd:string ;
+    rdfs:label "result_summary" .
+
 mk:Entigram_Agent_Task_created_at a owl:DatatypeProperty ;
     rdfs:domain mk:Entigram_Agent_Task ;
     rdfs:range xsd:dateTime ;
@@ -353,6 +416,46 @@ mk:Entigram_Agent_Task_updated_at a owl:DatatypeProperty ;
     rdfs:domain mk:Entigram_Agent_Task ;
     rdfs:range xsd:dateTime ;
     rdfs:label "updated_at" .
+
+mk:Entigram_Agent_Task_Event_id a owl:DatatypeProperty ;
+    rdfs:domain mk:Entigram_Agent_Task_Event ;
+    rdfs:range xsd:string ;
+    rdfs:label "id" .
+
+mk:Entigram_Agent_Task_Event_event_id a owl:DatatypeProperty ;
+    rdfs:domain mk:Entigram_Agent_Task_Event ;
+    rdfs:range xsd:string ;
+    rdfs:label "event_id" .
+
+mk:Entigram_Agent_Task_Event_task_id a owl:DatatypeProperty ;
+    rdfs:domain mk:Entigram_Agent_Task_Event ;
+    rdfs:range xsd:string ;
+    rdfs:label "task_id" .
+
+mk:Entigram_Agent_Task_Event_event_type a owl:DatatypeProperty ;
+    rdfs:domain mk:Entigram_Agent_Task_Event ;
+    rdfs:range xsd:string ;
+    rdfs:label "event_type" .
+
+mk:Entigram_Agent_Task_Event_actor_id a owl:DatatypeProperty ;
+    rdfs:domain mk:Entigram_Agent_Task_Event ;
+    rdfs:range xsd:string ;
+    rdfs:label "actor_id" .
+
+mk:Entigram_Agent_Task_Event_summary a owl:DatatypeProperty ;
+    rdfs:domain mk:Entigram_Agent_Task_Event ;
+    rdfs:range xsd:string ;
+    rdfs:label "summary" .
+
+mk:Entigram_Agent_Task_Event_metadata a owl:DatatypeProperty ;
+    rdfs:domain mk:Entigram_Agent_Task_Event ;
+    rdfs:range xsd:string ;
+    rdfs:label "metadata" .
+
+mk:Entigram_Agent_Task_Event_observed_at a owl:DatatypeProperty ;
+    rdfs:domain mk:Entigram_Agent_Task_Event ;
+    rdfs:range xsd:dateTime ;
+    rdfs:label "observed_at" .
 
 mk:Entigram_Agent_Hibernation_id a owl:DatatypeProperty ;
     rdfs:domain mk:Entigram_Agent_Hibernation ;

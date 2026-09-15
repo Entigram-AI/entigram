@@ -62,16 +62,39 @@ ENTITY: Entigram_Agent_Task
 ATTRIBUTES:
   - .id (UUID)
   - task_id (String, MUST, UNIQUE)
+  - entity_id (String, MUST) # tenant / legal or household boundary
+  - workspace_id (String, MUST) # governed workspace receiving the work
+  - requested_by (String, MUST) # human or enrolled agent principal
+  - idempotency_key (String, MUST, UNIQUE)
   - title (String, MUST)
   - task_type (String, MUST)
   - risk_level (String) # read_only, low_risk, medium_risk, high_risk, critical
   - required_score (Float)
   - details (JSON)
-  - status (String) # Queued, Assigned, Completed, Blocked
+  - status (String) # Queued, NeedsReview, Claimed, Running, Completed, Failed, Cancelled, DeadLetter
+  - approval_status (String) # NotRequired, Pending, Approved, Denied
+  - action_contract_ref (String)
   - assigned_agent_id (String) [EXTERNAL: Entigram_Agent.agent_id]
   - assignment_rationale (Text)
+  - claimed_by (String) [EXTERNAL: Entigram_Agent.agent_id]
+  - lease_expires_at (DateTime)
+  - last_heartbeat_at (DateTime)
+  - attempt_count (Integer)
+  - last_error (Text)
+  - result_summary (Text)
   - created_at (DateTime)
   - updated_at (DateTime)
+
+ENTITY: Entigram_Agent_Task_Event
+ATTRIBUTES:
+  - .id (UUID)
+  - event_id (String, MUST, UNIQUE)
+  - task_id (String, MUST) [EXTERNAL: Entigram_Agent_Task.task_id]
+  - event_type (String, MUST) # requested, assigned, claimed, heartbeat, needs_review, completed, failed, cancelled
+  - actor_id (String, MUST)
+  - summary (Text)
+  - metadata (JSON) # structured operational metadata; never raw prompt or email content
+  - observed_at (DateTime)
 
 ENTITY: Entigram_Agent_Hibernation
 ATTRIBUTES:
@@ -481,7 +504,7 @@ EXPECTATION: Agent Delivery Proof {
 
 EXPECTATION: Agent Capability Routing {
   developer_expectation: Entigram should preserve empirical knowledge about which agents can safely handle which classes of work.
-  implementation_rule: The broker must persist agent capability profiles and reject task assignments when the agent score is below the task risk threshold, recording serious high-risk or critical assignment conflicts for human resolution.
+  implementation_rule: The broker must persist scoped, idempotent task requests and capability profiles; it must atomically lease an eligible task to one agent, record lifecycle events and heartbeats, reject unapproved or under-capable claims, and surface policy uncertainty as NeedsReview without executing an external effect.
   validation_check: python -m unittest tests.test_agent_orchestration
   proof: python -m unittest tests.test_agent_orchestration
 }

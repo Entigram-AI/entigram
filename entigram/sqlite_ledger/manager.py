@@ -2,7 +2,7 @@ import json
 import sqlite3
 import uuid
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Dict, Any
 from .paths import CANONICAL_LEDGER_NAME, LEGACY_LEDGER_NAME
 from entigram.governance.grounding import (
@@ -272,6 +272,32 @@ class LedgerManager:
                     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
+            self._ensure_columns(conn, "agent_tasks", {
+                "entity_id": "TEXT NOT NULL DEFAULT 'default'",
+                "workspace_id": "TEXT NOT NULL DEFAULT 'default'",
+                "requested_by": "TEXT NOT NULL DEFAULT 'operator'",
+                "idempotency_key": "TEXT",
+                "approval_status": "TEXT NOT NULL DEFAULT 'NotRequired'",
+                "action_contract_ref": "TEXT",
+                "claimed_by": "TEXT",
+                "lease_expires_at": "TEXT",
+                "last_heartbeat_at": "TEXT",
+                "attempt_count": "INTEGER NOT NULL DEFAULT 0",
+                "last_error": "TEXT",
+                "result_summary": "TEXT",
+            })
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS agent_task_events (
+                    id INTEGER PRIMARY KEY,
+                    event_id TEXT UNIQUE NOT NULL,
+                    task_id TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    actor_id TEXT NOT NULL,
+                    summary TEXT,
+                    metadata TEXT DEFAULT '{}',
+                    observed_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
             # Table for token-window checkpointing and external scheduler resume.
             conn.execute('''
                 CREATE TABLE IF NOT EXISTS agent_hibernations (
@@ -298,6 +324,15 @@ class LedgerManager:
             conn.execute('''
                 CREATE INDEX IF NOT EXISTS idx_agent_tasks_status
                 ON agent_tasks(status, risk_level, required_score)
+            ''')
+            conn.execute('''
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_tasks_idempotency
+                ON agent_tasks(idempotency_key)
+                WHERE idempotency_key IS NOT NULL
+            ''')
+            conn.execute('''
+                CREATE INDEX IF NOT EXISTS idx_agent_task_events_task
+                ON agent_task_events(task_id, id)
             ''')
             conn.execute('''
                 CREATE INDEX IF NOT EXISTS idx_agent_hibernations_resume
@@ -1508,6 +1543,308 @@ class LedgerManager:
         finally:
             if self.db_path != ":memory:": conn.close()
 
+    def request_agent_task(
+        self,
+        task_id: str,
+        title: str,
+        task_type: str,
+        *,
+        entity_id: str,
+        workspace_id: str,
+        requested_by: str,
+        idempotency_key: str,
+        risk_level: str = "low_risk",
+        required_score: Optional[float] = None,
+        details: Optional[Dict[str, Any]] = None,
+        target_agent_id: Optional[str] = None,
+        approval_status: str = "NotRequired",
+        action_contract_ref: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Create an idempotent, scoped task request without dispatching work."""
+        required = [task_id, title, task_type, entity_id, workspace_id, requested_by, idempotency_key]
+        if not all(isinstance(value, str) and value.strip() for value in required):
+            return {"ok": False, "reason": "TASK_REQUEST_FIELDS_REQUIRED"}
+        if approval_status not in {"NotRequired", "Pending", "Approved", "Denied"}:
+            return {"ok": False, "reason": "INVALID_APPROVAL_STATUS"}
+        normalized_risk = self._normalize_risk_level(risk_level)
+        minimum = TASK_RISK_REQUIRED_SCORE[normalized_risk]
+        score = minimum if required_score is None else max(minimum, min(1.0, float(required_score)))
+        conn = self._get_connection()
+        try:
+            with conn:
+                existing = conn.execute(
+                    "SELECT task_id FROM agent_tasks WHERE idempotency_key = ?", (idempotency_key,)
+                ).fetchone()
+                if existing:
+                    task = self.get_agent_task(existing[0])
+                    return {"ok": True, "created": False, "task": task}
+                conn.execute(
+                    """
+                    INSERT INTO agent_tasks (
+                        task_id, entity_id, workspace_id, requested_by, idempotency_key,
+                        title, task_type, risk_level, required_score, details, status,
+                        approval_status, action_contract_ref, assigned_agent_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Queued', ?, ?, ?)
+                    """,
+                    (
+                        task_id, entity_id, workspace_id, requested_by, idempotency_key,
+                        title, task_type, normalized_risk, score, json.dumps(details or {}, sort_keys=True),
+                        approval_status, action_contract_ref, target_agent_id,
+                    ),
+                )
+                self._record_agent_task_event(
+                    conn, task_id, "requested", requested_by, title,
+                    {"entity_id": entity_id, "workspace_id": workspace_id, "risk_level": normalized_risk},
+                )
+            return {"ok": True, "created": True, "task": self.get_agent_task(task_id)}
+        except sqlite3.IntegrityError:
+            return {"ok": False, "reason": "TASK_REQUEST_CONFLICT"}
+        except Exception as exc:
+            return {"ok": False, "reason": "TASK_REQUEST_WRITE_FAILED", "details": str(exc)}
+        finally:
+            if self.db_path != ":memory:": conn.close()
+
+    def claim_agent_task(self, task_id: str, agent_id: str, *, lease_seconds: int = 300) -> Dict[str, Any]:
+        """Atomically lease a ready task to one capability-approved agent."""
+        if lease_seconds < 30 or lease_seconds > 3600:
+            return {"ok": False, "reason": "INVALID_LEASE_SECONDS"}
+        task = self.get_agent_task(task_id)
+        agent = self.get_agent(agent_id)
+        if not task:
+            return {"ok": False, "reason": "TASK_NOT_FOUND", "task_id": task_id}
+        if not agent:
+            return {"ok": False, "reason": "AGENT_NOT_REGISTERED", "agent_id": agent_id}
+        if task["approval_status"] not in {"NotRequired", "Approved"}:
+            return {"ok": False, "reason": "TASK_APPROVAL_REQUIRED", "task": task}
+        if task["assigned_agent_id"] and task["assigned_agent_id"] != agent_id:
+            return {"ok": False, "reason": "TASK_ASSIGNED_TO_OTHER_AGENT", "task": task}
+        decision = self.evaluate_agent_assignment(agent, task)
+        if not decision["ok"]:
+            return decision
+        now = datetime.now(timezone.utc)
+        lease_expires_at = (now + timedelta(seconds=lease_seconds)).isoformat()
+        conn = self._get_connection()
+        try:
+            with conn:
+                result = conn.execute(
+                    """
+                    UPDATE agent_tasks
+                    SET status = 'Claimed', claimed_by = ?, lease_expires_at = ?,
+                        last_heartbeat_at = ?, attempt_count = attempt_count + 1,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE task_id = ?
+                      AND status IN ('Queued', 'Assigned')
+                      AND approval_status IN ('NotRequired', 'Approved')
+                      AND (assigned_agent_id IS NULL OR assigned_agent_id = ?)
+                    """,
+                    (agent_id, lease_expires_at, now.isoformat(), task_id, agent_id),
+                )
+                if result.rowcount != 1:
+                    return {"ok": False, "reason": "TASK_NOT_CLAIMABLE", "task": self.get_agent_task(task_id)}
+                self._record_agent_task_event(
+                    conn, task_id, "claimed", agent_id, "Task lease claimed",
+                    {"lease_expires_at": lease_expires_at, "attempt": task["attempt_count"] + 1},
+                )
+            return {"ok": True, "task": self.get_agent_task(task_id)}
+        finally:
+            if self.db_path != ":memory:": conn.close()
+
+    def heartbeat_agent_task(self, task_id: str, agent_id: str, *, lease_seconds: int = 300, summary: str = "") -> Dict[str, Any]:
+        """Renew a held lease and make active work visible without retaining prompts."""
+        if lease_seconds < 30 or lease_seconds > 3600:
+            return {"ok": False, "reason": "INVALID_LEASE_SECONDS"}
+        now = datetime.now(timezone.utc)
+        lease_expires_at = (now + timedelta(seconds=lease_seconds)).isoformat()
+        conn = self._get_connection()
+        try:
+            with conn:
+                result = conn.execute(
+                    """
+                    UPDATE agent_tasks
+                    SET status = 'Running', lease_expires_at = ?, last_heartbeat_at = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE task_id = ? AND claimed_by = ? AND status IN ('Claimed', 'Running')
+                    """,
+                    (lease_expires_at, now.isoformat(), task_id, agent_id),
+                )
+                if result.rowcount != 1:
+                    return {"ok": False, "reason": "TASK_HEARTBEAT_REJECTED"}
+                self._record_agent_task_event(conn, task_id, "heartbeat", agent_id, summary or "Task is running", {"lease_expires_at": lease_expires_at})
+            return {"ok": True, "task": self.get_agent_task(task_id)}
+        finally:
+            if self.db_path != ":memory:": conn.close()
+
+    def recover_expired_agent_tasks(self) -> List[Dict[str, Any]]:
+        """Return abandoned leased work to the queue without discarding its checkpoints.
+
+        A local host may be restarted while an external CLI is working.  The
+        immutable task events remain the continuity record; recovery makes the
+        interruption visible and resumable instead of leaving a false Running
+        status indefinitely.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        conn = self._get_connection()
+        try:
+            with conn:
+                rows = conn.execute(
+                    "SELECT task_id, claimed_by FROM agent_tasks "
+                    "WHERE status IN ('Claimed', 'Running') AND lease_expires_at IS NOT NULL AND lease_expires_at < ?",
+                    (now,),
+                ).fetchall()
+                for task_id, agent_id in rows:
+                    conn.execute(
+                        "UPDATE agent_tasks SET status = 'Queued', claimed_by = NULL, lease_expires_at = NULL, "
+                        "last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE task_id = ?",
+                        ("Agent lease expired; resume from recorded checkpoints.", task_id),
+                    )
+                    self._record_agent_task_event(
+                        conn, task_id, "lease_expired", str(agent_id or "Entigram"),
+                        "Agent connection ended; work is ready to resume from its last checkpoint.", {},
+                    )
+            return [self.get_agent_task(str(row[0])) for row in rows if self.get_agent_task(str(row[0]))]
+        finally:
+            if self.db_path != ":memory:": conn.close()
+
+    def complete_agent_task(self, task_id: str, agent_id: str, summary: str) -> Dict[str, Any]:
+        return self._finish_agent_task(task_id, agent_id, "Completed", "completed", summary)
+
+    def fail_agent_task(self, task_id: str, agent_id: str, summary: str, *, retryable: bool = False) -> Dict[str, Any]:
+        return self._finish_agent_task(task_id, agent_id, "Queued" if retryable else "Failed", "failed", summary, retryable=retryable)
+
+    def request_task_review(self, task_id: str, actor_id: str, summary: str) -> Dict[str, Any]:
+        """Stop work and expose an unresolved policy or evidence question to the operator."""
+        conn = self._get_connection()
+        try:
+            with conn:
+                result = conn.execute(
+                    """
+                    UPDATE agent_tasks
+                    SET status = 'NeedsReview', approval_status = 'Pending', last_error = ?,
+                        claimed_by = NULL, lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP
+                    WHERE task_id = ? AND status NOT IN ('Completed', 'Cancelled', 'DeadLetter')
+                    """, (summary, task_id),
+                )
+                if result.rowcount != 1:
+                    return {"ok": False, "reason": "TASK_REVIEW_REJECTED"}
+                self._record_agent_task_event(conn, task_id, "needs_review", actor_id, summary, {})
+            return {"ok": True, "task": self.get_agent_task(task_id)}
+        finally:
+            if self.db_path != ":memory:": conn.close()
+
+    def approve_agent_task(self, task_id: str, actor_id: str, summary: str) -> Dict[str, Any]:
+        """Record an owner's explicit approval without dispatching the task.
+
+        Approval changes authority, not execution state. The normal
+        capability-gated assign/claim path must still succeed afterward.
+        """
+        if not actor_id.startswith("user:"):
+            return {"ok": False, "reason": "OWNER_APPROVAL_REQUIRED"}
+        if not isinstance(summary, str) or not summary.strip():
+            return {"ok": False, "reason": "TASK_SUMMARY_REQUIRED"}
+        conn = self._get_connection()
+        try:
+            with conn:
+                result = conn.execute(
+                    """
+                    UPDATE agent_tasks
+                    SET approval_status = 'Approved',
+                        status = CASE WHEN status = 'NeedsReview' THEN 'Queued' ELSE status END,
+                        last_error = NULL, updated_at = CURRENT_TIMESTAMP
+                    WHERE task_id = ? AND approval_status = 'Pending'
+                      AND status NOT IN ('Completed', 'Cancelled', 'DeadLetter')
+                    """,
+                    (task_id,),
+                )
+                if result.rowcount != 1:
+                    return {"ok": False, "reason": "TASK_APPROVAL_REJECTED"}
+                self._record_agent_task_event(conn, task_id, "approved", actor_id, summary, {})
+            return {"ok": True, "task": self.get_agent_task(task_id)}
+        finally:
+            if self.db_path != ":memory:": conn.close()
+
+    def dismiss_agent_task(self, task_id: str, actor_id: str, summary: str) -> Dict[str, Any]:
+        """Close obsolete work with an auditable human reason; never delete it."""
+        if not isinstance(summary, str) or not summary.strip():
+            return {"ok": False, "reason": "TASK_SUMMARY_REQUIRED"}
+        conn = self._get_connection()
+        try:
+            with conn:
+                result = conn.execute(
+                    """
+                    UPDATE agent_tasks
+                    SET status = 'Cancelled', approval_status = 'Denied', result_summary = ?,
+                        last_error = NULL, claimed_by = NULL, lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP
+                    WHERE task_id = ? AND status NOT IN ('Completed', 'Cancelled', 'DeadLetter')
+                    """, (summary, task_id),
+                )
+                if result.rowcount != 1:
+                    return {"ok": False, "reason": "TASK_DISMISS_REJECTED"}
+                self._record_agent_task_event(conn, task_id, "dismissed", actor_id, summary, {"status": "Cancelled"})
+            return {"ok": True, "task": self.get_agent_task(task_id)}
+        finally:
+            if self.db_path != ":memory:": conn.close()
+
+    def get_agent_task_events(self, task_id: str, *, limit: int = 100) -> List[Dict[str, Any]]:
+        conn = self._get_connection()
+        try:
+            rows = conn.execute(
+                "SELECT event_id, task_id, event_type, actor_id, summary, metadata, observed_at "
+                "FROM agent_task_events WHERE task_id = ? ORDER BY id ASC LIMIT ?", (task_id, limit),
+            ).fetchall()
+            return [{"event_id": row[0], "task_id": row[1], "event_type": row[2], "actor_id": row[3], "summary": row[4], "metadata": json.loads(row[5] or "{}"), "observed_at": row[6]} for row in rows]
+        finally:
+            if self.db_path != ":memory:": conn.close()
+
+    def _record_agent_task_event(
+        self,
+        conn,
+        task_id: str,
+        event_type: str,
+        actor_id: str,
+        summary: str,
+        metadata: Dict[str, Any],
+    ) -> None:
+        conn.execute(
+            """
+            INSERT INTO agent_task_events (event_id, task_id, event_type, actor_id, summary, metadata)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (f"task-event-{uuid.uuid4()}", task_id, event_type, actor_id, summary, json.dumps(metadata, sort_keys=True)),
+        )
+
+    def _finish_agent_task(
+        self,
+        task_id: str,
+        agent_id: str,
+        status: str,
+        event_type: str,
+        summary: str,
+        *,
+        retryable: bool = False,
+    ) -> Dict[str, Any]:
+        if not isinstance(summary, str) or not summary.strip():
+            return {"ok": False, "reason": "TASK_SUMMARY_REQUIRED"}
+        conn = self._get_connection()
+        try:
+            with conn:
+                result = conn.execute(
+                    """
+                    UPDATE agent_tasks
+                    SET status = ?, result_summary = CASE WHEN ? = 'Completed' THEN ? ELSE result_summary END,
+                        last_error = CASE WHEN ? = 'Completed' THEN NULL ELSE ? END,
+                        claimed_by = NULL, lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP
+                    WHERE task_id = ? AND claimed_by = ? AND status IN ('Claimed', 'Running')
+                    """,
+                    (status, status, summary, status, summary, task_id, agent_id),
+                )
+                if result.rowcount != 1:
+                    return {"ok": False, "reason": "TASK_FINISH_REJECTED"}
+                self._record_agent_task_event(
+                    conn, task_id, event_type, agent_id, summary, {"retryable": retryable, "status": status},
+                )
+            return {"ok": True, "task": self.get_agent_task(task_id)}
+        finally:
+            if self.db_path != ":memory:": conn.close()
+
     def enqueue_agent_task(
         self,
         task_id: str,
@@ -1583,8 +1920,10 @@ class LedgerManager:
                 params.append(status)
             where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
             cursor = conn.execute(
-                "SELECT task_id, title, task_type, risk_level, required_score, "
-                "details, status, assigned_agent_id, assignment_rationale, "
+                "SELECT task_id, entity_id, workspace_id, requested_by, idempotency_key, "
+                "title, task_type, risk_level, required_score, details, status, approval_status, "
+                "action_contract_ref, assigned_agent_id, assignment_rationale, claimed_by, "
+                "lease_expires_at, last_heartbeat_at, attempt_count, last_error, result_summary, "
                 f"created_at, updated_at FROM agent_tasks {where} "
                 "ORDER BY created_at DESC, id DESC LIMIT ?",
                 params + [limit],
@@ -1845,16 +2184,28 @@ class LedgerManager:
     def _task_row_to_dict(self, row) -> Dict[str, Any]:
         return {
             "task_id": row[0],
-            "title": row[1],
-            "task_type": row[2],
-            "risk_level": row[3],
-            "required_score": row[4],
-            "details": json.loads(row[5] or "{}"),
-            "status": row[6],
-            "assigned_agent_id": row[7],
-            "assignment_rationale": row[8],
-            "created_at": row[9],
-            "updated_at": row[10],
+            "entity_id": row[1],
+            "workspace_id": row[2],
+            "requested_by": row[3],
+            "idempotency_key": row[4],
+            "title": row[5],
+            "task_type": row[6],
+            "risk_level": row[7],
+            "required_score": row[8],
+            "details": json.loads(row[9] or "{}"),
+            "status": row[10],
+            "approval_status": row[11],
+            "action_contract_ref": row[12],
+            "assigned_agent_id": row[13],
+            "assignment_rationale": row[14],
+            "claimed_by": row[15],
+            "lease_expires_at": row[16],
+            "last_heartbeat_at": row[17],
+            "attempt_count": row[18],
+            "last_error": row[19],
+            "result_summary": row[20],
+            "created_at": row[21],
+            "updated_at": row[22],
         }
 
     def _hibernation_row_to_dict(self, row) -> Dict[str, Any]:
