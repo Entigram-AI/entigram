@@ -240,6 +240,15 @@ class TestAgentOrchestrationLedger(unittest.TestCase):
         self.assertEqual(outcomes[0]["reason"], "INVALID_WORKSPACE")
         self.assertEqual(self.ledger.get_agent_task("escape-review")["status"], "NeedsReview")
 
+    def test_dispatcher_supports_existing_model_named_agent_registrations(self):
+        self.assertEqual(
+            AgentTaskDispatcher._runtime_for_agent({
+                "provider": "Google", "model": "Antigravity", "agent_id": "antigravity-default",
+            }),
+            "Antigravity",
+        )
+        self.assertIsNone(AgentTaskDispatcher._model_argument({"model": "Antigravity"}, "Antigravity"))
+
 
 class TestAgentOrchestrationCLI(unittest.TestCase):
     def setUp(self):

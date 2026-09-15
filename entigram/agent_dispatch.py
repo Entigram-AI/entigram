@@ -48,8 +48,7 @@ class AgentTaskDispatcher:
         agent = self.ledger.get_agent(agent_id)
         if not agent:
             return {"task_id": task["task_id"], "ok": False, "reason": "AGENT_NOT_REGISTERED"}
-        runtime_key = str(agent.get("provider") or "").strip().lower()
-        runtime = SUPPORTED_RUNTIMES.get(runtime_key)
+        runtime = self._runtime_for_agent(agent)
         if not runtime:
             return {"task_id": task["task_id"], "ok": False, "reason": "UNSUPPORTED_AGENT_RUNTIME"}
         try:
@@ -72,7 +71,7 @@ class AgentTaskDispatcher:
                 self._agent_prompt(task, workspace),
                 target_dir=str(workspace),
                 engine=runtime,
-                model=agent.get("model") or None,
+                model=self._model_argument(agent, runtime),
                 yolo=False,
             )
         except Exception as exc:
@@ -85,6 +84,40 @@ class AgentTaskDispatcher:
             task["task_id"], agent_id, self._summary(text), output=text
         )
         return {"task_id": task["task_id"], "ok": True, "status": "Completed", "workspace": str(workspace)}
+
+    @staticmethod
+    def _runtime_for_agent(agent: Dict[str, Any]) -> Optional[str]:
+        """Resolve a local CLI from the registered runtime identity.
+
+        Older registry records use provider names such as ``Google`` or
+        ``OpenAI``. Those describe provenance, not an executable. Prefer an
+        explicit runtime/provider, then use the registered model or stable
+        agent identifier for backward-compatible local registrations.
+        """
+        values = (
+            str(agent.get("provider") or ""),
+            str(agent.get("model") or ""),
+            str(agent.get("agent_id") or ""),
+        )
+        for value in values:
+            normalized = value.strip().lower()
+            if normalized in SUPPORTED_RUNTIMES:
+                return SUPPORTED_RUNTIMES[normalized]
+            if "antigravity" in normalized or normalized.startswith("agy"):
+                return SUPPORTED_RUNTIMES["antigravity"]
+            if "codex" in normalized:
+                return SUPPORTED_RUNTIMES["codex"]
+            if "claude" in normalized:
+                return SUPPORTED_RUNTIMES["claude"]
+        return None
+
+    @staticmethod
+    def _model_argument(agent: Dict[str, Any], runtime: str) -> Optional[str]:
+        """Avoid passing a legacy runtime label as though it were a model ID."""
+        model = str(agent.get("model") or "").strip()
+        if not model or model.casefold() in {runtime.casefold(), "claude code"}:
+            return None
+        return model
 
     def _resolve_workspace(self, task: Dict[str, Any]) -> Path:
         details = task.get("details") or {}
