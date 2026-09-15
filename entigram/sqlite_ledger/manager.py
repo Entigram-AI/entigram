@@ -1615,6 +1615,20 @@ class LedgerManager:
             if self.db_path != ":memory:": conn.close()
 
     def claim_agent_task(self, task_id: str, agent_id: str, *, lease_seconds: int = 300) -> Dict[str, Any]:
+        """Atomically lease a ready task, serializing high-risk trust changes."""
+        task = self.get_agent_task(task_id)
+        if task and task.get("risk_level") in {"high_risk", "critical"}:
+            try:
+                registry = self._task_approval_registry()
+                from entigram.governance.trust import trust_registry_lock
+                with trust_registry_lock(registry.target_dir):
+                    # Reload under the same lock held by trust key changes.
+                    return self._claim_agent_task_unlocked(task_id, agent_id, lease_seconds=lease_seconds)
+            except (ValueError, OSError) as exc:
+                return {"ok": False, "reason": "TASK_APPROVAL_TRUST_UNAVAILABLE", "details": str(exc)}
+        return self._claim_agent_task_unlocked(task_id, agent_id, lease_seconds=lease_seconds)
+
+    def _claim_agent_task_unlocked(self, task_id: str, agent_id: str, *, lease_seconds: int = 300) -> Dict[str, Any]:
         """Atomically lease a ready task to one capability-approved agent."""
         if lease_seconds < 30 or lease_seconds > 3600:
             return {"ok": False, "reason": "INVALID_LEASE_SECONDS"}

@@ -52,6 +52,14 @@ class AgentTaskDispatcher:
             # failed-dispatch event every ten seconds.
             if task.get("approval_status") not in {"NotRequired", "Approved"}:
                 continue
+            if task.get("approval_status") == "Approved":
+                approval = self.ledger.verify_task_approval(task)
+                if not approval.get("ok"):
+                    self.ledger.request_task_review(
+                        task["task_id"], "EntigramDispatcher",
+                        f"Task approval is no longer valid: {approval.get('reason', 'unknown reason')}.",
+                    )
+                    continue
             assigned = task.get("assigned_agent_id")
             if not assigned or (agent_id and assigned != agent_id):
                 continue
