@@ -1993,15 +1993,7 @@ class LedgerManager:
                         details, status, approval_status
                     )
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(task_id) DO UPDATE SET
-                        title=excluded.title,
-                        task_type=excluded.task_type,
-                        risk_level=excluded.risk_level,
-                        required_score=excluded.required_score,
-                        details=excluded.details,
-                        status=excluded.status,
-                        approval_status=excluded.approval_status,
-                        updated_at=CURRENT_TIMESTAMP
+                    ON CONFLICT(task_id) DO NOTHING
                     ''',
                     (
                         task_id,

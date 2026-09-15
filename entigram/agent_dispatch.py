@@ -92,11 +92,16 @@ class AgentTaskDispatcher:
 
         claimed = self.ledger.claim_agent_task(task["task_id"], agent_id)
         if not claimed.get("ok"):
-            self.ledger.request_task_review(
-                task["task_id"], "EntigramDispatcher",
-                f"The assigned agent could not claim this task: {claimed.get('reason', 'unknown reason')}.",
-            )
-            return {"task_id": task["task_id"], "ok": False, "reason": claimed.get("reason", "TASK_NOT_CLAIMABLE")}
+            reason = claimed.get("reason", "TASK_NOT_CLAIMABLE")
+            # Another dispatcher may have won the atomic lease between this
+            # snapshot and our claim. That is normal contention, not a reason
+            # to mutate the winner's running task into NeedsReview.
+            if reason != "TASK_NOT_CLAIMABLE":
+                self.ledger.request_task_review(
+                    task["task_id"], "EntigramDispatcher",
+                    f"The assigned agent could not claim this task: {reason}.",
+                )
+            return {"task_id": task["task_id"], "ok": False, "reason": reason}
         self.ledger.heartbeat_agent_task(
             task["task_id"], agent_id, summary="Preparing the governed workspace for this task."
         )

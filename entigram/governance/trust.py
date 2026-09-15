@@ -36,16 +36,19 @@ def trust_registry_lock(target_dir: str | Path):
     lock_path = Path(target_dir).expanduser().resolve() / ".etg" / ".trust.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open("a+") as handle:
+        fcntl_module = None
         try:
-            import fcntl
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        except ImportError:  # pragma: no cover - host lock fallback for Windows
-            fcntl = None
+            import fcntl as fcntl_module
+            fcntl_module.flock(handle.fileno(), fcntl_module.LOCK_EX)
+        except ImportError as exc:  # pragma: no cover - Windows must fail closed
+            raise TrustRegistryError(
+                "interprocess trust locking is unavailable on this host; high-risk trust operations are blocked"
+            ) from exc
         try:
             yield
         finally:
-            if fcntl is not None:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            if fcntl_module is not None:
+                fcntl_module.flock(handle.fileno(), fcntl_module.LOCK_UN)
 
 
 TRUST_REGISTRY_FILE = ".etg/trust.yaml"

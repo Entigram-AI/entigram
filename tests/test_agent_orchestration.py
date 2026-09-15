@@ -233,6 +233,12 @@ class TestAgentOrchestrationLedger(unittest.TestCase):
         task = self.ledger.get_agent_task("legacy-high-risk")
         self.assertEqual(task["approval_status"], "Pending")
         self.assertFalse(self.ledger.claim_agent_task("legacy-high-risk", "release-agent")["ok"])
+        self.assertTrue(self.ledger.enqueue_agent_task(
+            "legacy-high-risk", "Downgrade attempt", "release", risk_level="low_risk",
+        ))
+        preserved = self.ledger.get_agent_task("legacy-high-risk")
+        self.assertEqual(preserved["risk_level"], "high_risk")
+        self.assertEqual(preserved["approval_status"], "Pending")
 
     def test_high_risk_task_is_pending_until_approval_is_recorded(self):
         self.assertTrue(self.ledger.record_agent(
