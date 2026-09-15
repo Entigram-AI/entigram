@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from entigram.cli_runner.etg_cli import main
 from entigram.agent_dispatch import AgentTaskDispatcher
+from entigram.reviewer_personas import create_reviewer_persona
 from entigram.sqlite_ledger.manager import LedgerManager
 
 
@@ -301,6 +302,28 @@ class TestAgentOrchestrationLedger(unittest.TestCase):
         self.assertEqual(persona["name"], "Independent code reviewer")
         self.assertIn("Review independently", prompt)
         self.assertIn("does not grant additional authority", prompt)
+
+    def test_reviewer_creation_asks_only_for_missing_owner_context_then_creates(self):
+        workspace = Path(tempfile.mkdtemp())
+        (workspace / ".etg").mkdir()
+        self.addCleanup(shutil.rmtree, workspace)
+        incomplete = create_reviewer_persona(
+            workspace, persona_id="security-reviewer", name="", runtime="", context="",
+            requested_by="agent:supervisor", approved_by="",
+        )
+        self.assertEqual(incomplete["reason"], "REVIEWER_DETAILS_NEEDED")
+        self.assertEqual(len(incomplete["questions"]), 3)
+        pending = create_reviewer_persona(
+            workspace, persona_id="security-reviewer", name="Security reviewer", runtime="codex",
+            context="Find security defects. Do not edit.", requested_by="agent:supervisor", approved_by="",
+        )
+        self.assertEqual(pending["reason"], "OWNER_CONFIRMATION_REQUIRED")
+        created = create_reviewer_persona(
+            workspace, persona_id="security-reviewer", name="Security reviewer", runtime="codex",
+            context="Find security defects. Do not edit.", requested_by="agent:supervisor", approved_by="user:owner",
+        )
+        self.assertTrue(created["ok"])
+        self.assertTrue((workspace / ".etg" / "agent-personas.yaml").is_file())
 
 
 class TestAgentOrchestrationCLI(unittest.TestCase):

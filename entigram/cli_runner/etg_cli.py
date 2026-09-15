@@ -2001,6 +2001,17 @@ def _main():
     )
     agent_list_parser.add_argument("--json", action="store_true", dest="json_output", help="Print result as JSON")
 
+    reviewer_create_parser = broker_subparsers.add_parser(
+        "reviewer-create", help="Create an owner-confirmed, read-only reviewer persona"
+    )
+    reviewer_create_parser.add_argument("--id", required=True, help="Stable reviewer persona ID")
+    reviewer_create_parser.add_argument("--name", default="", help="Human-readable reviewer name")
+    reviewer_create_parser.add_argument("--runtime", default="", help="Codex, Antigravity, or Claude")
+    reviewer_create_parser.add_argument("--context", default="", help="Role focus and boundaries")
+    reviewer_create_parser.add_argument("--requested-by", required=True, help="Agent or user proposing the reviewer")
+    reviewer_create_parser.add_argument("--approved-by", default="", help="Owner principal confirming creation")
+    reviewer_create_parser.add_argument("--json", action="store_true", dest="json_output")
+
     task_enqueue_parser = broker_subparsers.add_parser(
         "task-enqueue",
         help="Persist a task for capability-gated assignment",
@@ -4746,6 +4757,37 @@ RELATIONSHIPS:
                         f"{agent['agent_id']} | score={agent['reliability_score']:.2f} "
                         f"| class={agent.get('agent_class') or '-'} | model={agent.get('model') or '-'}"
                     )
+        elif args.broker_command == "reviewer-create":
+            from entigram.reviewer_personas import create_reviewer_persona
+
+            result = create_reviewer_persona(
+                Path(args.dir).expanduser().resolve(),
+                persona_id=args.id,
+                name=args.name,
+                runtime=args.runtime,
+                context=args.context,
+                requested_by=args.requested_by,
+                approved_by=args.approved_by,
+            )
+            if result.get("ok"):
+                persona = result["persona"]
+                broker.ledger.record_agent(
+                    result["persona_id"], agent_class="reviewer", provider=persona["runtime"],
+                    model=persona["runtime"].title(), reliability_score=0.75,
+                    capability_scores={"read_only": 0.75}, allowed_task_classes=["read_only"],
+                    notes=f"Owner-confirmed reviewer persona created by {persona['requested_by']}.",
+                )
+            if getattr(args, "json_output", False):
+                print(json.dumps(result, indent=2, sort_keys=True))
+            elif result.get("ok"):
+                print(f"✅ Reviewer created: {result['persona_id']}")
+            elif result.get("questions"):
+                for question in result["questions"]:
+                    print(f"? {question}")
+            else:
+                print(f"❌ Reviewer was not created: {result.get('reason')}")
+            if not result.get("ok"):
+                sys.exit(1)
         elif args.broker_command == "task-enqueue":
             try:
                 details = _parse_json_arg(getattr(args, "details", None), default={})
