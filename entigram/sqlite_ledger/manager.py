@@ -285,6 +285,7 @@ class LedgerManager:
                 "attempt_count": "INTEGER NOT NULL DEFAULT 0",
                 "last_error": "TEXT",
                 "result_summary": "TEXT",
+                "result_output": "TEXT",
             })
             conn.execute('''
                 CREATE TABLE IF NOT EXISTS agent_task_events (
@@ -1704,8 +1705,13 @@ class LedgerManager:
         finally:
             if self.db_path != ":memory:": conn.close()
 
-    def complete_agent_task(self, task_id: str, agent_id: str, summary: str) -> Dict[str, Any]:
-        return self._finish_agent_task(task_id, agent_id, "Completed", "completed", summary)
+    def complete_agent_task(
+        self, task_id: str, agent_id: str, summary: str, *, output: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Finish a task and retain its bounded, human-readable agent output."""
+        return self._finish_agent_task(
+            task_id, agent_id, "Completed", "completed", summary, result_output=output
+        )
 
     def fail_agent_task(self, task_id: str, agent_id: str, summary: str, *, retryable: bool = False) -> Dict[str, Any]:
         return self._finish_agent_task(task_id, agent_id, "Queued" if retryable else "Failed", "failed", summary, retryable=retryable)
@@ -1820,6 +1826,7 @@ class LedgerManager:
         summary: str,
         *,
         retryable: bool = False,
+        result_output: Optional[str] = None,
     ) -> Dict[str, Any]:
         if not isinstance(summary, str) or not summary.strip():
             return {"ok": False, "reason": "TASK_SUMMARY_REQUIRED"}
@@ -1830,11 +1837,15 @@ class LedgerManager:
                     """
                     UPDATE agent_tasks
                     SET status = ?, result_summary = CASE WHEN ? = 'Completed' THEN ? ELSE result_summary END,
+                        result_output = CASE WHEN ? = 'Completed' THEN ? ELSE result_output END,
                         last_error = CASE WHEN ? = 'Completed' THEN NULL ELSE ? END,
                         claimed_by = NULL, lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP
                     WHERE task_id = ? AND claimed_by = ? AND status IN ('Claimed', 'Running')
                     """,
-                    (status, status, summary, status, summary, task_id, agent_id),
+                    (
+                        status, status, summary, status,
+                        (result_output or "")[:50000], status, summary, task_id, agent_id,
+                    ),
                 )
                 if result.rowcount != 1:
                     return {"ok": False, "reason": "TASK_FINISH_REJECTED"}
@@ -1923,7 +1934,7 @@ class LedgerManager:
                 "SELECT task_id, entity_id, workspace_id, requested_by, idempotency_key, "
                 "title, task_type, risk_level, required_score, details, status, approval_status, "
                 "action_contract_ref, assigned_agent_id, assignment_rationale, claimed_by, "
-                "lease_expires_at, last_heartbeat_at, attempt_count, last_error, result_summary, "
+                "lease_expires_at, last_heartbeat_at, attempt_count, last_error, result_summary, result_output, "
                 f"created_at, updated_at FROM agent_tasks {where} "
                 "ORDER BY created_at DESC, id DESC LIMIT ?",
                 params + [limit],
@@ -2204,8 +2215,9 @@ class LedgerManager:
             "attempt_count": row[18],
             "last_error": row[19],
             "result_summary": row[20],
-            "created_at": row[21],
-            "updated_at": row[22],
+            "result_output": row[21],
+            "created_at": row[22],
+            "updated_at": row[23],
         }
 
     def _hibernation_row_to_dict(self, row) -> Dict[str, Any]:

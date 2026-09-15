@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from entigram.cli_runner.etg_cli import main
+from entigram.agent_dispatch import AgentTaskDispatcher
 from entigram.sqlite_ledger.manager import LedgerManager
 
 
@@ -186,6 +187,58 @@ class TestAgentOrchestrationLedger(unittest.TestCase):
         self.assertEqual(task["status"], "Queued")
         self.assertIn("resume from recorded checkpoints", task["last_error"])
         self.assertEqual(self.ledger.get_agent_task_events("task-recover")[-1]["event_type"], "lease_expired")
+
+    def test_dispatcher_runs_assigned_review_in_governed_child_and_records_output(self):
+        root = Path(tempfile.mkdtemp())
+        child = root / "project"
+        (child / ".etg").mkdir(parents=True)
+        (child / ".etg" / "entigram.yaml").write_text("workspace_schema_version: 1\n")
+        self.addCleanup(shutil.rmtree, root)
+        self.ledger.record_agent(
+            "antigravity-local",
+            agent_class="reviewer",
+            provider="antigravity",
+            reliability_score=0.95,
+            capability_scores={"code_review": 0.95},
+            allowed_task_classes=["code_review"],
+        )
+        self.assertTrue(self.ledger.request_agent_task(
+            "review-console", "Review the Work Console changes", "code_review",
+            entity_id="entigram", workspace_id="project", requested_by="user:owner",
+            idempotency_key="review-console-v1", target_agent_id="antigravity-local",
+            risk_level="read_only", details={"workspace_path": "project", "branch": "feat/work-console"},
+        )["ok"])
+        calls = []
+
+        def executor(prompt, **kwargs):
+            calls.append((prompt, kwargs))
+            return "Review complete. One low-risk label issue found."
+
+        outcomes = AgentTaskDispatcher(self.ledger, root, executor=executor).dispatch_once()
+
+        self.assertEqual(outcomes[0]["status"], "Completed")
+        self.assertEqual(calls[0][1]["target_dir"], str(child.resolve()))
+        self.assertIn("read-only execution", calls[0][0])
+        task = self.ledger.get_agent_task("review-console")
+        self.assertEqual(task["status"], "Completed")
+        self.assertEqual(task["result_output"], "Review complete. One low-risk label issue found.")
+
+    def test_dispatcher_rejects_workspace_escape_before_agent_launch(self):
+        self.ledger.record_agent(
+            "antigravity-local", provider="antigravity", reliability_score=0.95,
+            capability_scores={"code_review": 0.95}, allowed_task_classes=["code_review"],
+        )
+        self.assertTrue(self.ledger.request_agent_task(
+            "escape-review", "Review outside workspace", "code_review", entity_id="entigram",
+            workspace_id="../outside", requested_by="user:owner", idempotency_key="escape-review-v1",
+            target_agent_id="antigravity-local", risk_level="read_only",
+        )["ok"])
+
+        outcomes = AgentTaskDispatcher(self.ledger, tempfile.mkdtemp()).dispatch_once()
+
+        self.assertFalse(outcomes[0]["ok"])
+        self.assertEqual(outcomes[0]["reason"], "INVALID_WORKSPACE")
+        self.assertEqual(self.ledger.get_agent_task("escape-review")["status"], "NeedsReview")
 
 
 class TestAgentOrchestrationCLI(unittest.TestCase):

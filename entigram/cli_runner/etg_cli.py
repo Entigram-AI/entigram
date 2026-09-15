@@ -8,6 +8,7 @@ import getpass
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from datetime import datetime
 from entigram.schema_compiler import compile_schema_file
@@ -2103,6 +2104,25 @@ def _main():
         "task-recover-expired", help="Return expired leased work to the queue with its checkpoints intact",
     )
     task_recover_parser.add_argument("--json", action="store_true", dest="json_output", help="Print result as JSON")
+
+    task_dispatch_parser = broker_subparsers.add_parser(
+        "task-dispatch",
+        help="Claim and run assigned local-agent tasks from the governed ledger",
+    )
+    task_dispatch_parser.add_argument(
+        "--agent", help="Only dispatch work assigned to this registered local agent"
+    )
+    task_dispatch_parser.add_argument(
+        "--workspace-root",
+        help="Host workspace root; task workspace IDs are resolved beneath it (defaults to --dir)",
+    )
+    task_dispatch_parser.add_argument(
+        "--watch", action="store_true", help="Keep polling the ledger until interrupted"
+    )
+    task_dispatch_parser.add_argument(
+        "--interval", type=float, default=10.0, help="Polling interval in seconds (minimum 5)"
+    )
+    task_dispatch_parser.add_argument("--json", action="store_true", dest="json_output")
 
     hibernate_parser = broker_subparsers.add_parser(
         "hibernate",
@@ -4888,6 +4908,29 @@ RELATIONSHIPS:
                 print(f"↻ Recovered {len(tasks)} expired task{'s' if len(tasks) != 1 else ''} for resume.")
             else:
                 print("No expired task leases to recover.")
+        elif args.broker_command == "task-dispatch":
+            from entigram.agent_dispatch import AgentTaskDispatcher
+
+            interval = max(5.0, float(args.interval))
+            dispatcher = AgentTaskDispatcher(
+                broker.ledger,
+                getattr(args, "workspace_root", None) or args.dir,
+            )
+            while True:
+                outcomes = dispatcher.dispatch_once(agent_id=getattr(args, "agent", None))
+                if getattr(args, "json_output", False):
+                    print(json.dumps({"ok": True, "outcomes": outcomes}, indent=2, sort_keys=True))
+                elif outcomes:
+                    for outcome in outcomes:
+                        if outcome.get("ok"):
+                            print(f"✅ Completed {outcome['task_id']} in {outcome['workspace']}")
+                        else:
+                            print(f"⚠️  Did not dispatch {outcome['task_id']}: {outcome.get('reason')}")
+                elif not getattr(args, "watch", False):
+                    print("No eligible assigned tasks to dispatch.")
+                if not getattr(args, "watch", False):
+                    break
+                time.sleep(interval)
         elif args.broker_command == "hibernate":
             plan = broker.ledger.record_agent_hibernation(
                 args.agent,
