@@ -150,6 +150,20 @@ class TestAgentOrchestrationLedger(unittest.TestCase):
         self.assertEqual(completed["task"]["status"], "Completed")
         self.assertEqual(completed["task"]["result_summary"], "Focused tests passed.")
 
+    def test_only_an_owner_can_approve_a_pending_task_without_dispatching_it(self):
+        self.assertTrue(self.ledger.request_agent_task(
+            "task-approval", "Send a prepared release", "test_run",
+            entity_id="entigram-ai", workspace_id="entigram", requested_by="user:founder",
+            idempotency_key="task-approval-v1", risk_level="high_risk", approval_status="Pending",
+        )["ok"])
+        denied = self.ledger.approve_agent_task("task-approval", "agent:codex", "Ready to send.")
+        self.assertFalse(denied["ok"])
+        approved = self.ledger.approve_agent_task("task-approval", "user:founder", "Approved after review.")
+        self.assertTrue(approved["ok"])
+        self.assertEqual(approved["task"]["approval_status"], "Approved")
+        self.assertEqual(approved["task"]["status"], "Queued")
+        self.assertEqual(self.ledger.get_agent_task_events("task-approval")[-1]["event_type"], "approved")
+
     def test_expired_task_lease_is_requeued_with_a_continuity_event(self):
         self.assertTrue(self.ledger.record_agent(
             "codex-local", agent_class="strong", reliability_score=0.95,

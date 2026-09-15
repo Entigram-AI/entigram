@@ -1730,6 +1730,37 @@ class LedgerManager:
         finally:
             if self.db_path != ":memory:": conn.close()
 
+    def approve_agent_task(self, task_id: str, actor_id: str, summary: str) -> Dict[str, Any]:
+        """Record an owner's explicit approval without dispatching the task.
+
+        Approval changes authority, not execution state. The normal
+        capability-gated assign/claim path must still succeed afterward.
+        """
+        if not actor_id.startswith("user:"):
+            return {"ok": False, "reason": "OWNER_APPROVAL_REQUIRED"}
+        if not isinstance(summary, str) or not summary.strip():
+            return {"ok": False, "reason": "TASK_SUMMARY_REQUIRED"}
+        conn = self._get_connection()
+        try:
+            with conn:
+                result = conn.execute(
+                    """
+                    UPDATE agent_tasks
+                    SET approval_status = 'Approved',
+                        status = CASE WHEN status = 'NeedsReview' THEN 'Queued' ELSE status END,
+                        last_error = NULL, updated_at = CURRENT_TIMESTAMP
+                    WHERE task_id = ? AND approval_status = 'Pending'
+                      AND status NOT IN ('Completed', 'Cancelled', 'DeadLetter')
+                    """,
+                    (task_id,),
+                )
+                if result.rowcount != 1:
+                    return {"ok": False, "reason": "TASK_APPROVAL_REJECTED"}
+                self._record_agent_task_event(conn, task_id, "approved", actor_id, summary, {})
+            return {"ok": True, "task": self.get_agent_task(task_id)}
+        finally:
+            if self.db_path != ":memory:": conn.close()
+
     def dismiss_agent_task(self, task_id: str, actor_id: str, summary: str) -> Dict[str, Any]:
         """Close obsolete work with an auditable human reason; never delete it."""
         if not isinstance(summary, str) or not summary.strip():

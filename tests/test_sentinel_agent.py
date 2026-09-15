@@ -1,4 +1,5 @@
 import json
+import socket
 import unittest
 from jsonschema import Draft202012Validator
 from unittest.mock import patch
@@ -530,6 +531,30 @@ class SentinelAgentTests(unittest.TestCase):
         self.assertEqual(seen["authorization"], "Bearer test-key")
         self.assertEqual(seen["payload"]["model"], "gpt-5.2")
         self.assertEqual(seen["payload"]["tools"][0]["name"], "record_decision")
+        self.assertEqual(seen["timeout"], 60)
+
+    def test_openai_responses_uses_bounded_configured_provider_timeout(self):
+        seen = {}
+
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *_args): return False
+            def read(self): return b'{"output": []}'
+
+        def urlopen(_request, timeout):
+            seen["timeout"] = timeout
+            return Response()
+
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key", "ENTIGRAM_SENTINEL_PROVIDER_TIMEOUT_SECONDS": "25"}, clear=True), patch("urllib.request.urlopen", urlopen):
+            openai_responses([], [])
+
+        self.assertEqual(seen["timeout"], 25)
+
+    def test_openai_provider_timeout_is_sanitized(self):
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}, clear=True), patch("urllib.request.urlopen", side_effect=socket.timeout("provider detail")):
+            with self.assertRaisesRegex(RuntimeError, "OpenAI Responses request timed out") as error:
+                openai_responses([], [])
+        self.assertNotIn("provider detail", str(error.exception))
 
     def test_responses_tools_normalizes_flattened_parameter_contract(self):
         tools = _responses_tools([{"name": "record", "parameters": {"policy_sections_cited": {"type": "array", "items": {"type": "string", "enum": ["RET-01"]}, "required": True}}}])

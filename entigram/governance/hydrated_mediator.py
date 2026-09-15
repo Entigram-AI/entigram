@@ -676,6 +676,17 @@ class HydratedPolicyMediator:
         for msg in messages:
             if not isinstance(msg, dict):
                 continue
+            provenance = msg.get("provenance")
+            # A caller may carry forwarded agent text, retrieved artifacts, or
+            # other external content in a conversation-shaped envelope. Such
+            # data can describe a tool call or receipt, but it cannot become
+            # observed execution state unless an integration explicitly marks
+            # it as trusted. Omitting provenance preserves compatibility with
+            # existing direct executor integrations.
+            if isinstance(provenance, dict) and str(provenance.get("trust", "")).casefold() in {
+                "untrusted", "external", "artifact"
+            }:
+                continue
             role = msg.get("role")
             if role == "assistant" and msg.get("tool_calls"):
                 for call in msg["tool_calls"]:

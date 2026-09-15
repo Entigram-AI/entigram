@@ -202,19 +202,20 @@ def _pre_invocation(root: Path, payload: Dict[str, Any]) -> Dict[str, Any]:
     if policy_path.is_file():
         steps.append(
             {
-                "toolCall": {
-                    "name": "view_file",
-                    "args": {"AbsolutePath": str(policy_path), "IsSkillFile": False},
-                }
+                "userMessage": (
+                    "Entigram governance policy for this workspace:\n\n"
+                    f"{policy_path.read_text(encoding='utf-8')}"
+                )
             }
         )
     for schema_path in schema_paths:
+        schema_file = Path(schema_path)
         steps.append(
             {
-                "toolCall": {
-                    "name": "view_file",
-                    "args": {"AbsolutePath": schema_path, "IsSkillFile": False},
-                }
+                "userMessage": (
+                    f"Entigram authoritative schema ({schema_file.name}):\n\n"
+                    f"{schema_file.read_text(encoding='utf-8')}"
+                )
             }
         )
     if task_prepare_required(manifest):

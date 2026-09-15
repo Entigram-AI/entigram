@@ -77,13 +77,10 @@ class TestAntigravityHooks(unittest.TestCase):
             self.root, "pre-invocation", {"conversationId": "conversation-1"}
         )
         injected = invoked["injectSteps"]
-        tool_paths = [
-            step["toolCall"]["args"]["AbsolutePath"]
-            for step in injected
-            if "toolCall" in step
-        ]
-        self.assertIn(str((self.root / ".etg" / "agent_policy.md").resolve()), tool_paths)
-        self.assertIn(str((self.root / "schema.lds").resolve()), tool_paths)
+        messages = [step["userMessage"] for step in injected if "userMessage" in step]
+        self.assertTrue(any("Entigram governance policy" in message for message in messages))
+        self.assertTrue(any("ENTITY: WorkItem" in message for message in messages))
+        self.assertFalse(any("toolCall" in step for step in injected))
         self.assertIn("0/5", injected[-1]["ephemeralMessage"])
 
         prepare_task(self.root, task_id="test-task", description="Implement work.py")

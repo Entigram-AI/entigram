@@ -1,0 +1,42 @@
+{
+  "entigram-session-gate": {
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "etg antigravity-hook --dir /Users/dnyabuti/Documents/workspace/entigram-ai/entigram --event post-tool-use",
+            "timeout": 10,
+            "type": "command"
+          }
+        ],
+        "matcher": "write_to_file|replace_file_content|multi_replace_file_content|run_command|generate_image"
+      }
+    ],
+    "PreInvocation": [
+      {
+        "command": "etg antigravity-hook --dir /Users/dnyabuti/Documents/workspace/entigram-ai/entigram --event pre-invocation",
+        "timeout": 15,
+        "type": "command"
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "etg antigravity-hook --dir /Users/dnyabuti/Documents/workspace/entigram-ai/entigram --event pre-tool-use",
+            "timeout": 10,
+            "type": "command"
+          }
+        ],
+        "matcher": "write_to_file|replace_file_content|multi_replace_file_content|run_command|generate_image"
+      }
+    ],
+    "Stop": [
+      {
+        "command": "etg antigravity-hook --dir /Users/dnyabuti/Documents/workspace/entigram-ai/entigram --event stop",
+        "timeout": 15,
+        "type": "command"
+      }
+    ]
+  }
+}
