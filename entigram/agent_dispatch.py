@@ -263,10 +263,13 @@ class AgentTaskDispatcher:
         independently collected, read-only diff and status snapshot.
         """
         requested_base = str((task.get("details") or {}).get("compare_base") or "origin/main")
-        if not requested_base or len(requested_base) > 120 or not all(
-            char.isalnum() or char in "._/-" for char in requested_base
+        if (
+            not requested_base
+            or requested_base.startswith("-")
+            or len(requested_base) > 120
+            or not all(char.isalnum() or char in "._/-" for char in requested_base)
         ):
-            requested_base = "origin/main"
+            return "[Review evidence unavailable: declared base revision is invalid.]"
 
         def git(*args: str) -> str:
             try:
@@ -280,10 +283,22 @@ class AgentTaskDispatcher:
             return text[:50000] + ("\n[Evidence truncated]" if len(text) > 50000 else "")
 
         status = git("status", "--short") or "[clean tracked worktree]"
-        diff = git("diff", "--no-ext-diff", "--unified=20", f"{requested_base}...HEAD")
+        # Resolve task metadata through an option-terminated Git command first.
+        # The later diff receives only a verified object ID, never a task string.
+        try:
+            resolved = subprocess.run(
+                ["git", "rev-parse", "--verify", "--end-of-options", f"{requested_base}^{{commit}}"],
+                cwd=str(workspace), capture_output=True, text=True, check=False,
+            )
+        except OSError as exc:
+            return f"Git status:\n{status}\n\n[Review evidence unavailable: {exc}]"
+        base_commit = (resolved.stdout or "").strip()
+        if resolved.returncode != 0 or len(base_commit) != 40 or not all(char in "0123456789abcdef" for char in base_commit.lower()):
+            return f"Git status:\n{status}\n\n[Review evidence unavailable: declared base revision cannot be verified.]"
+        diff = git("diff", "--no-ext-diff", "--unified=20", f"{base_commit}...HEAD", "--")
         if not diff:
             diff = "[No committed diff against the declared base.]"
-        return f"Base: {requested_base}\nGit status:\n{status}\n\nCommitted diff:\n{diff}"
+        return f"Base: {requested_base} ({base_commit})\nGit status:\n{status}\n\nCommitted diff:\n{diff}"
 
     @staticmethod
     def _summary(output: str) -> str:

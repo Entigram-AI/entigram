@@ -355,19 +355,32 @@ class TestAgentOrchestrationLedger(unittest.TestCase):
         self.addCleanup(shutil.rmtree, root)
         task = {"details": {"compare_base": "origin/main"}}
         with patch("entigram.agent_dispatch.subprocess.run") as run:
-            run.return_value.stdout = "diff --git a/example.py b/example.py\n"
-            run.return_value.stderr = ""
+            run.side_effect = [
+                type("Result", (), {"stdout": "", "stderr": "", "returncode": 0})(),
+                type("Result", (), {"stdout": "a" * 40 + "\n", "stderr": "", "returncode": 0})(),
+                type("Result", (), {"stdout": "diff --git a/example.py b/example.py\n", "stderr": "", "returncode": 0})(),
+            ]
             evidence = AgentTaskDispatcher._review_evidence(workspace, task)
         self.assertIn("Base: origin/main", evidence)
         self.assertIn("diff --git", evidence)
-        self.assertEqual(run.call_count, 2)
-        commands = [call.args[0] for call in run.call_args_list]
-        self.assertTrue(all(command[:3] == ["git", "-c", "core.pager=cat"] for command in commands))
+        self.assertEqual(run.call_count, 3)
+        self.assertEqual(run.call_args_list[1].args[0][:4], ["git", "rev-parse", "--verify", "--end-of-options"])
+        self.assertEqual(run.call_args_list[2].args[0][-1], "--")
         prompt = AgentTaskDispatcher._agent_prompt(
             {"task_id": "review", "title": "Review", "task_type": "read_only", "risk_level": "read_only", "details": {}},
             workspace, evidence=evidence,
         )
         self.assertIn("Analyze this evidence only", prompt)
+
+    def test_sandboxed_reviewer_rejects_option_like_base_revision(self):
+        workspace = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, workspace)
+        with patch("entigram.agent_dispatch.subprocess.run") as run:
+            evidence = AgentTaskDispatcher._review_evidence(
+                workspace, {"details": {"compare_base": "--output=/tmp/evidence"}}
+            )
+        self.assertIn("base revision is invalid", evidence)
+        run.assert_not_called()
 
     def test_reviewer_creation_asks_only_for_missing_owner_context_then_creates(self):
         workspace = Path(tempfile.mkdtemp())
