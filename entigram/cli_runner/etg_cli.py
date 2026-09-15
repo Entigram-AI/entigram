@@ -1698,6 +1698,13 @@ def _main():
     )
     trust_parser.add_argument("--dir", default=".", help="Target workspace directory")
     trust_subparsers = trust_parser.add_subparsers(dest="trust_command", required=True)
+    trust_setup_parser = trust_subparsers.add_parser(
+        "setup", help="Create or reuse your local identity and initialize this workspace's trust registry"
+    )
+    trust_setup_parser.add_argument("--owner", required=True, help="Your signer ID, for example user:dnyabuti")
+    trust_setup_parser.add_argument("--project", help="Stable project ID; defaults to the workspace directory name")
+    trust_setup_parser.add_argument("--identity-key", help="Optional private-key path outside the workspace")
+    trust_setup_parser.add_argument("--json", action="store_true", dest="json_output")
     trust_init_parser = trust_subparsers.add_parser("init", help="Initialize a public project trust registry")
     trust_init_parser.add_argument("--project", required=True, help="Stable project ID")
     trust_init_parser.add_argument("--owner", required=True, help="Initial owner signer ID")
@@ -4077,7 +4084,7 @@ RELATIONSHIPS:
         registry = ProjectTrustRegistry(workspace)
         try:
             mutating_commands = {
-                "init", "add-signer", "rotate-key", "apply-change", "revoke-key", "revoke-grant",
+                "setup", "init", "add-signer", "rotate-key", "apply-change", "revoke-key", "revoke-grant",
                 "enroll-agent", "add-agent-version", "remove-agent-version", "rotate-agent-key", "revoke-agent-key",
             }
             if args.trust_command in mutating_commands and Warden(str(workspace)).is_locked():
@@ -4085,7 +4092,32 @@ RELATIONSHIPS:
                     "workspace is Warden-locked; run `etg warden --dir . unlock`, review the trust change, "
                     "then run `etg broker --dir . handoff --accept-contract-change`"
                 )
-            if args.trust_command == "init":
+            if args.trust_command == "setup":
+                identity = _personal_identity(workspace, args.owner, args.identity_key)
+                created_identity = False
+                if not identity.key_path.exists():
+                    identity.create()
+                    created_identity = True
+                trust_path = workspace / ".etg" / "trust.yaml"
+                if trust_path.exists():
+                    document = registry.load()
+                    if not registry.signer_has_role(args.owner, "trust_admin"):
+                        raise TrustRegistryError("existing trust registry does not enroll this signer as trust_admin")
+                    result = {"ok": True, "created_identity": created_identity, "registry": document}
+                else:
+                    document = registry.initialize(
+                        project_id=args.project or workspace.name,
+                        owner_public_key=identity.public_record(),
+                        owner_roles=["trust_admin", "task_approver", "recovery_admin", "authority_issuer"],
+                        owner_identity=identity,
+                        recovery_quorum=1,
+                    )
+                    result = {"ok": True, "created_identity": created_identity, "registry": document}
+                result["next_step"] = (
+                    "Trust is ready. High-risk task approval must use this signer; review the public registry, "
+                    "then run `etg broker handoff --accept-contract-change`."
+                )
+            elif args.trust_command == "init":
                 identity = _personal_identity(workspace, args.owner, args.identity_key)
                 result = {
                     "ok": True,
