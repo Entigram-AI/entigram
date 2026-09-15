@@ -2002,14 +2002,14 @@ def _main():
     agent_list_parser.add_argument("--json", action="store_true", dest="json_output", help="Print result as JSON")
 
     reviewer_create_parser = broker_subparsers.add_parser(
-        "reviewer-create", help="Create an owner-confirmed, read-only reviewer persona"
+        "reviewer-create", help="Record a locally confirmed, read-only reviewer persona"
     )
     reviewer_create_parser.add_argument("--id", required=True, help="Stable reviewer persona ID")
     reviewer_create_parser.add_argument("--name", default="", help="Human-readable reviewer name")
     reviewer_create_parser.add_argument("--runtime", default="", help="Codex, Antigravity, or Claude")
     reviewer_create_parser.add_argument("--context", default="", help="Role focus and boundaries")
     reviewer_create_parser.add_argument("--requested-by", required=True, help="Agent or user proposing the reviewer")
-    reviewer_create_parser.add_argument("--approved-by", default="", help="Owner principal confirming creation")
+    reviewer_create_parser.add_argument("--approved-by", default="", help="Local user principal recording confirmation")
     reviewer_create_parser.add_argument("--json", action="store_true", dest="json_output")
 
     task_enqueue_parser = broker_subparsers.add_parser(
@@ -4775,7 +4775,7 @@ RELATIONSHIPS:
                     result["persona_id"], agent_class="reviewer", provider=persona["runtime"],
                     model=persona["runtime"].title(), reliability_score=0.75,
                     capability_scores={"read_only": 0.75}, allowed_task_classes=["read_only"],
-                    notes=f"Owner-confirmed reviewer persona created by {persona['requested_by']}.",
+                    notes=f"Locally confirmed reviewer persona created by {persona['requested_by']}.",
                 )
             if getattr(args, "json_output", False):
                 print(json.dumps(result, indent=2, sort_keys=True))

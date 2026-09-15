@@ -1944,13 +1944,24 @@ class LedgerManager:
             if self.db_path != ":memory:": conn.close()
 
     def assign_agent_task(self, task_id: str, agent_id: str) -> Dict[str, Any]:
-        """Assigns a task only when the agent capability score clears the task risk gate."""
+        """Assign queued, unclaimed work when the capability gate clears.
+
+        Assignment is deliberately a pre-lease transition.  A dispatcher owns
+        a task once it has claimed it, and terminal task records are immutable
+        evidence; neither may be silently reassigned.
+        """
         task = self.get_agent_task(task_id)
         agent = self.get_agent(agent_id)
         if not task:
             return {"ok": False, "reason": "TASK_NOT_FOUND", "task_id": task_id}
         if not agent:
             return {"ok": False, "reason": "AGENT_NOT_REGISTERED", "agent_id": agent_id}
+        if task["status"] != "Queued" or task.get("claimed_by"):
+            return {
+                "ok": False,
+                "reason": "TASK_NOT_ASSIGNABLE",
+                "task": task,
+            }
 
         decision = self.evaluate_agent_assignment(agent, task)
         if not decision["ok"]:
@@ -1966,16 +1977,21 @@ class LedgerManager:
         conn = self._get_connection()
         try:
             with conn:
-                conn.execute(
+                result = conn.execute(
                     '''
                     UPDATE agent_tasks
                     SET status = 'Assigned',
                         assigned_agent_id = ?,
                         assignment_rationale = ?,
                         updated_at = CURRENT_TIMESTAMP
-                    WHERE task_id = ?
+                    WHERE task_id = ? AND status = 'Queued' AND claimed_by IS NULL
                     ''',
                     (agent_id, decision["rationale"], task_id),
+                )
+                if result.rowcount != 1:
+                    return {"ok": False, "reason": "TASK_NOT_ASSIGNABLE", "task": self.get_agent_task(task_id)}
+                self._record_agent_task_event(
+                    conn, task_id, "assigned", agent_id, decision["rationale"], {}
                 )
             decision.update({"task_id": task_id, "agent_id": agent_id, "status": "Assigned"})
             return decision

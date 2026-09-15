@@ -36,7 +36,12 @@ def create_reviewer_persona(
     requested_by: str,
     approved_by: str,
 ) -> Dict[str, Any]:
-    """Create a read-only reviewer after an explicit owner confirmation."""
+    """Record a read-only reviewer after a locally confirmed owner action.
+
+    Persona configuration is workspace-local policy, not an identity or
+    authorization system.  The confirmation is retained as audit context; an
+    enforced action still requires the project's trust/action-admission layer.
+    """
     normalized_id = persona_id.strip().casefold()
     normalized_runtime = runtime.strip().casefold()
     questions = reviewer_questions(name=name, runtime=runtime, context=context)
@@ -47,7 +52,7 @@ def create_reviewer_persona(
     if not approved_by.startswith("user:"):
         return {
             "ok": False,
-            "reason": "OWNER_CONFIRMATION_REQUIRED",
+            "reason": "LOCAL_OWNER_CONFIRMATION_REQUIRED",
             "questions": [f"Create the read-only reviewer '{name.strip()}' using {normalized_runtime.title()}?"],
         }
     path = workspace / ".etg" / "agent-personas.yaml"
@@ -68,7 +73,7 @@ def create_reviewer_persona(
         "task_types": ["read_only"],
         "context": context.strip()[:4000],
         "requested_by": requested_by.strip()[:120],
-        "approved_by": approved_by,
+        "locally_confirmed_by": approved_by,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     personas[normalized_id] = profile

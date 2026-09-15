@@ -189,6 +189,26 @@ class TestAgentOrchestrationLedger(unittest.TestCase):
         self.assertIn("resume from recorded checkpoints", task["last_error"])
         self.assertEqual(self.ledger.get_agent_task_events("task-recover")[-1]["event_type"], "lease_expired")
 
+    def test_assignment_cannot_reopen_terminal_or_leased_work(self):
+        self.assertTrue(self.ledger.record_agent(
+            "codex-local", reliability_score=0.95,
+            capability_scores={"review": 1.0}, allowed_task_classes=["review"],
+        ))
+        self.assertTrue(self.ledger.request_agent_task(
+            "assignment-boundary", "Review assignment boundary", "review",
+            entity_id="entigram", workspace_id="project", requested_by="user:owner",
+            idempotency_key="assignment-boundary-v1", risk_level="read_only",
+        )["ok"])
+        self.assertTrue(self.ledger.assign_agent_task("assignment-boundary", "codex-local")["ok"])
+        self.assertTrue(self.ledger.claim_agent_task("assignment-boundary", "codex-local")["ok"])
+        leased = self.ledger.assign_agent_task("assignment-boundary", "codex-local")
+        self.assertFalse(leased["ok"])
+        self.assertEqual(leased["reason"], "TASK_NOT_ASSIGNABLE")
+        self.assertTrue(self.ledger.complete_agent_task("assignment-boundary", "codex-local", "Done.")["ok"])
+        terminal = self.ledger.assign_agent_task("assignment-boundary", "codex-local")
+        self.assertFalse(terminal["ok"])
+        self.assertEqual(terminal["reason"], "TASK_NOT_ASSIGNABLE")
+
     def test_dispatcher_runs_assigned_review_in_governed_child_and_records_output(self):
         root = Path(tempfile.mkdtemp())
         child = root / "project"
@@ -285,6 +305,31 @@ class TestAgentOrchestrationLedger(unittest.TestCase):
         self.assertEqual(outcomes[0]["reason"], "AGENT_EXECUTION_FAILED")
         self.assertEqual(self.ledger.get_agent_task("failing-review")["status"], "Failed")
 
+    def test_dispatcher_reports_rejected_completion(self):
+        root = Path(tempfile.mkdtemp())
+        child = root / "project"
+        (child / ".etg").mkdir(parents=True)
+        (child / ".etg" / "entigram.yaml").write_text("workspace_schema_version: 1\n")
+        self.addCleanup(shutil.rmtree, root)
+        self.ledger.record_agent(
+            "codex-local", provider="codex", reliability_score=0.95,
+            capability_scores={"code_review": 0.95}, allowed_task_classes=["code_review"],
+        )
+        self.ledger.request_agent_task(
+            "completion-race", "Run a review", "code_review", entity_id="entigram", workspace_id="project",
+            requested_by="user:owner", idempotency_key="completion-race-v1", target_agent_id="codex-local",
+            risk_level="read_only", details={"workspace_path": "project"},
+        )
+
+        def executor(*_args, **_kwargs):
+            self.ledger.request_task_review("completion-race", "user:owner", "Stop this review.")
+            return "This result must not overwrite the review escalation."
+
+        outcomes = AgentTaskDispatcher(self.ledger, root, executor=executor).dispatch_once()
+        self.assertFalse(outcomes[0]["ok"])
+        self.assertEqual(outcomes[0]["reason"], "TASK_COMPLETION_REJECTED")
+        self.assertEqual(self.ledger.get_agent_task("completion-race")["status"], "NeedsReview")
+
     def test_dispatcher_applies_owner_declared_reviewer_persona(self):
         root = Path(tempfile.mkdtemp())
         workspace = root / "project"
@@ -303,6 +348,27 @@ class TestAgentOrchestrationLedger(unittest.TestCase):
         self.assertIn("Review independently", prompt)
         self.assertIn("does not grant additional authority", prompt)
 
+    def test_sandboxed_reviewer_receives_bounded_host_captured_evidence(self):
+        root = Path(tempfile.mkdtemp())
+        workspace = root / "project"
+        workspace.mkdir()
+        self.addCleanup(shutil.rmtree, root)
+        task = {"details": {"compare_base": "origin/main"}}
+        with patch("entigram.agent_dispatch.subprocess.run") as run:
+            run.return_value.stdout = "diff --git a/example.py b/example.py\n"
+            run.return_value.stderr = ""
+            evidence = AgentTaskDispatcher._review_evidence(workspace, task)
+        self.assertIn("Base: origin/main", evidence)
+        self.assertIn("diff --git", evidence)
+        self.assertEqual(run.call_count, 2)
+        commands = [call.args[0] for call in run.call_args_list]
+        self.assertTrue(all(command[:3] == ["git", "-c", "core.pager=cat"] for command in commands))
+        prompt = AgentTaskDispatcher._agent_prompt(
+            {"task_id": "review", "title": "Review", "task_type": "read_only", "risk_level": "read_only", "details": {}},
+            workspace, evidence=evidence,
+        )
+        self.assertIn("Analyze this evidence only", prompt)
+
     def test_reviewer_creation_asks_only_for_missing_owner_context_then_creates(self):
         workspace = Path(tempfile.mkdtemp())
         (workspace / ".etg").mkdir()
@@ -317,7 +383,7 @@ class TestAgentOrchestrationLedger(unittest.TestCase):
             workspace, persona_id="security-reviewer", name="Security reviewer", runtime="codex",
             context="Find security defects. Do not edit.", requested_by="agent:supervisor", approved_by="",
         )
-        self.assertEqual(pending["reason"], "OWNER_CONFIRMATION_REQUIRED")
+        self.assertEqual(pending["reason"], "LOCAL_OWNER_CONFIRMATION_REQUIRED")
         created = create_reviewer_persona(
             workspace, persona_id="security-reviewer", name="Security reviewer", runtime="codex",
             context="Find security defects. Do not edit.", requested_by="agent:supervisor", approved_by="user:owner",
