@@ -4,6 +4,7 @@ import subprocess
 import platform
 import tempfile
 import stat
+import json
 from pathlib import Path
 
 OLLAMA_LAUNCH_OPTIONS = {
@@ -77,7 +78,9 @@ def _headless_engine_command(engine: str, model: str = None, *, yolo: bool = Fal
     """Build a one-shot command that is read-only unless yolo is explicit."""
     normalized = (engine or "").strip().lower()
     if normalized in {"antigravity", "agy"}:
-        command = ["agy", "run"]
+        # Reviews and dispatched analysis must receive Antigravity's actual
+        # terminal sandbox, not just prose asking the model to be careful.
+        command = ["agy", "--sandbox", "--mode", "plan", "--output-format", "json", "--print"]
         if model:
             command.extend(["--model", model])
         if yolo:
@@ -110,23 +113,40 @@ def execute_headless_model(
     print(f"[ENTIGRAM] Igniting headless {engine} engine...")
     target_path = Path(target_dir).absolute()
     command = _headless_engine_command(engine, model, yolo=yolo)
+    normalized_engine = (engine or "").strip().lower()
+    # Antigravity's print mode takes the prompt as its required flag argument;
+    # unlike Codex it does not read the one-shot prompt from standard input.
+    # Dispatch supplies only bounded structured task metadata here, never the
+    # user's raw remote-control conversation.
+    input_text = prompt
+    if normalized_engine in {"antigravity", "agy"}:
+        command.append(_sanitize_initial_prompt(prompt))
+        input_text = None
     try:
         # We pass the prompt via 'input', NOT as a command-line argument.
         # This breaks the TTY and forces a one-shot execution.
         result = subprocess.run(
             command,
-            input=prompt,
+            input=input_text,
             capture_output=True,
             text=True,
             check=True,
             cwd=str(target_path)
         )
-        output = result.stdout.strip()
+        output = (result.stdout or result.stderr or "").strip()
+        if normalized_engine in {"antigravity", "agy"}:
+            try:
+                payload = json.loads(output)
+                if isinstance(payload, dict) and isinstance(payload.get("response"), str):
+                    output = payload["response"].strip()
+            except json.JSONDecodeError:
+                pass
         
         # Defensive: If the engine echoes the prompt, strip it
         if output.startswith(prompt):
             output = output[len(prompt):].strip()
-            
+        if not output:
+            raise RuntimeError(f"Headless {engine} engine completed without a response.")
         return output
     except (OSError, subprocess.CalledProcessError) as exc:
         detail = getattr(exc, "stderr", None) or str(exc)

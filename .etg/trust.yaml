@@ -1,0 +1,63 @@
+format: entigram.project-trust.v2
+project_id: entigram
+version: 1
+root:
+  project_id: entigram
+  created_at: '2026-09-15T03:43:53Z'
+  quorum:
+    trust_change:
+      minimum: 1
+      roles:
+      - trust_admin
+    recovery:
+      minimum: 1
+      roles:
+      - recovery_admin
+  signers:
+  - signer_id: user:dnyabuti
+    roles:
+    - trust_admin
+    - task_approver
+    - recovery_admin
+    - authority_issuer
+    keys:
+    - key_id: ad82b891b22bf9622b7507d8fd6626858bbf5612c1f4456ba85cb99223f3ba89
+      public_key: v77yt6NFpNJZTNq28+Sy7SV5PI1srQlHnHG37EhFqOU=
+      state: active
+      registered_at: '2026-09-15T03:43:53Z'
+  agents: []
+  revoked_grants: []
+root_signature:
+  type: entigram.identity.ed25519.v1
+  kind: trust_root
+  signer_id: user:dnyabuti
+  key_id: ad82b891b22bf9622b7507d8fd6626858bbf5612c1f4456ba85cb99223f3ba89
+  claims:
+    project_id: entigram
+    root_digest: 3197e06e2d4aace79a5d72f6f0ea0865670ea27415ea5081741f22070ce06efc
+    created_at: '2026-09-15T03:43:53Z'
+  signature: 9YHQaXjhiXOWOsCF523euFgaaQyrta42Qb+u6beqJ7LBTVyyq6zhrX1ZLPFwyCSkcjfTnMynV0Hr9K3G2T7iBg==
+quorum:
+  trust_change:
+    minimum: 1
+    roles:
+    - trust_admin
+  recovery:
+    minimum: 1
+    roles:
+    - recovery_admin
+signers:
+- signer_id: user:dnyabuti
+  roles:
+  - trust_admin
+  - task_approver
+  - recovery_admin
+  - authority_issuer
+  keys:
+  - key_id: ad82b891b22bf9622b7507d8fd6626858bbf5612c1f4456ba85cb99223f3ba89
+    public_key: v77yt6NFpNJZTNq28+Sy7SV5PI1srQlHnHG37EhFqOU=
+    state: active
+    registered_at: '2026-09-15T03:43:53Z'
+agents: []
+revoked_grants: []
+events: []

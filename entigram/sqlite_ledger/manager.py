@@ -1,6 +1,7 @@
 import json
 import sqlite3
 import uuid
+import hashlib
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Dict, Any
@@ -285,6 +286,7 @@ class LedgerManager:
                 "attempt_count": "INTEGER NOT NULL DEFAULT 0",
                 "last_error": "TEXT",
                 "result_summary": "TEXT",
+                "result_output": "TEXT",
             })
             conn.execute('''
                 CREATE TABLE IF NOT EXISTS agent_task_events (
@@ -1567,6 +1569,14 @@ class LedgerManager:
         if approval_status not in {"NotRequired", "Pending", "Approved", "Denied"}:
             return {"ok": False, "reason": "INVALID_APPROVAL_STATUS"}
         normalized_risk = self._normalize_risk_level(risk_level)
+        if approval_status == "Approved":
+            # Approval is an auditable, signed transition, never a property a
+            # requester can assert while creating work.
+            return {"ok": False, "reason": "TASK_APPROVAL_MUST_BE_RECORDED"}
+        if normalized_risk in {"high_risk", "critical"}:
+            # High-impact work can never enter the claim path on a caller's
+            # assertion alone.
+            approval_status = "Pending"
         minimum = TASK_RISK_REQUIRED_SCORE[normalized_risk]
         score = minimum if required_score is None else max(minimum, min(1.0, float(required_score)))
         conn = self._get_connection()
@@ -1605,6 +1615,20 @@ class LedgerManager:
             if self.db_path != ":memory:": conn.close()
 
     def claim_agent_task(self, task_id: str, agent_id: str, *, lease_seconds: int = 300) -> Dict[str, Any]:
+        """Atomically lease a ready task, serializing high-risk trust changes."""
+        task = self.get_agent_task(task_id)
+        if task and task.get("risk_level") in {"high_risk", "critical"}:
+            try:
+                registry = self._task_approval_registry()
+                from entigram.governance.trust import trust_registry_lock
+                with trust_registry_lock(registry.target_dir):
+                    # Reload under the same lock held by trust key changes.
+                    return self._claim_agent_task_unlocked(task_id, agent_id, lease_seconds=lease_seconds)
+            except (ValueError, OSError) as exc:
+                return {"ok": False, "reason": "TASK_APPROVAL_TRUST_UNAVAILABLE", "details": str(exc)}
+        return self._claim_agent_task_unlocked(task_id, agent_id, lease_seconds=lease_seconds)
+
+    def _claim_agent_task_unlocked(self, task_id: str, agent_id: str, *, lease_seconds: int = 300) -> Dict[str, Any]:
         """Atomically lease a ready task to one capability-approved agent."""
         if lease_seconds < 30 or lease_seconds > 3600:
             return {"ok": False, "reason": "INVALID_LEASE_SECONDS"}
@@ -1616,6 +1640,10 @@ class LedgerManager:
             return {"ok": False, "reason": "AGENT_NOT_REGISTERED", "agent_id": agent_id}
         if task["approval_status"] not in {"NotRequired", "Approved"}:
             return {"ok": False, "reason": "TASK_APPROVAL_REQUIRED", "task": task}
+        if task["approval_status"] == "Approved":
+            approval = self.verify_task_approval(task)
+            if not approval.get("ok"):
+                return {"ok": False, "reason": approval["reason"], "task": task}
         if task["assigned_agent_id"] and task["assigned_agent_id"] != agent_id:
             return {"ok": False, "reason": "TASK_ASSIGNED_TO_OTHER_AGENT", "task": task}
         decision = self.evaluate_agent_assignment(agent, task)
@@ -1704,8 +1732,13 @@ class LedgerManager:
         finally:
             if self.db_path != ":memory:": conn.close()
 
-    def complete_agent_task(self, task_id: str, agent_id: str, summary: str) -> Dict[str, Any]:
-        return self._finish_agent_task(task_id, agent_id, "Completed", "completed", summary)
+    def complete_agent_task(
+        self, task_id: str, agent_id: str, summary: str, *, output: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Finish a task and retain its bounded, human-readable agent output."""
+        return self._finish_agent_task(
+            task_id, agent_id, "Completed", "completed", summary, result_output=output
+        )
 
     def fail_agent_task(self, task_id: str, agent_id: str, summary: str, *, retryable: bool = False) -> Dict[str, Any]:
         return self._finish_agent_task(task_id, agent_id, "Queued" if retryable else "Failed", "failed", summary, retryable=retryable)
@@ -1730,16 +1763,96 @@ class LedgerManager:
         finally:
             if self.db_path != ":memory:": conn.close()
 
-    def approve_agent_task(self, task_id: str, actor_id: str, summary: str) -> Dict[str, Any]:
-        """Record an owner's explicit approval without dispatching the task.
+    @staticmethod
+    def task_approval_claims(task: Dict[str, Any], summary: str, approval_id: str) -> Dict[str, Any]:
+        """Produce the canonical, immutable task projection a person signs."""
+        if not isinstance(task, dict):
+            raise ValueError("task approval requires a task record")
+        if not isinstance(summary, str) or not summary.strip():
+            raise ValueError("task approval requires a summary")
+        if not isinstance(approval_id, str) or not approval_id.strip():
+            raise ValueError("task approval requires an approval id")
+        request = {
+            key: task.get(key)
+            for key in (
+                "task_id", "entity_id", "workspace_id", "requested_by", "idempotency_key",
+                "title", "task_type", "risk_level", "required_score", "details", "action_contract_ref",
+            )
+        }
+        request_json = json.dumps(request, sort_keys=True, separators=(",", ":"), default=str)
+        return {
+            "task_id": task["task_id"],
+            "task_digest": hashlib.sha256(request_json.encode("utf-8")).hexdigest(),
+            "summary_digest": hashlib.sha256(summary.strip().encode("utf-8")).hexdigest(),
+            "approval_id": approval_id,
+        }
 
-        Approval changes authority, not execution state. The normal
-        capability-gated assign/claim path must still succeed afterward.
+    def _task_approval_registry(self):
+        """Resolve the public trust registry paired with a workspace ledger."""
+        if self.db_path == ":memory:":
+            raise ValueError("signed task approval requires a workspace-backed ledger")
+        ledger_path = Path(self.db_path).expanduser().resolve()
+        if ledger_path.parent.name != ".etg":
+            raise ValueError("task ledger is not located in a governed .etg directory")
+        from entigram.governance.trust import ProjectTrustRegistry
+        registry = ProjectTrustRegistry(ledger_path.parent.parent)
+        if not registry.exists():
+            raise ValueError("workspace trust is not configured; run `etg trust setup --owner user:<you>`")
+        return registry
+
+    def verify_task_approval(self, task: Dict[str, Any]) -> Dict[str, Any]:
+        """Re-verify a signed receipt before consequential task claims."""
+        if task.get("approval_status") != "Approved":
+            return {"ok": False, "reason": "TASK_APPROVAL_REQUIRED"}
+        if task.get("risk_level") not in {"high_risk", "critical"}:
+            return {"ok": True}
+        events = self.get_agent_task_events(task["task_id"])
+        approval = next((event for event in reversed(events) if event["event_type"] == "approved"), None)
+        if not approval:
+            return {"ok": False, "reason": "TASK_APPROVAL_EVIDENCE_MISSING"}
+        assertion = (approval.get("metadata") or {}).get("assertion")
+        if not isinstance(assertion, dict):
+            return {"ok": False, "reason": "TASK_APPROVAL_EVIDENCE_MISSING"}
+        try:
+            registry = self._task_approval_registry()
+            verified, claims, reason = registry.verify(assertion, "task_approval")
+            if not verified or not claims:
+                return {"ok": False, "reason": "TASK_APPROVAL_SIGNATURE_INVALID", "details": reason}
+            signer_id = claims.get("_signer_id")
+            if not isinstance(signer_id, str) or not registry.signer_has_role(signer_id, "task_approver"):
+                return {"ok": False, "reason": "TASK_APPROVER_NOT_AUTHORIZED"}
+            expected = self.task_approval_claims(task, approval["summary"], str(claims.get("approval_id", "")))
+            if any(claims.get(key) != value for key, value in expected.items()):
+                return {"ok": False, "reason": "TASK_APPROVAL_ASSERTION_MISMATCH"}
+            return {"ok": True, "signer_id": signer_id}
+        except (ValueError, OSError) as exc:
+            return {"ok": False, "reason": "TASK_APPROVAL_TRUST_UNAVAILABLE", "details": str(exc)}
+
+    def approve_agent_task(self, task_id: str, approval_assertion: Dict[str, Any], summary: str) -> Dict[str, Any]:
+        """Record a signed, trust-authorized approval without dispatching work.
+
+        Assertions bind an active ``task_approver`` to the exact task request
+        and approval note. A task can only make this transition once, so a
+        valid assertion cannot be replayed after its approval is consumed.
         """
-        if not actor_id.startswith("user:"):
-            return {"ok": False, "reason": "OWNER_APPROVAL_REQUIRED"}
         if not isinstance(summary, str) or not summary.strip():
             return {"ok": False, "reason": "TASK_SUMMARY_REQUIRED"}
+        task = self.get_agent_task(task_id)
+        if not task:
+            return {"ok": False, "reason": "TASK_NOT_FOUND"}
+        try:
+            registry = self._task_approval_registry()
+            verified, claims, reason = registry.verify(approval_assertion, "task_approval")
+            if not verified or not claims:
+                return {"ok": False, "reason": "TASK_APPROVAL_SIGNATURE_INVALID", "details": reason}
+            signer_id = claims.get("_signer_id")
+            if not isinstance(signer_id, str) or not registry.signer_has_role(signer_id, "task_approver"):
+                return {"ok": False, "reason": "TASK_APPROVER_NOT_AUTHORIZED"}
+            expected = self.task_approval_claims(task, summary, str(claims.get("approval_id", "")))
+            if any(claims.get(key) != value for key, value in expected.items()):
+                return {"ok": False, "reason": "TASK_APPROVAL_ASSERTION_MISMATCH"}
+        except (ValueError, OSError) as exc:
+            return {"ok": False, "reason": "TASK_APPROVAL_TRUST_UNAVAILABLE", "details": str(exc)}
         conn = self._get_connection()
         try:
             with conn:
@@ -1756,7 +1869,11 @@ class LedgerManager:
                 )
                 if result.rowcount != 1:
                     return {"ok": False, "reason": "TASK_APPROVAL_REJECTED"}
-                self._record_agent_task_event(conn, task_id, "approved", actor_id, summary, {})
+                self._record_agent_task_event(
+                    conn, task_id, "approved", signer_id, summary,
+                    {"approval_id": claims["approval_id"], "task_digest": claims["task_digest"],
+                     "key_id": claims.get("_key_id"), "assertion": approval_assertion},
+                )
             return {"ok": True, "task": self.get_agent_task(task_id)}
         finally:
             if self.db_path != ":memory:": conn.close()
@@ -1820,6 +1937,7 @@ class LedgerManager:
         summary: str,
         *,
         retryable: bool = False,
+        result_output: Optional[str] = None,
     ) -> Dict[str, Any]:
         if not isinstance(summary, str) or not summary.strip():
             return {"ok": False, "reason": "TASK_SUMMARY_REQUIRED"}
@@ -1830,11 +1948,15 @@ class LedgerManager:
                     """
                     UPDATE agent_tasks
                     SET status = ?, result_summary = CASE WHEN ? = 'Completed' THEN ? ELSE result_summary END,
+                        result_output = CASE WHEN ? = 'Completed' THEN ? ELSE result_output END,
                         last_error = CASE WHEN ? = 'Completed' THEN NULL ELSE ? END,
                         claimed_by = NULL, lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP
                     WHERE task_id = ? AND claimed_by = ? AND status IN ('Claimed', 'Running')
                     """,
-                    (status, status, summary, status, summary, task_id, agent_id),
+                    (
+                        status, status, summary, status,
+                        (result_output or "")[:50000], status, summary, task_id, agent_id,
+                    ),
                 )
                 if result.rowcount != 1:
                     return {"ok": False, "reason": "TASK_FINISH_REJECTED"}
@@ -1858,6 +1980,7 @@ class LedgerManager:
     ) -> bool:
         """Persists a task that can be assigned through capability gating."""
         normalized_risk = self._normalize_risk_level(risk_level)
+        approval_status = "Pending" if normalized_risk in {"high_risk", "critical"} else "NotRequired"
         minimum = TASK_RISK_REQUIRED_SCORE[normalized_risk]
         score = minimum if required_score is None else max(minimum, min(1.0, float(required_score)))
         conn = self._get_connection()
@@ -1867,17 +1990,10 @@ class LedgerManager:
                     '''
                     INSERT INTO agent_tasks (
                         task_id, title, task_type, risk_level, required_score,
-                        details, status
+                        details, status, approval_status
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(task_id) DO UPDATE SET
-                        title=excluded.title,
-                        task_type=excluded.task_type,
-                        risk_level=excluded.risk_level,
-                        required_score=excluded.required_score,
-                        details=excluded.details,
-                        status=excluded.status,
-                        updated_at=CURRENT_TIMESTAMP
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(task_id) DO NOTHING
                     ''',
                     (
                         task_id,
@@ -1887,6 +2003,7 @@ class LedgerManager:
                         score,
                         json.dumps(details or {}, sort_keys=True),
                         status,
+                        approval_status,
                     ),
                 )
             return True
@@ -1923,7 +2040,7 @@ class LedgerManager:
                 "SELECT task_id, entity_id, workspace_id, requested_by, idempotency_key, "
                 "title, task_type, risk_level, required_score, details, status, approval_status, "
                 "action_contract_ref, assigned_agent_id, assignment_rationale, claimed_by, "
-                "lease_expires_at, last_heartbeat_at, attempt_count, last_error, result_summary, "
+                "lease_expires_at, last_heartbeat_at, attempt_count, last_error, result_summary, result_output, "
                 f"created_at, updated_at FROM agent_tasks {where} "
                 "ORDER BY created_at DESC, id DESC LIMIT ?",
                 params + [limit],
@@ -1933,13 +2050,24 @@ class LedgerManager:
             if self.db_path != ":memory:": conn.close()
 
     def assign_agent_task(self, task_id: str, agent_id: str) -> Dict[str, Any]:
-        """Assigns a task only when the agent capability score clears the task risk gate."""
+        """Assign queued, unclaimed work when the capability gate clears.
+
+        Assignment is deliberately a pre-lease transition.  A dispatcher owns
+        a task once it has claimed it, and terminal task records are immutable
+        evidence; neither may be silently reassigned.
+        """
         task = self.get_agent_task(task_id)
         agent = self.get_agent(agent_id)
         if not task:
             return {"ok": False, "reason": "TASK_NOT_FOUND", "task_id": task_id}
         if not agent:
             return {"ok": False, "reason": "AGENT_NOT_REGISTERED", "agent_id": agent_id}
+        if task["status"] != "Queued" or task.get("claimed_by"):
+            return {
+                "ok": False,
+                "reason": "TASK_NOT_ASSIGNABLE",
+                "task": task,
+            }
 
         decision = self.evaluate_agent_assignment(agent, task)
         if not decision["ok"]:
@@ -1955,16 +2083,21 @@ class LedgerManager:
         conn = self._get_connection()
         try:
             with conn:
-                conn.execute(
+                result = conn.execute(
                     '''
                     UPDATE agent_tasks
                     SET status = 'Assigned',
                         assigned_agent_id = ?,
                         assignment_rationale = ?,
                         updated_at = CURRENT_TIMESTAMP
-                    WHERE task_id = ?
+                    WHERE task_id = ? AND status = 'Queued' AND claimed_by IS NULL
                     ''',
                     (agent_id, decision["rationale"], task_id),
+                )
+                if result.rowcount != 1:
+                    return {"ok": False, "reason": "TASK_NOT_ASSIGNABLE", "task": self.get_agent_task(task_id)}
+                self._record_agent_task_event(
+                    conn, task_id, "assigned", agent_id, decision["rationale"], {}
                 )
             decision.update({"task_id": task_id, "agent_id": agent_id, "status": "Assigned"})
             return decision
@@ -2204,8 +2337,9 @@ class LedgerManager:
             "attempt_count": row[18],
             "last_error": row[19],
             "result_summary": row[20],
-            "created_at": row[21],
-            "updated_at": row[22],
+            "result_output": row[21],
+            "created_at": row[22],
+            "updated_at": row[23],
         }
 
     def _hibernation_row_to_dict(self, row) -> Dict[str, Any]:

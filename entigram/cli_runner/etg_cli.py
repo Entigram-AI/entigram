@@ -8,6 +8,8 @@ import getpass
 import re
 import shutil
 import subprocess
+import time
+import uuid
 from pathlib import Path
 from datetime import datetime
 from entigram.schema_compiler import compile_schema_file
@@ -1697,6 +1699,13 @@ def _main():
     )
     trust_parser.add_argument("--dir", default=".", help="Target workspace directory")
     trust_subparsers = trust_parser.add_subparsers(dest="trust_command", required=True)
+    trust_setup_parser = trust_subparsers.add_parser(
+        "setup", help="Create or reuse your local identity and initialize this workspace's trust registry"
+    )
+    trust_setup_parser.add_argument("--owner", required=True, help="Your signer ID, for example user:dnyabuti")
+    trust_setup_parser.add_argument("--project", help="Stable project ID; defaults to the workspace directory name")
+    trust_setup_parser.add_argument("--identity-key", help="Optional private-key path outside the workspace")
+    trust_setup_parser.add_argument("--json", action="store_true", dest="json_output")
     trust_init_parser = trust_subparsers.add_parser("init", help="Initialize a public project trust registry")
     trust_init_parser.add_argument("--project", required=True, help="Stable project ID")
     trust_init_parser.add_argument("--owner", required=True, help="Initial owner signer ID")
@@ -2000,6 +2009,17 @@ def _main():
     )
     agent_list_parser.add_argument("--json", action="store_true", dest="json_output", help="Print result as JSON")
 
+    reviewer_create_parser = broker_subparsers.add_parser(
+        "reviewer-create", help="Record a locally confirmed, read-only reviewer persona"
+    )
+    reviewer_create_parser.add_argument("--id", required=True, help="Stable reviewer persona ID")
+    reviewer_create_parser.add_argument("--name", default="", help="Human-readable reviewer name")
+    reviewer_create_parser.add_argument("--runtime", default="", help="Codex, Antigravity, or Claude")
+    reviewer_create_parser.add_argument("--context", default="", help="Role focus and boundaries")
+    reviewer_create_parser.add_argument("--requested-by", required=True, help="Agent or user proposing the reviewer")
+    reviewer_create_parser.add_argument("--approved-by", default="", help="Local user principal recording confirmation")
+    reviewer_create_parser.add_argument("--json", action="store_true", dest="json_output")
+
     task_enqueue_parser = broker_subparsers.add_parser(
         "task-enqueue",
         help="Persist a task for capability-gated assignment",
@@ -2076,9 +2096,10 @@ def _main():
     task_review_parser.add_argument("--summary", required=True, help="Safe explanation of the policy or evidence conflict")
     task_review_parser.add_argument("--json", action="store_true", dest="json_output", help="Print result as JSON")
 
-    task_approve_parser = broker_subparsers.add_parser("task-approve", help="Record an owner's approval without dispatching work")
+    task_approve_parser = broker_subparsers.add_parser("task-approve", help="Sign and record a trusted task approval without dispatching work")
     task_approve_parser.add_argument("--id", required=True, help="Task ID")
-    task_approve_parser.add_argument("--actor", required=True, help="Owner principal, e.g. user:founder")
+    task_approve_parser.add_argument("--signer", required=True, help="Trusted human signer, e.g. user:founder")
+    task_approve_parser.add_argument("--identity-key", help="Optional path to the signer's private key outside this workspace")
     task_approve_parser.add_argument("--summary", required=True, help="Safe approval note")
     task_approve_parser.add_argument("--json", action="store_true", dest="json_output", help="Print result as JSON")
 
@@ -2103,6 +2124,25 @@ def _main():
         "task-recover-expired", help="Return expired leased work to the queue with its checkpoints intact",
     )
     task_recover_parser.add_argument("--json", action="store_true", dest="json_output", help="Print result as JSON")
+
+    task_dispatch_parser = broker_subparsers.add_parser(
+        "task-dispatch",
+        help="Claim and run assigned local-agent tasks from the governed ledger",
+    )
+    task_dispatch_parser.add_argument(
+        "--agent", help="Only dispatch work assigned to this registered local agent"
+    )
+    task_dispatch_parser.add_argument(
+        "--workspace-root",
+        help="Host workspace root; task workspace IDs are resolved beneath it (defaults to --dir)",
+    )
+    task_dispatch_parser.add_argument(
+        "--watch", action="store_true", help="Keep polling the ledger until interrupted"
+    )
+    task_dispatch_parser.add_argument(
+        "--interval", type=float, default=10.0, help="Polling interval in seconds (minimum 5)"
+    )
+    task_dispatch_parser.add_argument("--json", action="store_true", dest="json_output")
 
     hibernate_parser = broker_subparsers.add_parser(
         "hibernate",
@@ -4046,7 +4086,7 @@ RELATIONSHIPS:
         registry = ProjectTrustRegistry(workspace)
         try:
             mutating_commands = {
-                "init", "add-signer", "rotate-key", "apply-change", "revoke-key", "revoke-grant",
+                "setup", "init", "add-signer", "rotate-key", "apply-change", "revoke-key", "revoke-grant",
                 "enroll-agent", "add-agent-version", "remove-agent-version", "rotate-agent-key", "revoke-agent-key",
             }
             if args.trust_command in mutating_commands and Warden(str(workspace)).is_locked():
@@ -4054,7 +4094,32 @@ RELATIONSHIPS:
                     "workspace is Warden-locked; run `etg warden --dir . unlock`, review the trust change, "
                     "then run `etg broker --dir . handoff --accept-contract-change`"
                 )
-            if args.trust_command == "init":
+            if args.trust_command == "setup":
+                identity = _personal_identity(workspace, args.owner, args.identity_key)
+                created_identity = False
+                if not identity.key_path.exists():
+                    identity.create()
+                    created_identity = True
+                trust_path = workspace / ".etg" / "trust.yaml"
+                if trust_path.exists():
+                    document = registry.load()
+                    if not registry.signer_has_role(args.owner, "trust_admin"):
+                        raise TrustRegistryError("existing trust registry does not enroll this signer as trust_admin")
+                    result = {"ok": True, "created_identity": created_identity, "registry": document}
+                else:
+                    document = registry.initialize(
+                        project_id=args.project or workspace.name,
+                        owner_public_key=identity.public_record(),
+                        owner_roles=["trust_admin", "task_approver", "recovery_admin", "authority_issuer"],
+                        owner_identity=identity,
+                        recovery_quorum=1,
+                    )
+                    result = {"ok": True, "created_identity": created_identity, "registry": document}
+                result["next_step"] = (
+                    "Trust is ready. High-risk task approval must use this signer; review the public registry, "
+                    "then run `etg broker handoff --accept-contract-change`."
+                )
+            elif args.trust_command == "init":
                 identity = _personal_identity(workspace, args.owner, args.identity_key)
                 result = {
                     "ok": True,
@@ -4576,6 +4641,7 @@ RELATIONSHIPS:
 
     elif args.command == "broker":
         from entigram.broker import EntigramBroker
+        workspace = _resolve_workspace_dir(args.dir)
         broker = EntigramBroker(args.dir)
         
         if args.broker_command == "decide":
@@ -4726,6 +4792,37 @@ RELATIONSHIPS:
                         f"{agent['agent_id']} | score={agent['reliability_score']:.2f} "
                         f"| class={agent.get('agent_class') or '-'} | model={agent.get('model') or '-'}"
                     )
+        elif args.broker_command == "reviewer-create":
+            from entigram.reviewer_personas import create_reviewer_persona
+
+            result = create_reviewer_persona(
+                Path(args.dir).expanduser().resolve(),
+                persona_id=args.id,
+                name=args.name,
+                runtime=args.runtime,
+                context=args.context,
+                requested_by=args.requested_by,
+                approved_by=args.approved_by,
+            )
+            if result.get("ok"):
+                persona = result["persona"]
+                broker.ledger.record_agent(
+                    result["persona_id"], agent_class="reviewer", provider=persona["runtime"],
+                    model=persona["runtime"].title(), reliability_score=0.75,
+                    capability_scores={"read_only": 0.75}, allowed_task_classes=["read_only"],
+                    notes=f"Locally confirmed reviewer persona created by {persona['requested_by']}.",
+                )
+            if getattr(args, "json_output", False):
+                print(json.dumps(result, indent=2, sort_keys=True))
+            elif result.get("ok"):
+                print(f"✅ Reviewer created: {result['persona_id']}")
+            elif result.get("questions"):
+                for question in result["questions"]:
+                    print(f"? {question}")
+            else:
+                print(f"❌ Reviewer was not created: {result.get('reason')}")
+            if not result.get("ok"):
+                sys.exit(1)
         elif args.broker_command == "task-enqueue":
             try:
                 details = _parse_json_arg(getattr(args, "details", None), default={})
@@ -4839,7 +4936,20 @@ RELATIONSHIPS:
             if not result.get("ok"):
                 sys.exit(1)
         elif args.broker_command == "task-approve":
-            result = broker.ledger.approve_agent_task(args.id, args.actor, args.summary)
+            task = broker.ledger.get_agent_task(args.id)
+            if not task:
+                result = {"ok": False, "reason": "TASK_NOT_FOUND"}
+            else:
+                try:
+                    identity = _personal_identity(workspace, args.signer, args.identity_key)
+                    claims = broker.ledger.task_approval_claims(
+                        task, args.summary, f"approval-{uuid.uuid4()}"
+                    )
+                    result = broker.ledger.approve_agent_task(
+                        args.id, identity.sign("task_approval", claims), args.summary
+                    )
+                except (ValueError, OSError) as exc:
+                    result = {"ok": False, "reason": "TASK_APPROVAL_SIGNING_FAILED", "details": str(exc)}
             if getattr(args, "json_output", False):
                 print(json.dumps(result, indent=2, sort_keys=True))
             elif result.get("ok"):
@@ -4888,6 +4998,29 @@ RELATIONSHIPS:
                 print(f"↻ Recovered {len(tasks)} expired task{'s' if len(tasks) != 1 else ''} for resume.")
             else:
                 print("No expired task leases to recover.")
+        elif args.broker_command == "task-dispatch":
+            from entigram.agent_dispatch import AgentTaskDispatcher
+
+            interval = max(5.0, float(args.interval))
+            dispatcher = AgentTaskDispatcher(
+                broker.ledger,
+                getattr(args, "workspace_root", None) or args.dir,
+            )
+            while True:
+                outcomes = dispatcher.dispatch_once(agent_id=getattr(args, "agent", None))
+                if getattr(args, "json_output", False):
+                    print(json.dumps({"ok": True, "outcomes": outcomes}, indent=2, sort_keys=True))
+                elif outcomes:
+                    for outcome in outcomes:
+                        if outcome.get("ok"):
+                            print(f"✅ Completed {outcome['task_id']} in {outcome['workspace']}")
+                        else:
+                            print(f"⚠️  Did not dispatch {outcome['task_id']}: {outcome.get('reason')}")
+                elif not getattr(args, "watch", False):
+                    print("No eligible assigned tasks to dispatch.")
+                if not getattr(args, "watch", False):
+                    break
+                time.sleep(interval)
         elif args.broker_command == "hibernate":
             plan = broker.ledger.record_agent_hibernation(
                 args.agent,

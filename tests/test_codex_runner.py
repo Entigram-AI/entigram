@@ -88,13 +88,15 @@ llama3.2:latest   def456          2.0 GB    1 week ago
         with patch("subprocess.run", return_value=SimpleNamespace(stdout=output)):
             self.assertEqual(list_ollama_models(), ["qwen3:latest", "llama3.2:latest"])
 
-    def test_headless_antigravity_keeps_permissions_enabled_by_default(self):
+    def test_headless_antigravity_uses_sandboxed_plan_mode_by_default(self):
         with patch("subprocess.run", return_value=SimpleNamespace(stdout="ENTITY: Safe")) as run:
             output = execute_headless_model("model this", engine="Antigravity")
 
         self.assertEqual(output, "ENTITY: Safe")
         command = run.call_args.args[0]
-        self.assertEqual(command, ["agy", "run"])
+        self.assertEqual(command[:7], ["agy", "--sandbox", "--mode", "plan", "--output-format", "json", "--print"])
+        self.assertEqual(command[-1], "model this")
+        self.assertEqual(run.call_args.kwargs["input"], None)
         self.assertNotIn("--dangerously-skip-permissions", command)
 
     def test_headless_runner_uses_selected_engine_in_read_only_mode(self):
@@ -104,6 +106,18 @@ llama3.2:latest   def456          2.0 GB    1 week ago
         command = run.call_args.args[0]
         self.assertEqual(command[:4], ["codex", "exec", "--sandbox", "read-only"])
         self.assertIn("gpt-5", command)
+
+    def test_headless_antigravity_extracts_structured_print_response(self):
+        payload = '{"status":"SUCCESS","response":"Review result\\n"}'
+        with patch("subprocess.run", return_value=SimpleNamespace(stdout=payload, stderr="")):
+            output = execute_headless_model("model this", engine="Antigravity")
+
+        self.assertEqual(output, "Review result")
+
+    def test_headless_runner_rejects_empty_response(self):
+        with patch("subprocess.run", return_value=SimpleNamespace(stdout="", stderr="")):
+            with self.assertRaisesRegex(RuntimeError, "without a response"):
+                execute_headless_model("model this", engine="Antigravity")
 
 
 if __name__ == "__main__":

@@ -49,14 +49,17 @@ class TestHeadlessModeling(unittest.TestCase):
         with patch.object(sys, 'argv', test_args):
             main()
 
-        # Verify agy was called headlessly (with input=prompt)
-        # Call index 0 is likely the first agy check or similar, let's check all calls
+        # Antigravity's --print mode accepts its one-shot prompt as the final
+        # command argument, rather than stdin.  Keep this assertion aligned
+        # with the real CLI contract so a mocked subprocess cannot hide a
+        # broken agent invocation.
         found_agy_call = False
         for call in mock_run.call_args_list:
             args, kwargs = call
-            if args[0][0] == "agy" and "input" in kwargs:
+            if args[0][0] == "agy":
                 found_agy_call = True
-                self.assertIn("A library with books", kwargs["input"])
+                self.assertIn("A library with books", args[0][-1])
+                self.assertIsNone(kwargs["input"])
                 break
         self.assertTrue(found_agy_call)
 
@@ -89,7 +92,7 @@ class TestHeadlessModeling(unittest.TestCase):
             main()
 
         self.assertEqual(mock_run.call_count, 2)
-        second_prompt = mock_run.call_args_list[1].kwargs["input"]
+        second_prompt = mock_run.call_args_list[1].args[0][-1]
         self.assertIn("HALT_EVENT", second_prompt)
         self.assertIn("NO_ENTITIES", second_prompt)
 
@@ -120,7 +123,7 @@ class TestHeadlessModeling(unittest.TestCase):
 
         self.assertEqual(ctx.exception.code, 1)
         self.assertEqual(mock_run.call_count, 2)
-        second_prompt = mock_run.call_args_list[1].kwargs["input"]
+        second_prompt = mock_run.call_args_list[1].args[0][-1]
         self.assertIn("HALT_EVENT", second_prompt)
         self.assertIn("NO_ENTITIES", second_prompt)
 

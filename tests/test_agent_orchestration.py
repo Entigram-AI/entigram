@@ -8,7 +8,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 from entigram.cli_runner.etg_cli import main
+from entigram.agent_dispatch import AgentTaskDispatcher
+from entigram.reviewer_personas import create_reviewer_persona
 from entigram.sqlite_ledger.manager import LedgerManager
+from entigram.governance.trust import PersonalIdentity, ProjectTrustRegistry
 
 
 class TestAgentOrchestrationLedger(unittest.TestCase):
@@ -150,19 +153,106 @@ class TestAgentOrchestrationLedger(unittest.TestCase):
         self.assertEqual(completed["task"]["status"], "Completed")
         self.assertEqual(completed["task"]["result_summary"], "Focused tests passed.")
 
-    def test_only_an_owner_can_approve_a_pending_task_without_dispatching_it(self):
-        self.assertTrue(self.ledger.request_agent_task(
+    def test_signed_task_approval_requires_trusted_approver_and_rejects_replay(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root)
+        anchor_patch = patch.dict(os.environ, {"ENTIGRAM_TRUST_ANCHOR_DIR": str(root / "anchors")})
+        anchor_patch.start()
+        self.addCleanup(anchor_patch.stop)
+        workspace = root / "workspace"
+        (workspace / ".etg").mkdir(parents=True)
+        owner = PersonalIdentity("user:founder", root / "keys" / "founder.pem")
+        owner.create()
+        registry = ProjectTrustRegistry(workspace)
+        registry.initialize(
+            project_id="workspace", owner_public_key=owner.public_record(),
+            owner_roles=["trust_admin", "task_approver", "recovery_admin"], owner_identity=owner,
+        )
+        ledger = LedgerManager(str(workspace / ".etg" / "state.db"))
+        self.addCleanup(ledger.close)
+        self.assertTrue(ledger.request_agent_task(
             "task-approval", "Send a prepared release", "test_run",
             entity_id="entigram-ai", workspace_id="entigram", requested_by="user:founder",
             idempotency_key="task-approval-v1", risk_level="high_risk", approval_status="Pending",
         )["ok"])
-        denied = self.ledger.approve_agent_task("task-approval", "agent:codex", "Ready to send.")
+        denied = ledger.approve_agent_task("task-approval", {"signer_id": "user:anyone"}, "Ready to send.")
         self.assertFalse(denied["ok"])
-        approved = self.ledger.approve_agent_task("task-approval", "user:founder", "Approved after review.")
+        task = ledger.get_agent_task("task-approval")
+        claims = ledger.task_approval_claims(task, "Approved after review.", "approval-test-1")
+        approved = ledger.approve_agent_task("task-approval", owner.sign("task_approval", claims), "Approved after review.")
         self.assertTrue(approved["ok"])
         self.assertEqual(approved["task"]["approval_status"], "Approved")
         self.assertEqual(approved["task"]["status"], "Queued")
-        self.assertEqual(self.ledger.get_agent_task_events("task-approval")[-1]["event_type"], "approved")
+        self.assertEqual(ledger.get_agent_task_events("task-approval")[-1]["event_type"], "approved")
+        self.assertTrue(ledger.verify_task_approval(approved["task"])["ok"])
+        self.assertTrue(ledger.request_agent_task(
+            "task-mismatch", "Send another release", "test_run", entity_id="entigram-ai",
+            workspace_id="entigram", requested_by="user:founder", idempotency_key="task-mismatch-v1",
+            risk_level="high_risk", approval_status="Pending",
+        )["ok"])
+        mismatch_task = ledger.get_agent_task("task-mismatch")
+        mismatch_claims = ledger.task_approval_claims(mismatch_task, "Approved note.", "approval-test-2")
+        mismatched = ledger.approve_agent_task(
+            "task-mismatch", owner.sign("task_approval", mismatch_claims), "Different approval note."
+        )
+        self.assertFalse(mismatched["ok"])
+        self.assertEqual(mismatched["reason"], "TASK_APPROVAL_ASSERTION_MISMATCH")
+
+        self.assertTrue(ledger.record_agent(
+            "release-agent", reliability_score=1.0,
+            capability_scores={"test_run": 1.0}, allowed_task_classes=["test_run"],
+        ))
+        revoke = registry.make_change(
+            operation="revoke_key", signer_id="user:founder",
+            key_id_to_revoke=owner.public_record()["key_id"],
+        )
+        registry.apply_change(revoke, [registry.approve_change(revoke, owner)])
+        revoked_claim = ledger.claim_agent_task("task-approval", "release-agent")
+        self.assertFalse(revoked_claim["ok"])
+        self.assertEqual(revoked_claim["reason"], "TASK_APPROVAL_SIGNATURE_INVALID")
+        replay = ledger.approve_agent_task("task-approval", owner.sign("task_approval", claims), "Approved after review.")
+        self.assertFalse(replay["ok"])
+
+    def test_high_risk_task_cannot_self_approve_at_creation(self):
+        rejected = self.ledger.request_agent_task(
+            "self-approved", "Publish release", "release", entity_id="entigram",
+            workspace_id="project", requested_by="user:owner", idempotency_key="self-approved-v1",
+            risk_level="high_risk", approval_status="Approved",
+        )
+        self.assertFalse(rejected["ok"])
+        self.assertEqual(rejected["reason"], "TASK_APPROVAL_MUST_BE_RECORDED")
+
+    def test_legacy_enqueue_keeps_high_risk_tasks_pending(self):
+        self.assertTrue(self.ledger.record_agent(
+            "release-agent", reliability_score=1.0,
+            capability_scores={"release": 1.0}, allowed_task_classes=["release"],
+        ))
+        self.assertTrue(self.ledger.enqueue_agent_task(
+            "legacy-high-risk", "Publish release", "release", risk_level="high_risk",
+        ))
+        task = self.ledger.get_agent_task("legacy-high-risk")
+        self.assertEqual(task["approval_status"], "Pending")
+        self.assertFalse(self.ledger.claim_agent_task("legacy-high-risk", "release-agent")["ok"])
+        self.assertTrue(self.ledger.enqueue_agent_task(
+            "legacy-high-risk", "Downgrade attempt", "release", risk_level="low_risk",
+        ))
+        preserved = self.ledger.get_agent_task("legacy-high-risk")
+        self.assertEqual(preserved["risk_level"], "high_risk")
+        self.assertEqual(preserved["approval_status"], "Pending")
+
+    def test_high_risk_task_is_pending_until_approval_is_recorded(self):
+        self.assertTrue(self.ledger.record_agent(
+            "release-agent", reliability_score=1.0,
+            capability_scores={"release": 1.0}, allowed_task_classes=["release"],
+        ))
+        requested = self.ledger.request_agent_task(
+            "approval-required-release", "Publish release", "release",
+            entity_id="entigram", workspace_id="project", requested_by="user:owner",
+            idempotency_key="approval-required-release-v1", risk_level="high_risk",
+        )
+        self.assertTrue(requested["ok"])
+        self.assertEqual(requested["task"]["approval_status"], "Pending")
+        self.assertFalse(self.ledger.claim_agent_task("approval-required-release", "release-agent")["ok"])
 
     def test_expired_task_lease_is_requeued_with_a_continuity_event(self):
         self.assertTrue(self.ledger.record_agent(
@@ -186,6 +276,222 @@ class TestAgentOrchestrationLedger(unittest.TestCase):
         self.assertEqual(task["status"], "Queued")
         self.assertIn("resume from recorded checkpoints", task["last_error"])
         self.assertEqual(self.ledger.get_agent_task_events("task-recover")[-1]["event_type"], "lease_expired")
+
+    def test_assignment_cannot_reopen_terminal_or_leased_work(self):
+        self.assertTrue(self.ledger.record_agent(
+            "codex-local", reliability_score=0.95,
+            capability_scores={"review": 1.0}, allowed_task_classes=["review"],
+        ))
+        self.assertTrue(self.ledger.request_agent_task(
+            "assignment-boundary", "Review assignment boundary", "review",
+            entity_id="entigram", workspace_id="project", requested_by="user:owner",
+            idempotency_key="assignment-boundary-v1", risk_level="read_only",
+        )["ok"])
+        self.assertTrue(self.ledger.assign_agent_task("assignment-boundary", "codex-local")["ok"])
+        self.assertTrue(self.ledger.claim_agent_task("assignment-boundary", "codex-local")["ok"])
+        leased = self.ledger.assign_agent_task("assignment-boundary", "codex-local")
+        self.assertFalse(leased["ok"])
+        self.assertEqual(leased["reason"], "TASK_NOT_ASSIGNABLE")
+        self.assertTrue(self.ledger.complete_agent_task("assignment-boundary", "codex-local", "Done.")["ok"])
+        terminal = self.ledger.assign_agent_task("assignment-boundary", "codex-local")
+        self.assertFalse(terminal["ok"])
+        self.assertEqual(terminal["reason"], "TASK_NOT_ASSIGNABLE")
+
+    def test_dispatcher_runs_assigned_review_in_governed_child_and_records_output(self):
+        root = Path(tempfile.mkdtemp())
+        child = root / "project"
+        (child / ".etg").mkdir(parents=True)
+        (child / ".etg" / "entigram.yaml").write_text("workspace_schema_version: 1\n")
+        self.addCleanup(shutil.rmtree, root)
+        self.ledger.record_agent(
+            "antigravity-local",
+            agent_class="reviewer",
+            provider="antigravity",
+            reliability_score=0.95,
+            capability_scores={"code_review": 0.95},
+            allowed_task_classes=["code_review"],
+        )
+        self.assertTrue(self.ledger.request_agent_task(
+            "review-console", "Review the Work Console changes", "code_review",
+            entity_id="entigram", workspace_id="project", requested_by="user:owner",
+            idempotency_key="review-console-v1", target_agent_id="antigravity-local",
+            risk_level="read_only", details={"workspace_path": "project", "branch": "feat/work-console"},
+        )["ok"])
+        calls = []
+
+        def executor(prompt, **kwargs):
+            calls.append((prompt, kwargs))
+            return "Review complete. One low-risk label issue found."
+
+        outcomes = AgentTaskDispatcher(self.ledger, root, executor=executor).dispatch_once()
+
+        self.assertEqual(outcomes[0]["status"], "Completed")
+        self.assertEqual(calls[0][1]["target_dir"], str(child.resolve()))
+        self.assertIn("host already bound", calls[0][0])
+        task = self.ledger.get_agent_task("review-console")
+        self.assertEqual(task["status"], "Completed")
+        self.assertEqual(task["result_output"], "Review complete. One low-risk label issue found.")
+
+    def test_dispatcher_rejects_workspace_escape_before_agent_launch(self):
+        self.ledger.record_agent(
+            "antigravity-local", provider="antigravity", reliability_score=0.95,
+            capability_scores={"code_review": 0.95}, allowed_task_classes=["code_review"],
+        )
+        self.assertTrue(self.ledger.request_agent_task(
+            "escape-review", "Review outside workspace", "code_review", entity_id="entigram",
+            workspace_id="../outside", requested_by="user:owner", idempotency_key="escape-review-v1",
+            target_agent_id="antigravity-local", risk_level="read_only",
+        )["ok"])
+
+        outcomes = AgentTaskDispatcher(self.ledger, tempfile.mkdtemp()).dispatch_once()
+
+        self.assertFalse(outcomes[0]["ok"])
+        self.assertEqual(outcomes[0]["reason"], "INVALID_WORKSPACE")
+        self.assertEqual(self.ledger.get_agent_task("escape-review")["status"], "NeedsReview")
+
+    def test_dispatcher_supports_existing_model_named_agent_registrations(self):
+        self.assertEqual(
+            AgentTaskDispatcher._runtime_for_agent({
+                "provider": "Google", "model": "Antigravity", "agent_id": "antigravity-default",
+            }),
+            "Antigravity",
+        )
+        self.assertIsNone(AgentTaskDispatcher._model_argument({"model": "Antigravity"}, "Antigravity"))
+        self.assertIsNone(AgentTaskDispatcher._model_argument({"model": "Claude"}, "Claude Code"))
+
+    def test_dispatcher_leaves_pending_approval_queued_without_retry_noise(self):
+        self.ledger.record_agent(
+            "antigravity-local", provider="antigravity", reliability_score=0.95,
+            capability_scores={"code_review": 0.95}, allowed_task_classes=["code_review"],
+        )
+        self.ledger.request_agent_task(
+            "pending-review", "Await owner approval", "code_review", entity_id="entigram",
+            workspace_id="project", requested_by="user:owner", idempotency_key="pending-review-v1",
+            target_agent_id="antigravity-local", risk_level="read_only", approval_status="Pending",
+        )
+        outcomes = AgentTaskDispatcher(self.ledger, tempfile.mkdtemp()).dispatch_once()
+        self.assertEqual(outcomes, [])
+        self.assertEqual(self.ledger.get_agent_task("pending-review")["status"], "Queued")
+
+    def test_dispatcher_escalates_executor_failure(self):
+        root = Path(tempfile.mkdtemp())
+        child = root / "project"
+        (child / ".etg").mkdir(parents=True)
+        (child / ".etg" / "entigram.yaml").write_text("workspace_schema_version: 1\n")
+        self.addCleanup(shutil.rmtree, root)
+        self.ledger.record_agent(
+            "antigravity-local", provider="antigravity", reliability_score=0.95,
+            capability_scores={"code_review": 0.95}, allowed_task_classes=["code_review"],
+        )
+        self.ledger.request_agent_task(
+            "failing-review", "Run a review", "code_review", entity_id="entigram", workspace_id="project",
+            requested_by="user:owner", idempotency_key="failing-review-v1", target_agent_id="antigravity-local",
+            risk_level="read_only", details={"workspace_path": "project"},
+        )
+        outcomes = AgentTaskDispatcher(
+            self.ledger, root, executor=lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("adapter stopped"))
+        ).dispatch_once()
+        self.assertEqual(outcomes[0]["reason"], "AGENT_EXECUTION_FAILED")
+        self.assertEqual(self.ledger.get_agent_task("failing-review")["status"], "Failed")
+
+    def test_dispatcher_reports_rejected_completion(self):
+        root = Path(tempfile.mkdtemp())
+        child = root / "project"
+        (child / ".etg").mkdir(parents=True)
+        (child / ".etg" / "entigram.yaml").write_text("workspace_schema_version: 1\n")
+        self.addCleanup(shutil.rmtree, root)
+        self.ledger.record_agent(
+            "codex-local", provider="codex", reliability_score=0.95,
+            capability_scores={"code_review": 0.95}, allowed_task_classes=["code_review"],
+        )
+        self.ledger.request_agent_task(
+            "completion-race", "Run a review", "code_review", entity_id="entigram", workspace_id="project",
+            requested_by="user:owner", idempotency_key="completion-race-v1", target_agent_id="codex-local",
+            risk_level="read_only", details={"workspace_path": "project"},
+        )
+
+        def executor(*_args, **_kwargs):
+            self.ledger.request_task_review("completion-race", "user:owner", "Stop this review.")
+            return "This result must not overwrite the review escalation."
+
+        outcomes = AgentTaskDispatcher(self.ledger, root, executor=executor).dispatch_once()
+        self.assertFalse(outcomes[0]["ok"])
+        self.assertEqual(outcomes[0]["reason"], "TASK_COMPLETION_REJECTED")
+        self.assertEqual(self.ledger.get_agent_task("completion-race")["status"], "NeedsReview")
+
+    def test_dispatcher_applies_owner_declared_reviewer_persona(self):
+        root = Path(tempfile.mkdtemp())
+        workspace = root / "project"
+        (workspace / ".etg").mkdir(parents=True)
+        (workspace / ".etg" / "agent-personas.yaml").write_text(
+            "personas:\n  codex-reviewer:\n    name: Independent code reviewer\n    task_types: [read_only]\n    context: Review independently. Identify concrete defects and do not implement fixes.\n"
+        )
+        self.addCleanup(shutil.rmtree, root)
+        persona = AgentTaskDispatcher._persona_for(workspace, "codex-reviewer", "read_only")
+        prompt = AgentTaskDispatcher._agent_prompt(
+            {"task_id": "review", "title": "Review change", "task_type": "read_only", "risk_level": "read_only", "details": {}},
+            workspace,
+            persona,
+        )
+        self.assertEqual(persona["name"], "Independent code reviewer")
+        self.assertIn("Review independently", prompt)
+        self.assertIn("does not grant additional authority", prompt)
+
+    def test_sandboxed_reviewer_receives_bounded_host_captured_evidence(self):
+        root = Path(tempfile.mkdtemp())
+        workspace = root / "project"
+        workspace.mkdir()
+        self.addCleanup(shutil.rmtree, root)
+        task = {"details": {"compare_base": "origin/main"}}
+        with patch("entigram.agent_dispatch.subprocess.run") as run:
+            run.side_effect = [
+                type("Result", (), {"stdout": "", "stderr": "", "returncode": 0})(),
+                type("Result", (), {"stdout": "a" * 40 + "\n", "stderr": "", "returncode": 0})(),
+                type("Result", (), {"stdout": "diff --git a/example.py b/example.py\n", "stderr": "", "returncode": 0})(),
+            ]
+            evidence = AgentTaskDispatcher._review_evidence(workspace, task)
+        self.assertIn("Base: origin/main", evidence)
+        self.assertIn("diff --git", evidence)
+        self.assertEqual(run.call_count, 3)
+        self.assertEqual(run.call_args_list[1].args[0][:4], ["git", "rev-parse", "--verify", "--end-of-options"])
+        self.assertEqual(run.call_args_list[2].args[0][-1], "--")
+        prompt = AgentTaskDispatcher._agent_prompt(
+            {"task_id": "review", "title": "Review", "task_type": "read_only", "risk_level": "read_only", "details": {}},
+            workspace, evidence=evidence,
+        )
+        self.assertIn("Analyze this evidence only", prompt)
+
+    def test_sandboxed_reviewer_rejects_option_like_base_revision(self):
+        workspace = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, workspace)
+        with patch("entigram.agent_dispatch.subprocess.run") as run:
+            evidence = AgentTaskDispatcher._review_evidence(
+                workspace, {"details": {"compare_base": "--output=/tmp/evidence"}}
+            )
+        self.assertIn("base revision is invalid", evidence)
+        run.assert_not_called()
+
+    def test_reviewer_creation_asks_only_for_missing_owner_context_then_creates(self):
+        workspace = Path(tempfile.mkdtemp())
+        (workspace / ".etg").mkdir()
+        self.addCleanup(shutil.rmtree, workspace)
+        incomplete = create_reviewer_persona(
+            workspace, persona_id="security-reviewer", name="", runtime="", context="",
+            requested_by="agent:supervisor", approved_by="",
+        )
+        self.assertEqual(incomplete["reason"], "REVIEWER_DETAILS_NEEDED")
+        self.assertEqual(len(incomplete["questions"]), 3)
+        pending = create_reviewer_persona(
+            workspace, persona_id="security-reviewer", name="Security reviewer", runtime="codex",
+            context="Find security defects. Do not edit.", requested_by="agent:supervisor", approved_by="",
+        )
+        self.assertEqual(pending["reason"], "LOCAL_OWNER_CONFIRMATION_REQUIRED")
+        created = create_reviewer_persona(
+            workspace, persona_id="security-reviewer", name="Security reviewer", runtime="codex",
+            context="Find security defects. Do not edit.", requested_by="agent:supervisor", approved_by="user:owner",
+        )
+        self.assertTrue(created["ok"])
+        self.assertTrue((workspace / ".etg" / "agent-personas.yaml").is_file())
 
 
 class TestAgentOrchestrationCLI(unittest.TestCase):

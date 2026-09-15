@@ -407,6 +407,11 @@ mk:Entigram_Agent_Task_result_summary a owl:DatatypeProperty ;
     rdfs:range xsd:string ;
     rdfs:label "result_summary" .
 
+mk:Entigram_Agent_Task_result_output a owl:DatatypeProperty ;
+    rdfs:domain mk:Entigram_Agent_Task ;
+    rdfs:range xsd:string ;
+    rdfs:label "result_output" .
+
 mk:Entigram_Agent_Task_created_at a owl:DatatypeProperty ;
     rdfs:domain mk:Entigram_Agent_Task ;
     rdfs:range xsd:dateTime ;

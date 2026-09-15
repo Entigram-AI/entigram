@@ -82,6 +82,7 @@ ATTRIBUTES:
   - attempt_count (Integer)
   - last_error (Text)
   - result_summary (Text)
+  - result_output (Text) # bounded full agent result retained for review continuity
   - created_at (DateTime)
   - updated_at (DateTime)
 

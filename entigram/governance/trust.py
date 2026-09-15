@@ -16,6 +16,7 @@ import json
 import os
 import re
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -27,6 +28,27 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
     Ed25519PublicKey,
 )
+
+
+@contextmanager
+def trust_registry_lock(target_dir: str | Path):
+    """Serialize trust mutations with high-risk task claims on this host."""
+    lock_path = Path(target_dir).expanduser().resolve() / ".etg" / ".trust.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+") as handle:
+        fcntl_module = None
+        try:
+            import fcntl as fcntl_module
+            fcntl_module.flock(handle.fileno(), fcntl_module.LOCK_EX)
+        except ImportError as exc:  # pragma: no cover - Windows must fail closed
+            raise TrustRegistryError(
+                "interprocess trust locking is unavailable on this host; high-risk trust operations are blocked"
+            ) from exc
+        try:
+            yield
+        finally:
+            if fcntl_module is not None:
+                fcntl_module.flock(handle.fileno(), fcntl_module.LOCK_UN)
 
 
 TRUST_REGISTRY_FILE = ".etg/trust.yaml"
@@ -604,25 +626,26 @@ class ProjectTrustRegistry:
         )
 
     def apply_change(self, change: Dict[str, Any], approvals: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
-        document = self.load()
-        approval_list = list(approvals)
-        applied_at = iso_now()
-        approvers = self._apply_state_change(document, change, approval_list, applied_at=applied_at)
-        operation = change["operation"]
+        with trust_registry_lock(self.target_dir):
+            document = self.load()
+            approval_list = list(approvals)
+            applied_at = iso_now()
+            approvers = self._apply_state_change(document, change, approval_list, applied_at=applied_at)
+            operation = change["operation"]
 
-        event = {
-            "event_id": f"trust-event-{uuid.uuid4()}",
-            "event_type": operation,
-            "change": change,
-            "approvals": approval_list,
-            "approvers": sorted(approvers),
-            "applied_at": applied_at,
-        }
-        event["event_digest"] = digest(event)
-        document["events"].append(event)
-        self._validate_document(document)
-        self._write(document)
-        return event
+            event = {
+                "event_id": f"trust-event-{uuid.uuid4()}",
+                "event_type": operation,
+                "change": change,
+                "approvals": approval_list,
+                "approvers": sorted(approvers),
+                "applied_at": applied_at,
+            }
+            event["event_digest"] = digest(event)
+            document["events"].append(event)
+            self._validate_document(document)
+            self._write(document)
+            return event
 
     def _validate_approvals(
         self,
