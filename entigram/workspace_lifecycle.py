@@ -32,7 +32,8 @@ PAUSE_BACKUP_VERSION = 2
 DEFAULT_PAUSED_CHANGE_BUDGET_FILES = 5
 ACTIVE_CHANGE_BASELINE_PATH = ".etg/lifecycle/check-in-baseline.json"
 ACTIVE_CHANGE_BASELINE_VERSION = 1
-DEFAULT_ACTIVE_CHANGE_BUDGET_FILES = 5
+DEFAULT_ACTIVE_CHANGE_BUDGET_FILES = 15
+DEFAULT_ACTIVE_CHANGE_WARN_FILES = 5
 PAUSE_GIT_HOOK_START = "# >>> entigram paused change budget >>>"
 PAUSE_GIT_HOOK_END = "# <<< entigram paused change budget <<<"
 GIT_CHECKIN_GUARD_START = "# >>> entigram lifecycle check-in >>>"
@@ -654,6 +655,7 @@ def establish_active_change_baseline(
         )
 
     max_changed_files = _active_change_budget_limit(root)
+    warn_changed_files = _active_change_warn_limit(root, max_changed_files)
     baseline = _workspace_metadata_snapshot(root)
     record = {
         "version": ACTIVE_CHANGE_BASELINE_VERSION,
@@ -661,6 +663,7 @@ def establish_active_change_baseline(
         "reason": reason,
         "snapshot_id": snapshot_id,
         "max_changed_files": max_changed_files,
+        "warn_changed_files": warn_changed_files,
         "baseline": baseline,
     }
     _atomic_write_text(
@@ -672,6 +675,7 @@ def establish_active_change_baseline(
         "ok": True,
         "state": "active",
         "max_changed_files": max_changed_files,
+        "warn_changed_files": warn_changed_files,
         "baseline_file": ACTIVE_CHANGE_BASELINE_PATH,
         "recorded_at": record["recorded_at"],
         "reason": reason,
@@ -709,18 +713,36 @@ def active_change_status(target_dir: Path) -> Dict[str, Any]:
         if current[path] != baseline[path]
     )
     changed_files = len(created) + len(deleted) + len(modified)
-    max_changed_files = record["max_changed_files"]
+    max_changed_files = _active_change_budget_limit(root)
+    warn_changed_files = _active_change_warn_limit(root, max_changed_files)
     exhausted = changed_files >= max_changed_files
+    warning = (changed_files >= warn_changed_files) and not exhausted
+
+    if exhausted:
+        status_value = "check_in_required"
+        next_action = "Run `etg broker handoff` and `etg broker status` before another write."
+    elif warning:
+        status_value = "warning"
+        next_action = (
+            f"Warning: {changed_files}/{max_changed_files} files changed since check-in "
+            f"({warn_changed_files}-file warning threshold reached). Continue through Entigram gates; "
+            "hand off before the active change budget is exhausted."
+        )
+    else:
+        status_value = "within_budget"
+        next_action = "Continue through Entigram gates; hand off before the active change budget is exhausted."
 
     return {
         "ok": True,
         "state": "active",
-        "status": "check_in_required" if exhausted else "within_budget",
+        "status": status_value,
         "budget": {
             "max_changed_files": max_changed_files,
+            "warn_changed_files": warn_changed_files,
             "changed_files": changed_files,
             "remaining_files": max(0, max_changed_files - changed_files),
             "exhausted": exhausted,
+            "warning": warning,
         },
         "changes": {
             "created": created,
@@ -732,11 +754,7 @@ def active_change_status(target_dir: Path) -> Dict[str, Any]:
             "reason": record.get("reason"),
             "snapshot_id": record.get("snapshot_id"),
         },
-        "next_action": (
-            "Run `etg broker handoff` and `etg broker status` before another write."
-            if exhausted
-            else "Continue through Entigram gates; hand off before the active change budget is exhausted."
-        ),
+        "next_action": next_action,
     }
 
 
@@ -989,6 +1007,26 @@ def _active_change_budget_limit(root: Path) -> int:
             "Active change budget must be at least one changed file.",
         )
     return max_changed_files
+
+
+def _active_change_warn_limit(root: Path, max_changed_files: Optional[int] = None) -> int:
+    lifecycle = (load_manifest(root).get("lifecycle") or {})
+    change_budget = lifecycle.get("change_budget") or {}
+    warn_changed_files = change_budget.get(
+        "warn_changed_files", DEFAULT_ACTIVE_CHANGE_WARN_FILES
+    )
+    if (
+        isinstance(warn_changed_files, bool)
+        or not isinstance(warn_changed_files, int)
+        or warn_changed_files < 1
+    ):
+        raise WorkspaceLifecycleError(
+            "INVALID_ACTIVE_CHANGE_WARN_THRESHOLD",
+            "Active change warning threshold must be at least one changed file.",
+        )
+    if max_changed_files is not None and warn_changed_files > max_changed_files:
+        return max_changed_files
+    return warn_changed_files
 
 
 def _load_active_change_baseline(root: Path) -> Dict[str, Any]:

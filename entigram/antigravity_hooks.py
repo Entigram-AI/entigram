@@ -229,14 +229,18 @@ def _pre_invocation(root: Path, payload: Dict[str, Any]) -> Dict[str, Any]:
                 )
             }
         )
+    budget = check_in["budget"]
+    warn_text = ""
+    if budget.get("warning"):
+        warn_text = f" (Warning: {budget.get('warn_changed_files', 5)}-file threshold reached)"
     steps.append(
         {
             "ephemeralMessage": (
                 "Entigram session gate is active. Policy and authoritative schemas were "
                 "loaded before this turn. The workspace has used "
-                f"{check_in['budget']['changed_files']}/"
-                f"{check_in['budget']['max_changed_files']} changed files since the "
-                "last Entigram check-in. Use preflight and impact before risky changes; "
+                f"{budget['changed_files']}/"
+                f"{budget['max_changed_files']} changed files since the "
+                f"last Entigram check-in{warn_text}. Use preflight and impact before risky changes; "
                 "run handoff and status before finishing."
             )
         }

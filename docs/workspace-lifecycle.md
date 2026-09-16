@@ -62,7 +62,8 @@ The limit is stored in the workspace manifest:
 lifecycle:
   state: active
   change_budget:
-    max_changed_files: 5
+    max_changed_files: 15
+    warn_changed_files: 5
 ```
 
 ## Agent lifecycle adapters and portable backstop

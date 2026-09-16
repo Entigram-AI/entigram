@@ -129,7 +129,7 @@ class TestAgentHooks(unittest.TestCase):
             payload={"session_id": "claude-1"},
         )
         prepare_task(self.root, task_id="claude-task", description="Implement drift changes")
-        for number in range(5):
+        for number in range(15):
             (self.root / f"drift-{number}.txt").write_text(f"{number}\n")
         self.assertTrue(active_change_status(self.root)["budget"]["exhausted"])
 
@@ -163,7 +163,7 @@ class TestAgentHooks(unittest.TestCase):
             payload={"session_id": "session-1"},
         )
         prepare_task(self.root, task_id="mcp-task", description="Implement MCP change")
-        for number in range(5):
+        for number in range(15):
             (self.root / f"mcp-drift-{number}.txt").write_text(f"{number}\n")
         denied = handle_agent_hook(
             self.root,
