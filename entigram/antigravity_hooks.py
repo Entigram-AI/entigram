@@ -271,7 +271,15 @@ def _pre_tool_use(root: Path, payload: Dict[str, Any]) -> Dict[str, Any]:
         }
     manifest = load_manifest(root)
     if task_prepare_required(manifest) and not task_context_is_ready(root, manifest):
-        if not _is_task_bootstrap_command(payload):
+        # Recovery commands must remain available before a task is prepared.
+        # An older workspace can already be over its change budget, which
+        # requires a handoff before `task prepare` can write its context.  If
+        # we gate the handoff on that missing context, the agent has no valid
+        # command sequence to recover.
+        if not (
+            _is_task_bootstrap_command(payload)
+            or _is_active_check_in_command(payload)
+        ):
             return {
                 "decision": "deny",
                 "reason": (
@@ -280,7 +288,10 @@ def _pre_tool_use(root: Path, payload: Dict[str, Any]) -> Dict[str, Any]:
                 ),
             }
     status = active_change_status(root)
-    if status["budget"]["exhausted"] and not _is_active_check_in_command(payload):
+    if status["budget"]["exhausted"] and not (
+        _is_active_check_in_command(payload)
+        or _is_task_bootstrap_command(payload)
+    ):
         return {
             "decision": "deny",
             "reason": status["next_action"],

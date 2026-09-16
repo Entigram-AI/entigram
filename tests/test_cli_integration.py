@@ -312,6 +312,8 @@ class TestCLIIntegration(unittest.TestCase):
 
         success, output = self.run_cli(['broker', 'status'])
         self.assertTrue(success)
+        self.assertIn("Broker status: 1/5 loading the delivery snapshot", output)
+        self.assertIn("Broker status: 5/5 preparing the delivery decision", output)
         self.assertIn("Delivery status: current", output)
 
     def test_broker_deliver_refuses_pending_unlocked_contract_change(self):

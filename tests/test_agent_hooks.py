@@ -99,6 +99,27 @@ class TestAgentHooks(unittest.TestCase):
         self.assertEqual(stopped["decision"], "block")
         self.assertIn("broker handoff", stopped["reason"])
 
+    def test_codex_cmd_payload_allows_task_bootstrap(self):
+        handle_agent_hook(
+            self.root,
+            runtime="codex",
+            event="session-start",
+            payload={"session_id": "cmd-shape"},
+        )
+        result = handle_agent_hook(
+            self.root,
+            runtime="codex",
+            event="pre-tool-use",
+            payload={
+                "session_id": "cmd-shape",
+                "tool_name": "Bash",
+                "tool_input": {
+                    "cmd": "etg task prepare --id issue-123 --description 'Fix changed.py'"
+                },
+            },
+        )
+        self.assertEqual(result, {})
+
     def test_claude_denies_next_write_when_change_budget_is_exhausted(self):
         self._add_workspace_agent("claude")
         handle_agent_hook(

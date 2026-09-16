@@ -369,7 +369,15 @@ def _internal_hook_request(
         if not isinstance(tool_input, dict):
             tool_input = {}
         tool_name = str(payload.get("tool_name") or payload.get("toolName") or "")
-        command = str(tool_input.get("command", ""))
+        # Codex exposes shell input as `cmd`; older adapters and test clients
+        # used `command`.  Preserve both so lifecycle bootstrap commands are
+        # classified from the command the user actually submitted.
+        command = str(
+            tool_input.get("cmd")
+            or tool_input.get("command")
+            or tool_input.get("CommandLine")
+            or ""
+        )
         return normalized_event, {
             "conversationId": conversation_id,
             "toolCall": {

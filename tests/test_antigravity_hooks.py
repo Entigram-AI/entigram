@@ -105,6 +105,32 @@ class TestAntigravityHooks(unittest.TestCase):
             "allow",
         )
 
+    def test_stale_task_context_does_not_block_required_check_in(self):
+        """A workspace over budget must be able to recover before task setup."""
+        handle_antigravity_hook(
+            self.root, "pre-invocation", {"conversationId": "conversation-4"}
+        )
+        for number in range(5):
+            (self.root / f"stale-{number}.txt").write_text(f"{number}\n")
+
+        for command in (
+            "etg broker handoff",
+            "etg broker status",
+            "etg task prepare --id recovery --description 'Recover task context'",
+        ):
+            result = handle_antigravity_hook(
+                self.root,
+                "pre-tool-use",
+                {
+                    "conversationId": "conversation-4",
+                    "toolCall": {
+                        "name": "run_command",
+                        "args": {"CommandLine": command},
+                    },
+                },
+            )
+            self.assertEqual(result["decision"], "allow")
+
     def test_pre_invocation_refreshes_context_when_policy_changes(self):
         payload = {"conversationId": "conversation-2"}
         first = handle_antigravity_hook(self.root, "pre-invocation", payload)

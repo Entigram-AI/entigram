@@ -2663,6 +2663,11 @@ def _main():
                 description = Path(args.description_file).expanduser().read_text()
             else:
                 description = args.description or ""
+            progress = None
+            if not args.json_output:
+                def progress(phase):
+                    print(f"Task preparation: {phase}...", flush=True)
+
             result = prepare_task(
                 target_path,
                 task_id=args.task_id,
@@ -2670,6 +2675,7 @@ def _main():
                 scope=args.scope,
                 agent=args.agent,
                 model=args.model,
+                progress=progress,
             )
         except (OSError, ValueError) as exc:
             payload = {"ok": False, "error": {"code": "TASK_PREPARE_FAILED", "message": str(exc)}}
@@ -5127,9 +5133,15 @@ RELATIONSHIPS:
             if not result["valid"]:
                 sys.exit(1)
         elif args.broker_command in ("status", "diff"):
+            progress = None
+            if not args.json_output:
+                def progress(phase):
+                    print(f"Broker status: {phase}...", flush=True)
+
             result = broker.delivery_status(
                 artifact_paths=getattr(args, "artifact", []),
                 artifact_role=getattr(args, "artifact_role", "delivery_artifact"),
+                progress=progress,
             )
             if args.json_output:
                 print(json.dumps(result, indent=2))
