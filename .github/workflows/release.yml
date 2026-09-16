@@ -1,37 +1,108 @@
-name: Release Please
+name: Release
 
 on:
   push:
     branches:
       - main
+  workflow_dispatch:
+    inputs:
+      bump_override:
+        description: "SemVer bump override (auto, patch, minor, major)"
+        required: false
+        default: "auto"
+        type: choice
+        options:
+          - auto
+          - patch
+          - minor
+          - major
+      dry_run:
+        description: "Dry run (do not commit, tag, or publish)"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
-  pull-requests: write
+  pull-requests: read
+  issues: read
 
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  release-please:
+  release-orchestrator:
     runs-on: ubuntu-latest
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
+      version: ${{ steps.release.outputs.version }}
     steps:
-      - uses: googleapis/release-please-action@v4
-        id: release
+      - name: Checkout code
+        uses: actions/checkout@v4
         with:
-          # Manifest mode keeps MCP registry metadata in lockstep with releases.
-          config-file: release-please-config.json
-          manifest-file: .release-please-manifest.json
-          # Use the organization PAT when configured, otherwise the workflow token.
+          fetch-depth: 0
           token: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Plan release
+        id: plan
+        env:
+          BUMP_OVERRIDE: ${{ github.event.inputs.bump_override || 'auto' }}
+        run: |
+          python scripts/release_orchestrator.py \
+            --plan \
+            --bump "$BUMP_OVERRIDE" \
+            --set-github-output \
+            --notes-file /tmp/release_notes.md
+          echo "=== Release Notes Preview ==="
+          cat /tmp/release_notes.md || true
+
+      - name: Apply version bump and cut release
+        id: release
+        if: ${{ steps.plan.outputs.release_needed == 'true' && (github.event.inputs.dry_run != 'true') }}
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          BUMP_TYPE: ${{ steps.plan.outputs.bump_type }}
+          NEXT_VERSION: ${{ steps.plan.outputs.next_version }}
+          TAG_NAME: ${{ steps.plan.outputs.tag_name }}
+        run: |
+          echo "Cutting release $TAG_NAME ($BUMP_TYPE)..."
+          python scripts/release_orchestrator.py \
+            --apply \
+            --bump "$BUMP_TYPE" \
+            --notes-file /tmp/release_notes.md
+
+          git config user.name "GitHub Actions Bot"
+          git config user.email "actions@github.com"
+
+          git add pyproject.toml CHANGELOG.md .release-please-manifest.json
+          if [ -f server.json ]; then
+            git add server.json
+          fi
+
+          git commit -m "chore: release $TAG_NAME [skip ci]"
+          git tag -a "$TAG_NAME" -m "Release $TAG_NAME"
+
+          git push origin main
+          git push origin "$TAG_NAME"
+
+          gh release create "$TAG_NAME" \
+            --title "$TAG_NAME" \
+            --notes-file /tmp/release_notes.md
+
+          echo "release_created=true" >> "$GITHUB_OUTPUT"
+          echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
+          echo "version=$NEXT_VERSION" >> "$GITHUB_OUTPUT"
+
   publish:
-    needs: release-please
-    if: ${{ needs.release-please.outputs.release_created }}
+    needs: release-orchestrator
+    if: ${{ needs.release-orchestrator.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -57,7 +128,7 @@ jobs:
 
       - name: Set release version
         run: |
-          TAG_NAME="${{ needs.release-please.outputs.tag_name }}"
+          TAG_NAME="${{ needs.release-orchestrator.outputs.tag_name }}"
           VERSION=${TAG_NAME#v}
 
           python scripts/versioning.py validate "$VERSION"
@@ -83,18 +154,15 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          TAG_NAME="${{ needs.release-please.outputs.tag_name }}"
+          TAG_NAME="${{ needs.release-orchestrator.outputs.tag_name }}"
           VERSION=${TAG_NAME#v}
           npm pack --dry-run
-          # Release Please owns the Entigram release version. Apply that
-          # version to the npm package in the publish workspace so npm and
-          # PyPI receive the same release number without a second tag.
           npm version "$VERSION" --no-git-tag-version
           npm publish --access public
 
   homebrew:
-    needs: [release-please, publish]
-    if: ${{ needs.release-please.outputs.release_created }}
+    needs: [release-orchestrator, publish]
+    if: ${{ needs.release-orchestrator.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -119,7 +187,7 @@ jobs:
 
       - name: Update Homebrew Tap
         run: |
-          TAG_NAME="${{ needs.release-please.outputs.tag_name }}"
+          TAG_NAME="${{ needs.release-orchestrator.outputs.tag_name }}"
           VERSION=${TAG_NAME#v}
           echo "Releasing version: $VERSION"
           cd homebrew-entigram
