@@ -16,7 +16,7 @@ import re
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 import yaml
 
@@ -224,6 +224,7 @@ def prepare_task(
     scope: list[str] | None = None,
     agent: str | None = None,
     model: str | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     root = Path(root).expanduser().resolve()
     manifest_path = root / ".etg" / "entigram.yaml"
@@ -233,19 +234,23 @@ def prepare_task(
         raise ValueError("task_id must not be empty")
     if not description.strip():
         raise ValueError("task description must not be empty")
+    def report(message: str) -> None:
+        if progress is not None:
+            progress(message)
+
+    report("Checking workspace governance")
     manifest = yaml.safe_load(manifest_path.read_text()) or {}
+    report("Collecting Git inventory")
     paths = _tracked_paths(root)
     governance = _governance_fingerprint(root, manifest)
-    hydration = None
-    try:
-        # Import lazily to keep the task module independent of the CLI parser.
-        from entigram.cli_runner.etg_cli import get_hydration_vector
-        raw = get_hydration_vector(root, compact=True)
-        start = raw.find("\n") + 1
-        end = raw.rfind("\n--- SEQUENCE COMPLETE ---")
-        hydration = json.loads(raw[start:end]) if end > start else None
-    except (OSError, ValueError, TypeError, json.JSONDecodeError):
-        hydration = None
+    # Hydration includes delivery-status artifact scans, which can be very
+    # expensive in large workspaces. Task preparation must be bounded; callers
+    # can run `hydrate` explicitly when they need the full workspace vector.
+    hydration = {
+        "status": "deferred",
+        "reason": "Run `hydrate` explicitly to generate the full workspace vector.",
+    }
+    report("Recording deterministic task context")
     scope_values = sorted({str(value).strip().lstrip("./") for value in (scope or []) if str(value).strip()})
     dependency_files = [path for path in paths if path in _INVENTORY_FILES or Path(path).name in _INVENTORY_FILES]
     context: dict[str, Any] = {

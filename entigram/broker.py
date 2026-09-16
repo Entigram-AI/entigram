@@ -10,7 +10,7 @@ import math
 import re
 from itertools import combinations
 from pathlib import Path
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict, Any, Tuple, Callable
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from .sqlite_ledger.manager import LedgerManager
@@ -826,12 +826,18 @@ class EntigramBroker:
         self,
         artifact_paths: Optional[List[str]] = None,
         artifact_role: str = "delivery_artifact",
+        progress: Optional[Callable[[str], None]] = None,
     ) -> Dict[str, Any]:
         """
         Compares the current workspace against the latest delivery snapshot.
         This is source-control-neutral drift detection over modeled expectations,
         Warden integrity, and anchored local artifacts.
         """
+        def report(phase: str) -> None:
+            if progress is not None:
+                progress(phase)
+
+        report("1/5 loading the delivery snapshot")
         snapshot = self.ledger.get_latest_snapshot()
         if not snapshot:
             return self._with_adapter_enforcement({
@@ -848,6 +854,7 @@ class EntigramBroker:
 
         from .governance.commissioner import Commissioner
 
+        report("2/5 verifying expectations and schema contract")
         commissioner = Commissioner.from_workspace(
             str(self.target_dir), ledger=self.ledger
         )
@@ -873,6 +880,7 @@ class EntigramBroker:
         )
         anchored_keys = set()
 
+        report(f"3/5 checking {len(anchored_artifacts)} anchored artifacts")
         for artifact in anchored_artifacts:
             path = artifact.get("path")
             role = artifact.get("artifact_role") or "delivery_artifact"
@@ -919,6 +927,7 @@ class EntigramBroker:
                 "artifact_id": artifact_id,
             })
 
+        report("4/5 discovering unanchored artifacts")
         unanchored_artifacts = []
         try:
             current_candidates = list(self._default_delivery_artifacts())
@@ -954,6 +963,7 @@ class EntigramBroker:
                     "sha256": current["sha256"],
                 })
 
+        report("5/5 preparing the delivery decision")
         expectation_count_changed = (
             checklist.get("expectation_count") != snapshot.get("expectation_count")
         )

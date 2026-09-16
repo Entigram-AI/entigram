@@ -33,7 +33,7 @@ class TestTaskContext(unittest.TestCase):
         os.chdir(self.old_cwd)
         shutil.rmtree(self.root)
 
-    def test_prepare_records_hydration_and_inventory(self):
+    def test_prepare_records_deferred_hydration_and_inventory(self):
         result = prepare_task(
             self.root,
             task_id="issue-123",
@@ -51,7 +51,7 @@ class TestTaskContext(unittest.TestCase):
         self.assertEqual(context["scope"], ["work.py"])
         self.assertEqual(context["schema_entities"], ["WorkItem"])
         self.assertEqual(task_context_status(self.root)["status"], "prepared")
-        self.assertTrue(context["hydration"])
+        self.assertEqual(context["hydration"]["status"], "deferred")
         envelope = build_expectation_envelope(context)
         self.assertEqual(envelope["kind"], "entigram.task_expectation")
         self.assertEqual(envelope["scope"], ["work.py"])
@@ -110,6 +110,23 @@ class TestTaskContext(unittest.TestCase):
         payload = json.loads(output.getvalue())
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["task"]["task_id"], "issue-123")
+
+    def test_cli_task_prepare_shows_progress_without_full_hydration(self):
+        from entigram.cli_runner.etg_cli import main
+
+        output = StringIO()
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "etg", "task", "prepare", "--dir", str(self.root),
+                "--id", "issue-progress", "--description", "Fix work.py",
+            ],
+        ), patch("sys.stdout", output):
+            main()
+        rendered = output.getvalue()
+        self.assertIn("Task preparation: Checking workspace governance", rendered)
+        self.assertIn("Task preparation: Recording deterministic task context", rendered)
 
     def test_cli_task_context_emits_stable_envelope(self):
         from entigram.cli_runner.etg_cli import main
