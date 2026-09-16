@@ -1,7 +1,8 @@
+import fnmatch
 import os
 import subprocess
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 import yaml
 
@@ -170,27 +171,65 @@ def governed_artifact_paths(target_dir: WorkspacePath) -> List[Path]:
     return _globbed_artifact_paths(root, DEFAULT_GOVERNED_ARTIFACT_GLOBS)
 
 
+def load_etgignore_patterns(root: Path) -> List[str]:
+    """Load exclusion patterns from a root .etgignore file if present."""
+    etgignore = root / ".etgignore"
+    if not etgignore.is_file():
+        return []
+    try:
+        lines = etgignore.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    patterns: List[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            patterns.append(stripped)
+    return patterns
+
+
+def _matches_ignore_pattern(relative_path: Path, pattern: str) -> bool:
+    posix_path = relative_path.as_posix()
+    clean_pattern = pattern.rstrip("/")
+    if pattern.endswith("/"):
+        if any(part == clean_pattern for part in relative_path.parts):
+            return True
+        if posix_path == clean_pattern or posix_path.startswith(f"{clean_pattern}/"):
+            return True
+    if fnmatch.fnmatch(posix_path, clean_pattern):
+        return True
+    if any(fnmatch.fnmatch(part, clean_pattern) for part in relative_path.parts):
+        return True
+    if fnmatch.fnmatch(posix_path, f"*/{clean_pattern}") or fnmatch.fnmatch(posix_path, f"{clean_pattern}/*"):
+        return True
+    return False
+
+
 def _git_artifact_paths(root: Path) -> Optional[List[Path]]:
+    git_cmd = [
+        "git",
+        "-C",
+        str(root),
+        "ls-files",
+        "-z",
+        "--cached",
+        "--others",
+        "--exclude-standard",
+    ]
+    etgignore = root / ".etgignore"
+    if etgignore.is_file():
+        git_cmd.extend(["--exclude-from", str(etgignore)])
+    git_cmd.extend(["--", "."])
     try:
         result = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(root),
-                "ls-files",
-                "-z",
-                "--cached",
-                "--others",
-                "--exclude-standard",
-                "--",
-                ".",
-            ],
+            git_cmd,
             check=True,
             capture_output=True,
         )
     except (FileNotFoundError, subprocess.CalledProcessError):
         return None
 
+    etg_patterns = load_etgignore_patterns(root)
     paths = set()
     for raw_path in result.stdout.split(b"\0"):
         if not raw_path:
@@ -207,13 +246,14 @@ def _git_artifact_paths(root: Path) -> Optional[List[Path]]:
         except ValueError:
             continue
         normalized = path.relative_to(root)
-        if _is_ignored_artifact_path(normalized):
+        if _is_ignored_artifact_path(normalized, etg_patterns):
             continue
         paths.add(path)
     return sorted(paths)
 
 
 def _globbed_artifact_paths(root: Path, patterns: Tuple[str, ...]) -> List[Path]:
+    etg_patterns = load_etgignore_patterns(root)
     paths = set()
     for pattern in patterns:
         candidate_pattern = Path(pattern)
@@ -223,7 +263,7 @@ def _globbed_artifact_paths(root: Path, patterns: Tuple[str, ...]) -> List[Path]
             if path.is_symlink() or not path.is_file():
                 continue
             relative = path.relative_to(root)
-            if _is_ignored_artifact_path(relative):
+            if _is_ignored_artifact_path(relative, etg_patterns):
                 continue
             paths.add(path.resolve())
     return sorted(paths)
@@ -243,11 +283,18 @@ def _require_workspace_path(root: Path, path: Path, message: str) -> None:
         raise ValueError(message) from exc
 
 
-def _is_ignored_artifact_path(path: Path) -> bool:
+def _is_ignored_artifact_path(
+    path: Path,
+    extra_patterns: Optional[Iterable[str]] = None,
+) -> bool:
     for part in path.parts:
         lowered = part.lower()
         if part in _IGNORED_ARTIFACT_PARTS:
             return True
         if lowered == "site-packages" or lowered.endswith("venv"):
             return True
+    if extra_patterns:
+        for pattern in extra_patterns:
+            if _matches_ignore_pattern(path, pattern):
+                return True
     return False

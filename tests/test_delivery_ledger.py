@@ -792,6 +792,95 @@ class TestBrokerDeliverySnapshots(unittest.TestCase):
                 ledger.close()
             shutil.rmtree(test_dir)
 
+    def test_governed_artifacts_honor_etgignore_rules(self):
+        import shutil
+        import subprocess
+        import tempfile
+        from pathlib import Path
+
+        from entigram.injector import inject_entigram_manifest
+        from entigram.workspace_contract import governed_artifact_paths
+
+        if shutil.which("git") is None:
+            self.skipTest("git is not installed")
+
+        test_dir = tempfile.mkdtemp()
+        try:
+            inject_entigram_manifest(test_dir, ["Entigram Schemas"], "Codex")
+            subprocess.run(
+                ["git", "init", "--quiet"],
+                cwd=test_dir,
+                check=True,
+            )
+            Path(test_dir, ".etgignore").write_text("fixtures/\n*.scratch\nheavy_cache/\n")
+            source = Path(test_dir, "src", "workflow.py")
+            source.parent.mkdir()
+            source.write_text("print('governed')\n")
+
+            fixture = Path(test_dir, "fixtures", "data.json")
+            fixture.parent.mkdir()
+            fixture.write_text("{}\n")
+
+            scratch = Path(test_dir, "src", "notes.scratch")
+            scratch.write_text("scratch\n")
+
+            heavy = Path(test_dir, "heavy_cache", "cached.bin")
+            heavy.parent.mkdir()
+            heavy.write_text("binary\n")
+
+            paths = set(governed_artifact_paths(test_dir))
+
+            self.assertIn(source.resolve(), paths)
+            self.assertNotIn(fixture.resolve(), paths)
+            self.assertNotIn(scratch.resolve(), paths)
+            self.assertNotIn(heavy.resolve(), paths)
+        finally:
+            shutil.rmtree(test_dir)
+
+    def test_delivery_status_skips_rehashing_anchored_artifacts(self):
+        import tempfile
+        import shutil
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from entigram.broker import EntigramBroker
+        from entigram.injector import inject_entigram_manifest
+
+        test_dir = tempfile.mkdtemp()
+        ledger = None
+        try:
+            inject_entigram_manifest(test_dir, ["Entigram Schemas"], "Codex")
+            Path(test_dir, "schema.lds").write_text(self.SCHEMA)
+            ledger = LedgerManager(":memory:")
+            broker = EntigramBroker(test_dir, ledger=ledger)
+
+            broker.commission_and_record(
+                proofs=["tests/test_loop.py passed"],
+                agent_id="TestAgent",
+            )
+
+            original_capture = broker._capture_artifact
+            capture_calls = []
+
+            def tracked_capture(path, role):
+                capture_calls.append((path, role))
+                return original_capture(path, role)
+
+            with patch.object(broker, "_capture_artifact", side_effect=tracked_capture):
+                status = broker.delivery_status()
+                self.assertTrue(status["valid"])
+                # Anchored artifacts were validated in step 3/5.
+                # In step 4/5, because schema.lds and schema.ttl are in anchored_keys,
+                # they must NOT be re-captured a second time.
+                self.assertEqual(len(status.get("unanchored_artifacts", [])), 0)
+                # Count how many times schema.lds was captured in total: exactly 1 time (during step 3)
+                schema_captures = [call for call in capture_calls if call[0] == "schema.lds" or Path(str(call[0])).name == "schema.lds"]
+                self.assertEqual(len(schema_captures), 1)
+        finally:
+            if ledger is not None:
+                ledger.close()
+            shutil.rmtree(test_dir)
+
 
 if __name__ == "__main__":
     unittest.main()
