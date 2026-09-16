@@ -16,6 +16,13 @@
 * harden SQLite ledger concurrency with WAL mode and busy timeouts
 * close warning-producing registry, broker, router, and hydration resources
 
+## [2.21.1](https://github.com/Entigram-AI/entigram/compare/v2.21.0...v2.21.1) (2026-09-16)
+
+
+### Bug Fixes
+
+* loosen active change budget to 15 files with warning at 5 ([#106](https://github.com/Entigram-AI/entigram/issues/106)) ([e611227](https://github.com/Entigram-AI/entigram/commit/e611227dc1bdb0c1b01d977133c40b3910a3df1e))
+
 ## [2.21.0](https://github.com/Entigram-AI/entigram/compare/v2.20.0...v2.21.0) (2026-09-15)
 
 
