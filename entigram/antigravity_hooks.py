@@ -10,11 +10,14 @@ agent stops with uncommissioned work.
 import hashlib
 import json
 import os
+import re
 import shlex
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+import yaml
 
 from .governance.warden import Warden
 from .workspace_lifecycle import (
@@ -99,13 +102,13 @@ def handle_antigravity_hook(
                 return {"injectSteps": [{"ephemeralMessage": reason}]}
             return {"decision": "deny", "reason": reason}
         if event == "pre-invocation":
-            return _pre_invocation(root, data)
+            return _pre_invocation(root, data, runtime=runtime)
         if event == "pre-tool-use":
-            return _pre_tool_use(root, data)
+            return _pre_tool_use(root, data, runtime=runtime)
         if event == "post-tool-use":
-            return _post_tool_use(root, data)
+            return _post_tool_use(root, data, runtime=runtime)
         if event == "stop":
-            return _stop(root, data)
+            return _stop(root, data, runtime=runtime)
         return {"decision": "deny", "reason": f"Unsupported Entigram hook event: {event}"}
     except (WorkspaceLifecycleError, OSError, ValueError) as exc:
         return _hook_error(event, str(exc))
@@ -155,7 +158,12 @@ def _hook_definition(root: Path) -> Dict[str, Any]:
     }
 
 
-def _pre_invocation(root: Path, payload: Dict[str, Any]) -> Dict[str, Any]:
+def _pre_invocation(
+    root: Path,
+    payload: Dict[str, Any],
+    *,
+    runtime: str = "antigravity",
+) -> Dict[str, Any]:
     conversation_id = _conversation_id(payload)
     manifest = load_manifest(root)
     state = workspace_state(root)
@@ -172,6 +180,7 @@ def _pre_invocation(root: Path, payload: Dict[str, Any]) -> Dict[str, Any]:
         "fingerprint": fingerprint,
         "writes_observed": 0,
         "stop_reminded": False,
+        "runtime": runtime,
     }
     _update_session(root, conversation_id, record)
 
@@ -248,7 +257,22 @@ def _pre_invocation(root: Path, payload: Dict[str, Any]) -> Dict[str, Any]:
     return {"injectSteps": steps}
 
 
-def _pre_tool_use(root: Path, payload: Dict[str, Any]) -> Dict[str, Any]:
+def _pre_tool_use(
+    root: Path,
+    payload: Dict[str, Any],
+    *,
+    runtime: str = "antigravity",
+) -> Dict[str, Any]:
+    tool_call = payload.get("toolCall") or {}
+    tool_name = tool_call.get("name")
+    command = str((tool_call.get("args") or {}).get("CommandLine", ""))
+
+    if tool_name == "run_command":
+        if is_lifecycle_recovery_command(command):
+            return {"decision": "allow"}
+        if is_read_only_command(command):
+            return {"decision": "allow"}
+
     conversation_id = _conversation_id(payload)
     session = _session_record(root, conversation_id)
     if session is None:
@@ -257,9 +281,10 @@ def _pre_tool_use(root: Path, payload: Dict[str, Any]) -> Dict[str, Any]:
             "reason": "Entigram session gate has not hydrated this workspace yet.",
         }
 
-    if is_workspace_paused(root):
-        if _is_paused_lifecycle_command(payload):
-            return {"decision": "allow"}
+    manifest = load_manifest(root)
+    state = workspace_state(root)
+
+    if state == "paused":
         status = paused_change_status(root)
         if status["budget"]["exhausted"]:
             return {
@@ -273,37 +298,32 @@ def _pre_tool_use(root: Path, payload: Dict[str, Any]) -> Dict[str, Any]:
             "decision": "deny",
             "reason": "Entigram Warden integrity check failed. Restore or authorize the contract change first.",
         }
-    manifest = load_manifest(root)
+
     if task_prepare_required(manifest) and not task_context_is_ready(root, manifest):
-        # Recovery commands must remain available before a task is prepared.
-        # An older workspace can already be over its change budget, which
-        # requires a handoff before `task prepare` can write its context.  If
-        # we gate the handoff on that missing context, the agent has no valid
-        # command sequence to recover.
-        if not (
-            _is_task_bootstrap_command(payload)
-            or _is_active_check_in_command(payload)
-        ):
-            return {
-                "decision": "deny",
-                "reason": (
-                    "Task preparation is required before governed writes. Run "
-                    "`etg task prepare --id <id> --description-file <file>` first."
-                ),
-            }
+        return {
+            "decision": "deny",
+            "reason": (
+                "Task preparation is required before governed writes. Run "
+                "`etg task prepare --id <id> --description-file <file>` first."
+            ),
+        }
+
     status = active_change_status(root)
-    if status["budget"]["exhausted"] and not (
-        _is_active_check_in_command(payload)
-        or _is_task_bootstrap_command(payload)
-    ):
+    if status["budget"]["exhausted"]:
         return {
             "decision": "deny",
             "reason": status["next_action"],
         }
+
     return {"decision": "allow"}
 
 
-def _post_tool_use(root: Path, payload: Dict[str, Any]) -> Dict[str, Any]:
+def _post_tool_use(
+    root: Path,
+    payload: Dict[str, Any],
+    *,
+    runtime: str = "antigravity",
+) -> Dict[str, Any]:
     tool_call = payload.get("toolCall") or {}
     tool_name = tool_call.get("name")
     if tool_name not in WRITE_CAPABLE_TOOLS:
@@ -315,11 +335,17 @@ def _post_tool_use(root: Path, payload: Dict[str, Any]) -> Dict[str, Any]:
     session["writes_observed"] = int(session.get("writes_observed", 0)) + 1
     session["last_tool"] = tool_name
     session["last_tool_at"] = _utc_now()
+    session["runtime"] = runtime
     _update_session(root, conversation_id, session)
     return {}
 
 
-def _stop(root: Path, payload: Dict[str, Any]) -> Dict[str, Any]:
+def _stop(
+    root: Path,
+    payload: Dict[str, Any],
+    *,
+    runtime: str = "antigravity",
+) -> Dict[str, Any]:
     conversation_id = _conversation_id(payload)
     session = _session_record(root, conversation_id)
     if not session or session.get("workspace_state") != "active":
@@ -356,9 +382,134 @@ def _hook_error(event: str, message: str) -> Dict[str, Any]:
     }
 
 
+_RECOVERY_COMMAND_TOKENS = (
+    "hydrate",
+    "boot",
+    "etg task prepare",
+    "task prepare",
+    "etg broker preflight",
+    "broker preflight",
+    "etg broker impact",
+    "broker impact",
+    "etg broker handoff",
+    "broker handoff",
+    "etg broker status",
+    "broker status",
+    "etg pause-status",
+    "pause-status",
+    "etg pause",
+    "etg resume",
+    "etg usage",
+    "etg eject",
+)
+
+_READ_ONLY_BINARIES = {
+    "pwd", "ls", "dir", "cat", "head", "tail", "less", "more",
+    "grep", "rg", "ag", "find", "fd", "locate", "which", "whereis",
+    "type", "file", "awk", "cut", "sort", "uniq", "wc", "diff",
+    "cmp", "tr", "echo", "printf", "true", "false", "whoami",
+    "id", "uname", "uptime", "date", "env", "printenv", "test",
+    "stat", "basename", "dirname", "readlink", "realpath",
+}
+
+_SAFE_GIT_SUBCOMMANDS = {
+    "status", "log", "diff", "show", "branch", "rev-parse",
+    "ls-files", "describe", "check-ignore", "cat-file", "config",
+    "tag", "remote", "version", "help",
+}
+
+
+def is_lifecycle_recovery_command(command: str) -> bool:
+    if not command or not command.strip():
+        return False
+    normalized = " ".join(command.strip().split())
+    for prefix in (
+        "python -m entigram.cli_runner.etg_cli ",
+        "python3 -m entigram.cli_runner.etg_cli ",
+        ".venv/bin/python -m entigram.cli_runner.etg_cli ",
+    ):
+        if normalized.startswith(prefix):
+            normalized = normalized[len(prefix):].strip()
+    if normalized in {"hydrate", "boot"} or normalized.startswith("hydrate ") or normalized.startswith("etg hydrate") or normalized.startswith("boot ") or normalized.startswith("etg boot"):
+        return True
+    return any(token in normalized for token in _RECOVERY_COMMAND_TOKENS)
+
+
+def _segment_is_read_only(segment: str) -> bool:
+    segment = segment.strip()
+    if not segment:
+        return True
+    if re.search(r">(?!&1|\s*/dev/null)", segment):
+        return False
+    try:
+        tokens = shlex.split(segment)
+    except ValueError:
+        tokens = segment.split()
+    if not tokens:
+        return True
+    idx = 0
+    while idx < len(tokens) and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=.*", tokens[idx]):
+        idx += 1
+    tokens = tokens[idx:]
+    if not tokens:
+        return True
+    while tokens and tokens[0] in {"env", "sudo", "time", "nohup"}:
+        tokens = tokens[1:]
+        while tokens and tokens[0].startswith("-"):
+            tokens = tokens[1:]
+        while tokens and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=.*", tokens[0]):
+            tokens = tokens[1:]
+    if not tokens:
+        return True
+    binary = Path(tokens[0]).name.lower()
+    if binary in {"python", "python3", "python3.10", "python3.11", "python3.12", "python3.13", "python3.14"}:
+        args = tokens[1:]
+        if len(args) >= 2 and args[0] == "-m" and args[1] in {"unittest", "pytest"}:
+            return True
+        return False
+    if binary in {"pytest", "trial"}:
+        return True
+    if binary in {"npm", "pnpm", "yarn"}:
+        return len(tokens) > 1 and tokens[1] in {"test", "t", "run"}
+    if binary in {"cargo", "go"}:
+        return len(tokens) > 1 and tokens[1] == "test"
+    if binary in {"run", "run.sh", "run.py"}:
+        return len(tokens) > 1 and tokens[1] in {"test", "tests"}
+    if binary == "git":
+        args = tokens[1:]
+        while args and args[0].startswith("-"):
+            if args[0] in {"-C", "-c"} and len(args) > 1:
+                args = args[2:]
+            else:
+                args = args[1:]
+        if not args:
+            return True
+        subcmd = args[0].lower()
+        if subcmd not in _SAFE_GIT_SUBCOMMANDS:
+            return False
+        if subcmd == "branch":
+            for flag in args[1:]:
+                if flag in {"-d", "-D", "-m", "-M", "--delete", "--move"}:
+                    return False
+        return True
+    if binary == "sed":
+        for arg in tokens[1:]:
+            if arg == "-i" or arg.startswith("-i") or arg.startswith("--in-place"):
+                return False
+        return True
+    return binary in _READ_ONLY_BINARIES
+
+
+def is_read_only_command(command: str) -> bool:
+    if not command or not command.strip():
+        return True
+    segments = re.split(r";|&&|\|\||\|", command)
+    return all(_segment_is_read_only(seg) for seg in segments)
+
+
 def _is_paused_lifecycle_command(payload: Dict[str, Any]) -> bool:
     command = str(((payload.get("toolCall") or {}).get("args") or {}).get("CommandLine", ""))
-    return any(
+    return is_lifecycle_recovery_command(command) or any(
         marker in command
         for marker in ("etg resume", "etg pause-status", "etg usage", "etg eject")
     )
@@ -366,21 +517,28 @@ def _is_paused_lifecycle_command(payload: Dict[str, Any]) -> bool:
 
 def _is_active_check_in_command(payload: Dict[str, Any]) -> bool:
     command = str(((payload.get("toolCall") or {}).get("args") or {}).get("CommandLine", ""))
-    return "broker handoff" in command or "broker status" in command
+    return is_lifecycle_recovery_command(command) or "broker handoff" in command or "broker status" in command
 
 
 def _is_task_bootstrap_command(payload: Dict[str, Any]) -> bool:
     command = str(((payload.get("toolCall") or {}).get("args") or {}).get("CommandLine", ""))
-    normalized = " ".join(command.split())
-    return (
-        normalized == "hydrate"
-        or normalized.startswith("etg hydrate")
-        or normalized.startswith("python -m entigram.cli_runner.etg_cli hydrate")
-        or normalized.startswith("python3 -m entigram.cli_runner.etg_cli hydrate")
-        or "etg task prepare" in normalized
-        or "python -m entigram.cli_runner.etg_cli task prepare" in normalized
-        or "python3 -m entigram.cli_runner.etg_cli task prepare" in normalized
-    )
+    return is_lifecycle_recovery_command(command)
+
+
+def _manifest_semantic_digest(path: Path) -> Optional[str]:
+    if not path.is_file():
+        return None
+    try:
+        manifest = yaml.safe_load(path.read_text()) or {}
+        if isinstance(manifest, dict):
+            semantic = dict(manifest)
+            semantic.pop("last_locked", None)
+            semantic.pop("last_updated", None)
+            payload = json.dumps(semantic, sort_keys=True, separators=(",", ":"))
+            return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    except Exception:
+        pass
+    return _file_digest(path)
 
 
 def _session_fingerprint(
@@ -391,7 +549,7 @@ def _session_fingerprint(
     schema_paths = manifest.get("schema_paths", ["schema.lds"])
     return {
         "workspace_state": state,
-        "manifest_sha256": _file_digest(root / ".etg" / "entigram.yaml"),
+        "manifest_sha256": _manifest_semantic_digest(root / ".etg" / "entigram.yaml"),
         "policy_sha256": _file_digest(root / ".etg" / "agent_policy.md"),
         "schemas": {
             str(path): _file_digest(root / str(path))

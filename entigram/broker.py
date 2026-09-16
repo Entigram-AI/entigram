@@ -1027,6 +1027,18 @@ class EntigramBroker:
         if not recommendations:
             recommendations.append("No recommission needed; latest delivery snapshot still matches.")
 
+        if not needs_recommission:
+            try:
+                from .workspace_lifecycle import establish_active_change_baseline
+
+                establish_active_change_baseline(
+                    self.target_dir,
+                    reason="broker_status_current",
+                    snapshot_id=snapshot.get("snapshot_id") if isinstance(snapshot, dict) else None,
+                )
+            except Exception:
+                pass
+
         return self._with_adapter_enforcement({
             "valid": not needs_recommission,
             "needs_recommission": needs_recommission,
