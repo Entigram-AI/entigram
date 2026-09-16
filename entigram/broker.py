@@ -941,7 +941,22 @@ class EntigramBroker:
             (path, artifact_role) for path in (artifact_paths or [])
         )
         seen_current = set()
+        MAX_UNANCHORED_CAPTURED = 500
         for artifact_path, role in current_candidates:
+            path = Path(artifact_path).expanduser()
+            if not path.is_absolute():
+                path = self.target_dir / path
+            storage_path = self._artifact_path_for_storage(path)
+            key = (storage_path, role)
+            if key in seen_current:
+                continue
+            seen_current.add(key)
+            if key in anchored_keys:
+                continue
+
+            if len(unanchored_artifacts) >= MAX_UNANCHORED_CAPTURED:
+                break
+
             current = self._capture_artifact(artifact_path, role)
             if current.get("missing"):
                 if artifact_path in (artifact_paths or []):
@@ -951,17 +966,12 @@ class EntigramBroker:
                         "status": "missing",
                     })
                 continue
-            key = (current["path"], current["artifact_role"])
-            if key in seen_current:
-                continue
-            seen_current.add(key)
-            if key not in anchored_keys:
-                unanchored_artifacts.append({
-                    "path": current["path"],
-                    "artifact_role": current["artifact_role"],
-                    "status": "unanchored",
-                    "sha256": current["sha256"],
-                })
+            unanchored_artifacts.append({
+                "path": current["path"],
+                "artifact_role": current["artifact_role"],
+                "status": "unanchored",
+                "sha256": current["sha256"],
+            })
 
         report("5/5 preparing the delivery decision")
         expectation_count_changed = (
