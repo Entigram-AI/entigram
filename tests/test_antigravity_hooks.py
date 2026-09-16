@@ -81,13 +81,13 @@ class TestAntigravityHooks(unittest.TestCase):
         self.assertTrue(any("Entigram governance policy" in message for message in messages))
         self.assertTrue(any("ENTITY: WorkItem" in message for message in messages))
         self.assertFalse(any("toolCall" in step for step in injected))
-        self.assertIn("0/5", injected[-1]["ephemeralMessage"])
+        self.assertIn("0/15", injected[-1]["ephemeralMessage"])
 
         prepare_task(self.root, task_id="test-task", description="Implement work.py")
         allowed = handle_antigravity_hook(self.root, "pre-tool-use", write)
         self.assertEqual(allowed["decision"], "allow")
 
-        for number in range(5):
+        for number in range(15):
             (self.root / f"drift-{number}.txt").write_text(f"{number}\n")
         status = active_change_status(self.root)
         self.assertTrue(status["budget"]["exhausted"])
@@ -110,7 +110,7 @@ class TestAntigravityHooks(unittest.TestCase):
         handle_antigravity_hook(
             self.root, "pre-invocation", {"conversationId": "conversation-4"}
         )
-        for number in range(5):
+        for number in range(15):
             (self.root / f"stale-{number}.txt").write_text(f"{number}\n")
 
         for command in (

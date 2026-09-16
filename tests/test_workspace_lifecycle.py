@@ -228,12 +228,13 @@ class TestWorkspaceLifecycle(unittest.TestCase):
 
     def test_active_change_budget_tracks_external_workspace_drift(self):
         establish_active_change_baseline(self.root, reason="test")
-        for number in range(5):
+        for number in range(15):
             (self.root / f"active-{number}.txt").write_text(f"{number}\n")
 
         status = active_change_status(self.root)
         self.assertEqual(status["status"], "check_in_required")
-        self.assertEqual(status["budget"]["changed_files"], 5)
+        self.assertEqual(status["budget"]["max_changed_files"], 15)
+        self.assertEqual(status["budget"]["changed_files"], 15)
         self.assertTrue(status["budget"]["exhausted"])
 
         exit_code, output, _ = self.run_cli(
@@ -241,6 +242,25 @@ class TestWorkspaceLifecycle(unittest.TestCase):
         )
         self.assertEqual(exit_code, 2)
         self.assertIn("ACTIVE_CHANGE_CHECK_IN_REQUIRED", output)
+
+    def test_active_change_budget_warns_at_threshold_before_exhaustion(self):
+        establish_active_change_baseline(self.root, reason="test")
+        for number in range(5):
+            (self.root / f"warn-{number}.txt").write_text(f"{number}\n")
+
+        status = active_change_status(self.root)
+        self.assertEqual(status["status"], "warning")
+        self.assertEqual(status["budget"]["max_changed_files"], 15)
+        self.assertEqual(status["budget"]["warn_changed_files"], 5)
+        self.assertEqual(status["budget"]["changed_files"], 5)
+        self.assertTrue(status["budget"]["warning"])
+        self.assertFalse(status["budget"]["exhausted"])
+
+        exit_code, output, _ = self.run_cli(
+            ["change-status", "--dir", str(self.root), "--enforce"]
+        )
+        self.assertEqual(exit_code, 0)
+        self.assertIn("Warning", output)
 
     def test_configuring_antigravity_installs_hooks_for_existing_workspace(self):
         from entigram.agent_hooks import remove_agent_hooks

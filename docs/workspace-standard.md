@@ -80,7 +80,8 @@ state_ledger: .etg/state.db
 lifecycle:
   state: active
   change_budget:
-    max_changed_files: 5
+    max_changed_files: 15
+    warn_changed_files: 5
 agent_governance:
   active_agents: [codex]
 external_artifacts:
@@ -107,7 +108,8 @@ falls back to polyglot source and project-configuration defaults. Both paths
 exclude `.git`, `.etg`, virtual environments, dependency directories, caches,
 and build output.
 
-`lifecycle.change_budget.max_changed_files` is optional and defaults to `5`.
+`lifecycle.change_budget.max_changed_files` is optional and defaults to `15`
+(with an advisory warning threshold `warn_changed_files` defaulting to `5`).
 It defines the number of changed workspace files permitted after initialization
 or the most recent successful broker handoff before Entigram asks the agent to
 check in again. It is an admission cadence, not a replacement for Warden,

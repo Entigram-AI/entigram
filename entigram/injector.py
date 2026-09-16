@@ -107,7 +107,7 @@ def inject_entigram_manifest(target_dir: str, selected_packages: list, cli_engin
         "state_ledger": f".etg/{CANONICAL_LEDGER_NAME}",
         "lifecycle": {
             "state": "active",
-            "change_budget": {"max_changed_files": 5},
+            "change_budget": {"max_changed_files": 15, "warn_changed_files": 5},
         },
         "governance": {
             "require_task_prepare": True,

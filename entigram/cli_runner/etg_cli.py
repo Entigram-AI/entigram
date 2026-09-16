@@ -1013,6 +1013,11 @@ def _emit_active_change_status(result, *, json_output: bool = False) -> None:
         f"{budget['changed_files']}/{budget['max_changed_files']} "
         f"({budget['remaining_files']} remaining)"
     )
+    if budget.get("warning"):
+        print(
+            f"⚠️  Warning: {budget['changed_files']}/{budget['max_changed_files']} files changed "
+            f"({budget.get('warn_changed_files', 5)}-file warning threshold reached)."
+        )
     print(result["next_action"])
     for change_type, paths in result["changes"].items():
         if paths:
