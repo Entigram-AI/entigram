@@ -21,6 +21,7 @@ boot.json
 
 # Env
 .env
+.entigram/
 
 # Allow Entigram metadata but ignore SQLite temp files
 !.etg/

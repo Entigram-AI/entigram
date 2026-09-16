@@ -194,6 +194,9 @@ def detect_current_agent_runtime() -> Dict[str, Optional[str]]:
     markers = (
         ("CODEX_THREAD_ID", "codex"),
         ("CODEX_HOME", "codex"),
+        ("CODEX_SESSION_ID", "codex"),
+        ("CODEX_SANDBOX", "codex"),
+        ("CODEX", "codex"),
         ("CLAUDECODE", "claude"),
         ("CLAUDE_CODE", "claude"),
         ("CLAUDE_AGENT_SDK", "claude"),
@@ -229,6 +232,10 @@ def detect_current_agent_runtime() -> Dict[str, Optional[str]]:
         runtime = normalize_agent_runtime(executable)
         if runtime in SUPPORTED_AGENT_RUNTIMES:
             return {"agent": runtime, "source": "parent_process"}
+        if "codex" in executable or "codex" in command.lower().split():
+            return {"agent": "codex", "source": "parent_process"}
+        if "claude" in executable or "claude" in command.lower().split():
+            return {"agent": "claude", "source": "parent_process"}
         try:
             pid = int(parent)
         except ValueError:
@@ -1306,6 +1313,14 @@ def pause_workspace(
             manifest_path,
             yaml.safe_dump(paused_manifest, default_flow_style=False, sort_keys=False),
         )
+        try:
+            etg_dir_fd = os.open(str(root / ".etg"), os.O_RDONLY)
+            try:
+                os.fsync(etg_dir_fd)
+            finally:
+                os.close(etg_dir_fd)
+        except OSError:
+            pass
     except Exception as exc:
         for path, content in originals.items():
             _restore_path(path, content)

@@ -113,9 +113,17 @@ def handle_agent_hook(
     if normalized_runtime not in {CODEX_RUNTIME, CLAUDE_RUNTIME}:
         return {"decision": "deny", "reason": f"Unsupported agent runtime: {runtime}"}
 
+    data = payload if isinstance(payload, dict) else {}
+    if data.get("cwd"):
+        target_dir = Path(data["cwd"]).expanduser().resolve()
+    elif data.get("workspace"):
+        target_dir = Path(data["workspace"]).expanduser().resolve()
+    else:
+        target_dir = Path(target_dir).expanduser().resolve()
+
     from .workspace_lifecycle import active_agent_adapter_status
 
-    enforcement = active_agent_adapter_status(Path(target_dir), agent=normalized_runtime)
+    enforcement = active_agent_adapter_status(target_dir, agent=normalized_runtime)
     if not enforcement["ok"]:
         reason = (
             "Entigram workspace-agent enforcement is required. "
@@ -135,7 +143,6 @@ def handle_agent_hook(
             event, {"decision": "deny", "reason": reason}, target_dir
         )
 
-    data = payload if isinstance(payload, dict) else {}
     internal_event, internal_payload = _internal_hook_request(
         normalized_runtime, event, data
     )

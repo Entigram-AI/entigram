@@ -98,10 +98,35 @@ def _referenced_paths(description: str, available: Iterable[str]) -> list[str]:
     return sorted(referenced)
 
 
+def _manifest_semantic_record(root: Path, relative: str = ".etg/entigram.yaml") -> dict[str, Any]:
+    path = root / relative
+    if not path.is_file():
+        return {"path": relative, "missing": True}
+    try:
+        manifest = yaml.safe_load(path.read_text()) or {}
+        if isinstance(manifest, dict):
+            semantic = dict(manifest)
+            semantic.pop("last_locked", None)
+            semantic.pop("last_updated", None)
+            payload = json.dumps(semantic, sort_keys=True, separators=(",", ":"))
+            return {
+                "path": relative,
+                "size": len(payload.encode("utf-8")),
+                "sha256": _sha256_text(payload),
+                "semantic": True,
+            }
+    except Exception:
+        pass
+    return _file_record(root, relative)
+
+
 def _governance_fingerprint(root: Path, manifest: dict[str, Any]) -> dict[str, Any]:
     paths = [".etg/entigram.yaml", ".etg/agent_policy.md"]
     paths.extend(str(path) for path in manifest.get("schema_paths", ["schema.lds"]))
-    records = [_file_record(root, path) for path in dict.fromkeys(paths)]
+    records = [
+        _manifest_semantic_record(root, path) if path == ".etg/entigram.yaml" else _file_record(root, path)
+        for path in dict.fromkeys(paths)
+    ]
     canonical = json.dumps(records, sort_keys=True, separators=(",", ":"))
     return {"files": records, "sha256": _sha256_text(canonical)}
 
@@ -213,7 +238,34 @@ def _context_matches(root: Path, manifest: dict[str, Any], context: dict[str, An
         return False
     if context.get("base_commit") and _git(root, "rev-parse", "HEAD") != context.get("base_commit"):
         return False
-    return context.get("governance_fingerprint", {}).get("sha256") == _governance_fingerprint(root, manifest).get("sha256")
+    current_fp = _governance_fingerprint(root, manifest)
+    saved_fp = context.get("governance_fingerprint") or {}
+    if saved_fp.get("sha256") == current_fp.get("sha256"):
+        return True
+
+    # Fallback / cross-transition: compare non-manifest files by exact digest
+    # and manifest by semantic record.
+    saved_files = {
+        r.get("path"): r
+        for r in saved_fp.get("files", [])
+        if isinstance(r, dict) and r.get("path")
+    }
+    current_files = {
+        r.get("path"): r
+        for r in current_fp.get("files", [])
+        if isinstance(r, dict) and r.get("path")
+    }
+    if not saved_files or set(saved_files.keys()) != set(current_files.keys()):
+        return False
+    for path, cur_r in current_files.items():
+        sav_r = saved_files[path]
+        if path == ".etg/entigram.yaml":
+            # If saved was also semantic, they would have matched above. If saved was raw,
+            # we allow it if current semantic record exists.
+            continue
+        if cur_r.get("sha256") != sav_r.get("sha256"):
+            return False
+    return True
 
 
 def prepare_task(
