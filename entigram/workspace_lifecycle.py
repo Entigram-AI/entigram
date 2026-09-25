@@ -957,10 +957,19 @@ def _workspace_snapshot(
     """Return a content-addressed snapshot of user-visible workspace files."""
     snapshot: Dict[str, str] = {}
     for directory, subdirectories, filenames in os.walk(root, followlinks=False):
-        subdirectories[:] = [
-            name for name in subdirectories if name not in _TEXT_SCAN_IGNORES
-        ]
         parent = Path(directory)
+        nested_workspaces = [
+            parent / name
+            for name in subdirectories
+            if (parent / name / ".etg" / "entigram.yaml").is_file()
+        ]
+        subdirectories[:] = [
+            name for name in subdirectories
+            if name not in _TEXT_SCAN_IGNORES and parent / name not in nested_workspaces
+        ]
+        for child in nested_workspaces:
+            proxy = child / ".etg" / "entigram.yaml"
+            snapshot[proxy.relative_to(root).as_posix()] = hashlib.sha256(proxy.read_bytes()).hexdigest()
         for filename in sorted(filenames):
             path = parent / filename
             if path.is_symlink() or not path.is_file():
@@ -982,10 +991,23 @@ def _workspace_metadata_snapshot(root: Path) -> Dict[str, List[int]]:
     """Return lightweight filesystem fingerprints without retaining file content."""
     snapshot: Dict[str, List[int]] = {}
     for directory, subdirectories, filenames in os.walk(root, followlinks=False):
-        subdirectories[:] = [
-            name for name in subdirectories if name not in _TEXT_SCAN_IGNORES
-        ]
         parent = Path(directory)
+        nested_workspaces = [
+            parent / name
+            for name in subdirectories
+            if (parent / name / ".etg" / "entigram.yaml").is_file()
+        ]
+        subdirectories[:] = [
+            name for name in subdirectories
+            if name not in _TEXT_SCAN_IGNORES and parent / name not in nested_workspaces
+        ]
+        for child in nested_workspaces:
+            proxy = child / ".etg" / "entigram.yaml"
+            stat = proxy.stat()
+            snapshot[proxy.relative_to(root).as_posix()] = [
+                int(stat.st_size),
+                int(stat.st_mtime_ns),
+            ]
         for filename in sorted(filenames):
             path = parent / filename
             if path.is_symlink() or not path.is_file():

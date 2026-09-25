@@ -73,10 +73,25 @@ class TestWorkspaceLifecycle(unittest.TestCase):
         manifest = yaml.safe_load(manifest_path.read_text())
         self.assertEqual(manifest["lifecycle"]["state"], "active")
         self.assertEqual(workspace_state(self.root), "active")
-
         manifest.pop("lifecycle")
         manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False))
         self.assertEqual(workspace_state(self.root), "active")
+
+    def test_workspace_snapshots_proxy_nested_entigram_workspaces(self):
+        child = self.root / "child"
+        self.assertTrue(inject_entigram_manifest(str(child), ["Entigram Schemas"], "Codex"))
+        child_source = child / "src" / "large.py"
+        child_source.parent.mkdir()
+        child_source.write_text("value = 1\n")
+
+        snapshot = lifecycle_module._workspace_snapshot(self.root)
+        metadata = lifecycle_module._workspace_metadata_snapshot(self.root)
+
+        proxy = "child/.etg/entigram.yaml"
+        self.assertIn(proxy, snapshot)
+        self.assertIn(proxy, metadata)
+        self.assertNotIn("child/src/large.py", snapshot)
+        self.assertNotIn("child/src/large.py", metadata)
 
     def test_initialization_uses_the_entigram_meta_schema(self):
         with tempfile.TemporaryDirectory() as temp_dir:
