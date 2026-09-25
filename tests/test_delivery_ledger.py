@@ -476,15 +476,20 @@ class TestBrokerDeliverySnapshots(unittest.TestCase):
 
     def test_governed_artifacts_proxy_nested_entigram_workspaces(self):
         import shutil
+        import subprocess
         import tempfile
         from pathlib import Path
 
         from entigram.injector import inject_entigram_manifest
         from entigram.workspace_contract import governed_artifact_paths
 
+        if shutil.which("git") is None:
+            self.skipTest("git is not installed")
+
         test_dir = tempfile.mkdtemp()
         try:
             inject_entigram_manifest(test_dir, ["Entigram Schemas"], "Codex")
+            subprocess.run(["git", "init", "-q", test_dir], check=True)
             parent_source = Path(test_dir, "parent.py")
             parent_source.write_text("parent = True\n")
             child = Path(test_dir, "child-workspace")
