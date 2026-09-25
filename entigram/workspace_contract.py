@@ -156,6 +156,7 @@ def authoritative_schema_paths(
 
 def governed_artifact_paths(target_dir: WorkspacePath) -> List[Path]:
     root = Path(target_dir).expanduser().resolve()
+    nested_roots = _nested_workspace_roots(root)
     manifest = load_workspace_manifest(root)
     configured = manifest.get("governed_artifact_globs")
     if configured is not None:
@@ -163,14 +164,14 @@ def governed_artifact_paths(target_dir: WorkspacePath) -> List[Path]:
             raise ValueError("governed_artifact_globs must be a non-empty list")
         if not all(isinstance(value, str) and value.strip() for value in configured):
             raise ValueError("governed_artifact_globs entries must be non-empty strings")
-        paths = _globbed_artifact_paths(root, tuple(configured))
-        return _with_nested_workspace_proxies(root, paths)
+        paths = _globbed_artifact_paths(root, tuple(configured), nested_roots)
+        return _with_nested_workspace_proxies(root, paths, nested_roots)
 
-    git_paths = _git_artifact_paths(root)
+    git_paths = _git_artifact_paths(root, nested_roots)
     if git_paths is not None:
-        return _with_nested_workspace_proxies(root, git_paths)
-    paths = _globbed_artifact_paths(root, DEFAULT_GOVERNED_ARTIFACT_GLOBS)
-    return _with_nested_workspace_proxies(root, paths)
+        return _with_nested_workspace_proxies(root, git_paths, nested_roots)
+    paths = _globbed_artifact_paths(root, DEFAULT_GOVERNED_ARTIFACT_GLOBS, nested_roots)
+    return _with_nested_workspace_proxies(root, paths, nested_roots)
 
 
 def _nested_workspace_roots(root: Path) -> List[Path]:
@@ -186,9 +187,13 @@ def _nested_workspace_roots(root: Path) -> List[Path]:
     )
 
 
-def _with_nested_workspace_proxies(root: Path, paths: List[Path]) -> List[Path]:
+def _with_nested_workspace_proxies(
+    root: Path,
+    paths: List[Path],
+    nested_roots: Optional[List[Path]] = None,
+) -> List[Path]:
     """Exclude child contents and retain one registered manifest per child."""
-    children = _nested_workspace_roots(root)
+    children = nested_roots if nested_roots is not None else _nested_workspace_roots(root)
     retained = {
         path.resolve()
         for path in paths
@@ -235,7 +240,10 @@ def _matches_ignore_pattern(relative_path: Path, pattern: str) -> bool:
     return False
 
 
-def _git_artifact_paths(root: Path) -> Optional[List[Path]]:
+def _git_artifact_paths(
+    root: Path,
+    nested_roots: Optional[List[Path]] = None,
+) -> Optional[List[Path]]:
     git_cmd = [
         "git",
         "-C",
@@ -250,6 +258,12 @@ def _git_artifact_paths(root: Path) -> Optional[List[Path]]:
     if etgignore.is_file():
         git_cmd.extend(["--exclude-from", str(etgignore)])
     git_cmd.extend(["--", "."])
+    # Child workspaces are independent Git repositories. Exclude their trees
+    # during Git inventory rather than filtering an already-enumerated list.
+    # Their manifests are retained as proxies below.
+    for child in nested_roots or _nested_workspace_roots(root):
+        relative = child.relative_to(root).as_posix()
+        git_cmd.append(f":(exclude){relative}/**")
     try:
         result = subprocess.run(
             git_cmd,
@@ -282,21 +296,42 @@ def _git_artifact_paths(root: Path) -> Optional[List[Path]]:
     return sorted(paths)
 
 
-def _globbed_artifact_paths(root: Path, patterns: Tuple[str, ...]) -> List[Path]:
+def _globbed_artifact_paths(
+    root: Path,
+    patterns: Tuple[str, ...],
+    nested_roots: Optional[List[Path]] = None,
+) -> List[Path]:
     etg_patterns = load_etgignore_patterns(root)
+    child_roots = set(nested_roots or _nested_workspace_roots(root))
     paths = set()
     for pattern in patterns:
         candidate_pattern = Path(pattern)
         if candidate_pattern.is_absolute() or ".." in candidate_pattern.parts:
             raise ValueError(f"governed artifact glob must stay inside workspace: {pattern}")
-        for path in root.glob(pattern):
+    for directory, subdirectories, filenames in os.walk(root):
+        directory_path = Path(directory)
+        subdirectories[:] = [
+            name for name in subdirectories
+            if (directory_path / name).resolve() not in child_roots
+        ]
+        for filename in filenames:
+            path = directory_path / filename
             if path.is_symlink() or not path.is_file():
                 continue
             relative = path.relative_to(root)
+            if not any(_matches_governed_glob(relative, pattern) for pattern in patterns):
+                continue
             if _is_ignored_artifact_path(relative, etg_patterns):
                 continue
             paths.add(path.resolve())
     return sorted(paths)
+
+
+def _matches_governed_glob(relative_path: Path, pattern: str) -> bool:
+    """Match a relative path with ``Path.glob``-compatible leading ``**/``."""
+    return relative_path.match(pattern) or (
+        pattern.startswith("**/") and relative_path.match(pattern[3:])
+    )
 
 
 def workspace_relative_path(target_dir: WorkspacePath, path: WorkspacePath) -> str:
