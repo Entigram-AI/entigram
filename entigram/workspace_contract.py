@@ -163,12 +163,42 @@ def governed_artifact_paths(target_dir: WorkspacePath) -> List[Path]:
             raise ValueError("governed_artifact_globs must be a non-empty list")
         if not all(isinstance(value, str) and value.strip() for value in configured):
             raise ValueError("governed_artifact_globs entries must be non-empty strings")
-        return _globbed_artifact_paths(root, tuple(configured))
+        paths = _globbed_artifact_paths(root, tuple(configured))
+        return _with_nested_workspace_proxies(root, paths)
 
     git_paths = _git_artifact_paths(root)
     if git_paths is not None:
-        return git_paths
-    return _globbed_artifact_paths(root, DEFAULT_GOVERNED_ARTIFACT_GLOBS)
+        return _with_nested_workspace_proxies(root, git_paths)
+    paths = _globbed_artifact_paths(root, DEFAULT_GOVERNED_ARTIFACT_GLOBS)
+    return _with_nested_workspace_proxies(root, paths)
+
+
+def _nested_workspace_roots(root: Path) -> List[Path]:
+    """Return direct child workspaces without traversing their contents."""
+    try:
+        children = list(root.iterdir())
+    except OSError:
+        return []
+    return sorted(
+        (child.resolve() for child in children
+         if child.is_dir() and (child / ".etg" / "entigram.yaml").is_file()),
+        key=lambda child: child.as_posix(),
+    )
+
+
+def _with_nested_workspace_proxies(root: Path, paths: List[Path]) -> List[Path]:
+    """Exclude child contents and retain one registered manifest per child."""
+    children = _nested_workspace_roots(root)
+    retained = {
+        path.resolve()
+        for path in paths
+        if not any(child in path.resolve().parents for child in children)
+    }
+    # The child manifest carries its registered Entigram contract fingerprint.
+    # It changes when the child is checked in, without pulling its source tree
+    # into the parent workspace's hydration or delivery-status inventory.
+    retained.update(child / ".etg" / "entigram.yaml" for child in children)
+    return sorted(retained)
 
 
 def load_etgignore_patterns(root: Path) -> List[str]:
