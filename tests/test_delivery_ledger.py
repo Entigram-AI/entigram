@@ -474,6 +474,33 @@ class TestBrokerDeliverySnapshots(unittest.TestCase):
         finally:
             shutil.rmtree(test_dir)
 
+    def test_governed_artifacts_proxy_nested_entigram_workspaces(self):
+        import shutil
+        import tempfile
+        from pathlib import Path
+
+        from entigram.injector import inject_entigram_manifest
+        from entigram.workspace_contract import governed_artifact_paths
+
+        test_dir = tempfile.mkdtemp()
+        try:
+            inject_entigram_manifest(test_dir, ["Entigram Schemas"], "Codex")
+            parent_source = Path(test_dir, "parent.py")
+            parent_source.write_text("parent = True\n")
+            child = Path(test_dir, "child-workspace")
+            inject_entigram_manifest(str(child), ["Entigram Schemas"], "Codex")
+            child_source = child / "src" / "expensive.py"
+            child_source.parent.mkdir()
+            child_source.write_text("child = True\n")
+
+            paths = set(governed_artifact_paths(test_dir))
+
+            self.assertIn(parent_source.resolve(), paths)
+            self.assertNotIn(child_source.resolve(), paths)
+            self.assertIn((child / ".etg" / "entigram.yaml").resolve(), paths)
+        finally:
+            shutil.rmtree(test_dir)
+
     def test_governed_artifact_globs_override_git_inventory(self):
         import shutil
         import subprocess
