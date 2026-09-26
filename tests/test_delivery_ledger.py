@@ -506,6 +506,35 @@ class TestBrokerDeliverySnapshots(unittest.TestCase):
         finally:
             shutil.rmtree(test_dir)
 
+    def test_governed_artifacts_exclude_uninitialized_nested_git_repository(self):
+        import shutil
+        import subprocess
+        import tempfile
+        from pathlib import Path
+
+        from entigram.injector import inject_entigram_manifest
+        from entigram.workspace_contract import governed_artifact_paths
+
+        if shutil.which("git") is None:
+            self.skipTest("git is not installed")
+
+        test_dir = tempfile.mkdtemp()
+        try:
+            inject_entigram_manifest(test_dir, ["Entigram Schemas"], "Codex")
+            child = Path(test_dir, "uninitialized-child")
+            child.mkdir()
+            subprocess.run(["git", "init", "-q", child], check=True)
+            child_source = child / "src" / "large.py"
+            child_source.parent.mkdir()
+            child_source.write_text("value = 1\n")
+
+            paths = set(governed_artifact_paths(test_dir))
+
+            self.assertNotIn(child_source.resolve(), paths)
+            self.assertNotIn((child / ".etg" / "entigram.yaml").resolve(), paths)
+        finally:
+            shutil.rmtree(test_dir)
+
     def test_governed_artifact_globs_override_git_inventory(self):
         import shutil
         import subprocess
