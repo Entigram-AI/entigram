@@ -16,6 +16,12 @@
 * harden SQLite ledger concurrency with WAL mode and busy timeouts
 * close warning-producing registry, broker, router, and hydration resources
 
+## [2.23.2](https://github.com/Entigram-AI/entigram/compare/v2.23.1...v2.23.2) (2026-09-26)
+
+### Bug Fixes
+
+* bound parent artifact discovery to child repositories ([#114](https://github.com/Entigram-AI/entigram/issues/114)) ([c0b5891](https://github.com/Entigram-AI/entigram/commit/c0b5891779d7d70aee26836f9522facf86015eed))
+
 ## [2.23.1](https://github.com/Entigram-AI/entigram/compare/v2.23.0...v2.23.1) (2026-09-25)
 
 * Maintenance release with dependency and internal updates.
