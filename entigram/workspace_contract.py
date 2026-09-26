@@ -175,14 +175,22 @@ def governed_artifact_paths(target_dir: WorkspacePath) -> List[Path]:
 
 
 def _nested_workspace_roots(root: Path) -> List[Path]:
-    """Return direct child workspaces without traversing their contents."""
+    """Return direct child repository boundaries without traversing them.
+
+    An initialized child is represented by its ``.etg/entigram.yaml`` proxy.
+    A child Git repository that is not initialized is deliberately excluded: it
+    has not consented to become part of the parent's governed inventory.
+    """
     try:
         children = list(root.iterdir())
     except OSError:
         return []
     return sorted(
         (child.resolve() for child in children
-         if child.is_dir() and (child / ".etg" / "entigram.yaml").is_file()),
+         if child.is_dir() and (
+             (child / ".etg" / "entigram.yaml").is_file()
+             or (child / ".git").exists()
+         )),
         key=lambda child: child.as_posix(),
     )
 
@@ -199,10 +207,14 @@ def _with_nested_workspace_proxies(
         for path in paths
         if not any(child in path.resolve().parents for child in children)
     }
-    # The child manifest carries its registered Entigram contract fingerprint.
-    # It changes when the child is checked in, without pulling its source tree
-    # into the parent workspace's hydration or delivery-status inventory.
-    retained.update(child / ".etg" / "entigram.yaml" for child in children)
+    # Only initialized children carry a registered Entigram contract
+    # fingerprint. It changes when the child is checked in, without pulling
+    # its source tree into the parent's hydration or delivery-status inventory.
+    retained.update(
+        child / ".etg" / "entigram.yaml"
+        for child in children
+        if (child / ".etg" / "entigram.yaml").is_file()
+    )
     return sorted(retained)
 
 
