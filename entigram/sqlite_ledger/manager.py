@@ -281,6 +281,8 @@ class LedgerManager:
                 "approval_status": "TEXT NOT NULL DEFAULT 'NotRequired'",
                 "action_contract_ref": "TEXT",
                 "claimed_by": "TEXT",
+                "claimed_session_id": "TEXT",
+                "offered_session_id": "TEXT",
                 "lease_expires_at": "TEXT",
                 "last_heartbeat_at": "TEXT",
                 "attempt_count": "INTEGER NOT NULL DEFAULT 0",
@@ -298,6 +300,15 @@ class LedgerManager:
                     summary TEXT,
                     metadata TEXT DEFAULT '{}',
                     observed_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS agent_sessions (
+                    session_id TEXT PRIMARY KEY,
+                    agent_id TEXT NOT NULL,
+                    workspace_id TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
             # Table for token-window checkpointing and external scheduler resume.
@@ -326,6 +337,14 @@ class LedgerManager:
             conn.execute('''
                 CREATE INDEX IF NOT EXISTS idx_agent_tasks_status
                 ON agent_tasks(status, risk_level, required_score)
+            ''')
+            conn.execute('''
+                CREATE INDEX IF NOT EXISTS idx_agent_tasks_inbox
+                ON agent_tasks(workspace_id, assigned_agent_id, offered_session_id, status)
+            ''')
+            conn.execute('''
+                CREATE INDEX IF NOT EXISTS idx_agent_sessions_presence
+                ON agent_sessions(workspace_id, agent_id, last_seen_at)
             ''')
             conn.execute('''
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_tasks_idempotency
@@ -1614,7 +1633,118 @@ class LedgerManager:
         finally:
             if self.db_path != ":memory:": conn.close()
 
-    def claim_agent_task(self, task_id: str, agent_id: str, *, lease_seconds: int = 300) -> Dict[str, Any]:
+    def register_agent_session(self, session_id: str, agent_id: str, workspace_id: str) -> Dict[str, Any]:
+        """Record a live participant in this ledger; presence is not execution authority."""
+        if not all(isinstance(value, str) and value.strip() for value in (session_id, agent_id, workspace_id)):
+            return {"ok": False, "reason": "SESSION_FIELDS_REQUIRED"}
+        if not self.get_agent(agent_id):
+            return {"ok": False, "reason": "AGENT_NOT_REGISTERED"}
+        now = datetime.now(timezone.utc).isoformat()
+        conn = self._get_connection()
+        try:
+            with conn:
+                existing = conn.execute(
+                    "SELECT agent_id, workspace_id FROM agent_sessions WHERE session_id = ?", (session_id,)
+                ).fetchone()
+                if existing and existing != (agent_id, workspace_id):
+                    return {"ok": False, "reason": "SESSION_IDENTITY_CONFLICT"}
+                conn.execute(
+                    "INSERT INTO agent_sessions(session_id, agent_id, workspace_id, last_seen_at) VALUES (?, ?, ?, ?) "
+                    "ON CONFLICT(session_id) DO UPDATE SET last_seen_at = excluded.last_seen_at "
+                    "WHERE agent_sessions.agent_id = excluded.agent_id "
+                    "AND agent_sessions.workspace_id = excluded.workspace_id",
+                    (session_id, agent_id, workspace_id, now),
+                )
+                verified = conn.execute(
+                    "SELECT agent_id, workspace_id FROM agent_sessions WHERE session_id = ?", (session_id,)
+                ).fetchone()
+                if verified != (agent_id, workspace_id):
+                    return {"ok": False, "reason": "SESSION_IDENTITY_CONFLICT"}
+            return {"ok": True, "session_id": session_id, "agent_id": agent_id, "workspace_id": workspace_id}
+        finally:
+            if self.db_path != ":memory:": conn.close()
+
+    def get_agent_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+        conn = self._get_connection()
+        try:
+            row = conn.execute(
+                "SELECT session_id, agent_id, workspace_id, last_seen_at FROM agent_sessions WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            return dict(zip(("session_id", "agent_id", "workspace_id", "last_seen_at"), row)) if row else None
+        finally:
+            if self.db_path != ":memory:": conn.close()
+
+    def get_agent_inbox(self, session_id: str, *, limit: int = 50) -> Dict[str, Any]:
+        """Return work addressed to one registered session in this workspace."""
+        session = self.get_agent_session(session_id)
+        if not session:
+            return {"ok": False, "reason": "SESSION_NOT_REGISTERED"}
+        conn = self._get_connection()
+        try:
+            rows = conn.execute(
+                "SELECT task_id FROM agent_tasks WHERE workspace_id = ? AND assigned_agent_id = ? "
+                "AND offered_session_id = ? AND status = 'Assigned' "
+                "ORDER BY updated_at DESC, id DESC LIMIT ?",
+                (session["workspace_id"], session["agent_id"], session_id, max(1, min(limit, 100))),
+            ).fetchall()
+            return {"ok": True, "session": session, "tasks": [self.get_agent_task(row[0]) for row in rows]}
+        finally:
+            if self.db_path != ":memory:": conn.close()
+
+    def handoff_agent_task(
+        self, task_id: str, from_agent_id: str, from_session_id: str,
+        to_agent_id: str, to_session_id: str, summary: str,
+    ) -> Dict[str, Any]:
+        """Atomically release one session's lease and offer the same task to another."""
+        if not summary.strip() or len(summary) > 4000:
+            return {"ok": False, "reason": "HANDOFF_SUMMARY_REQUIRED"}
+        task = self.get_agent_task(task_id)
+        source = self.get_agent_session(from_session_id)
+        target = self.get_agent_session(to_session_id)
+        if not task or not source or not target:
+            return {"ok": False, "reason": "HANDOFF_PARTICIPANT_NOT_FOUND"}
+        if source["agent_id"] != from_agent_id or target["agent_id"] != to_agent_id:
+            return {"ok": False, "reason": "HANDOFF_AGENT_MISMATCH"}
+        if source["workspace_id"] != task["workspace_id"] or target["workspace_id"] != task["workspace_id"]:
+            return {"ok": False, "reason": "HANDOFF_WORKSPACE_MISMATCH"}
+        if datetime.fromisoformat(target["last_seen_at"]) < datetime.now(timezone.utc) - timedelta(minutes=2):
+            return {"ok": False, "reason": "HANDOFF_TARGET_OFFLINE"}
+        if to_session_id == from_session_id:
+            return {"ok": False, "reason": "HANDOFF_TARGET_IS_SOURCE"}
+        if not task["lease_expires_at"] or datetime.fromisoformat(task["lease_expires_at"]) <= datetime.now(timezone.utc):
+            return {"ok": False, "reason": "HANDOFF_SOURCE_LEASE_EXPIRED"}
+        agent = self.get_agent(to_agent_id)
+        decision = self.evaluate_agent_assignment(agent, task) if agent else {"ok": False, "reason": "AGENT_NOT_REGISTERED"}
+        if not decision["ok"]:
+            return decision
+        if task["approval_status"] not in {"NotRequired", "Approved"}:
+            return {"ok": False, "reason": "TASK_APPROVAL_REQUIRED"}
+        if task["approval_status"] == "Approved" and not self.verify_task_approval(task).get("ok"):
+            return {"ok": False, "reason": "TASK_APPROVAL_INVALID"}
+        conn = self._get_connection()
+        try:
+            with conn:
+                updated = conn.execute(
+                    "UPDATE agent_tasks SET status = 'Assigned', assigned_agent_id = ?, "
+                    "claimed_by = NULL, claimed_session_id = NULL, offered_session_id = ?, "
+                    "lease_expires_at = NULL, last_heartbeat_at = NULL, updated_at = CURRENT_TIMESTAMP "
+                    "WHERE task_id = ? AND claimed_by = ? AND claimed_session_id = ? "
+                    "AND status IN ('Claimed', 'Running')",
+                    (to_agent_id, to_session_id, task_id, from_agent_id, from_session_id),
+                )
+                if updated.rowcount != 1:
+                    return {"ok": False, "reason": "HANDOFF_SOURCE_NOT_OWNER"}
+                self._record_agent_task_event(
+                    conn, task_id, "handed_off", from_agent_id, summary,
+                    {"from_session_id": from_session_id, "to_agent_id": to_agent_id,
+                     "to_session_id": to_session_id},
+                )
+            return {"ok": True, "task": self.get_agent_task(task_id)}
+        finally:
+            if self.db_path != ":memory:": conn.close()
+
+    def claim_agent_task(self, task_id: str, agent_id: str, *, lease_seconds: int = 300, session_id: Optional[str] = None) -> Dict[str, Any]:
         """Atomically lease a ready task, serializing high-risk trust changes."""
         task = self.get_agent_task(task_id)
         if task and task.get("risk_level") in {"high_risk", "critical"}:
@@ -1623,12 +1753,12 @@ class LedgerManager:
                 from entigram.governance.trust import trust_registry_lock
                 with trust_registry_lock(registry.target_dir):
                     # Reload under the same lock held by trust key changes.
-                    return self._claim_agent_task_unlocked(task_id, agent_id, lease_seconds=lease_seconds)
+                    return self._claim_agent_task_unlocked(task_id, agent_id, lease_seconds=lease_seconds, session_id=session_id)
             except (ValueError, OSError) as exc:
                 return {"ok": False, "reason": "TASK_APPROVAL_TRUST_UNAVAILABLE", "details": str(exc)}
-        return self._claim_agent_task_unlocked(task_id, agent_id, lease_seconds=lease_seconds)
+        return self._claim_agent_task_unlocked(task_id, agent_id, lease_seconds=lease_seconds, session_id=session_id)
 
-    def _claim_agent_task_unlocked(self, task_id: str, agent_id: str, *, lease_seconds: int = 300) -> Dict[str, Any]:
+    def _claim_agent_task_unlocked(self, task_id: str, agent_id: str, *, lease_seconds: int = 300, session_id: Optional[str] = None) -> Dict[str, Any]:
         """Atomically lease a ready task to one capability-approved agent."""
         if lease_seconds < 30 or lease_seconds > 3600:
             return {"ok": False, "reason": "INVALID_LEASE_SECONDS"}
@@ -1638,6 +1768,14 @@ class LedgerManager:
             return {"ok": False, "reason": "TASK_NOT_FOUND", "task_id": task_id}
         if not agent:
             return {"ok": False, "reason": "AGENT_NOT_REGISTERED", "agent_id": agent_id}
+        if session_id:
+            session = self.get_agent_session(session_id)
+            if not session or session["agent_id"] != agent_id or session["workspace_id"] != task["workspace_id"]:
+                return {"ok": False, "reason": "SESSION_NOT_REGISTERED_FOR_TASK"}
+            if datetime.fromisoformat(session["last_seen_at"]) < datetime.now(timezone.utc) - timedelta(minutes=2):
+                return {"ok": False, "reason": "SESSION_OFFLINE"}
+        if task.get("offered_session_id") and task["offered_session_id"] != session_id:
+            return {"ok": False, "reason": "TASK_OFFERED_TO_OTHER_SESSION"}
         if task["approval_status"] not in {"NotRequired", "Approved"}:
             return {"ok": False, "reason": "TASK_APPROVAL_REQUIRED", "task": task}
         if task["approval_status"] == "Approved":
@@ -1657,27 +1795,28 @@ class LedgerManager:
                 result = conn.execute(
                     """
                     UPDATE agent_tasks
-                    SET status = 'Claimed', claimed_by = ?, lease_expires_at = ?,
+                    SET status = 'Claimed', claimed_by = ?, claimed_session_id = ?, offered_session_id = NULL, lease_expires_at = ?,
                         last_heartbeat_at = ?, attempt_count = attempt_count + 1,
                         updated_at = CURRENT_TIMESTAMP
                     WHERE task_id = ?
                       AND status IN ('Queued', 'Assigned')
                       AND approval_status IN ('NotRequired', 'Approved')
                       AND (assigned_agent_id IS NULL OR assigned_agent_id = ?)
+                      AND (offered_session_id IS NULL OR offered_session_id = ?)
                     """,
-                    (agent_id, lease_expires_at, now.isoformat(), task_id, agent_id),
+                    (agent_id, session_id, lease_expires_at, now.isoformat(), task_id, agent_id, session_id),
                 )
                 if result.rowcount != 1:
                     return {"ok": False, "reason": "TASK_NOT_CLAIMABLE", "task": self.get_agent_task(task_id)}
                 self._record_agent_task_event(
                     conn, task_id, "claimed", agent_id, "Task lease claimed",
-                    {"lease_expires_at": lease_expires_at, "attempt": task["attempt_count"] + 1},
+                    {"lease_expires_at": lease_expires_at, "attempt": task["attempt_count"] + 1, "session_id": session_id},
                 )
             return {"ok": True, "task": self.get_agent_task(task_id)}
         finally:
             if self.db_path != ":memory:": conn.close()
 
-    def heartbeat_agent_task(self, task_id: str, agent_id: str, *, lease_seconds: int = 300, summary: str = "") -> Dict[str, Any]:
+    def heartbeat_agent_task(self, task_id: str, agent_id: str, *, lease_seconds: int = 300, summary: str = "", session_id: Optional[str] = None) -> Dict[str, Any]:
         """Renew a held lease and make active work visible without retaining prompts."""
         if lease_seconds < 30 or lease_seconds > 3600:
             return {"ok": False, "reason": "INVALID_LEASE_SECONDS"}
@@ -1691,12 +1830,13 @@ class LedgerManager:
                     UPDATE agent_tasks
                     SET status = 'Running', lease_expires_at = ?, last_heartbeat_at = ?, updated_at = CURRENT_TIMESTAMP
                     WHERE task_id = ? AND claimed_by = ? AND status IN ('Claimed', 'Running')
+                      AND (claimed_session_id IS NULL OR claimed_session_id = ?)
                     """,
-                    (lease_expires_at, now.isoformat(), task_id, agent_id),
+                    (lease_expires_at, now.isoformat(), task_id, agent_id, session_id),
                 )
                 if result.rowcount != 1:
                     return {"ok": False, "reason": "TASK_HEARTBEAT_REJECTED"}
-                self._record_agent_task_event(conn, task_id, "heartbeat", agent_id, summary or "Task is running", {"lease_expires_at": lease_expires_at})
+                self._record_agent_task_event(conn, task_id, "heartbeat", agent_id, summary or "Task is running", {"lease_expires_at": lease_expires_at, "session_id": session_id})
             return {"ok": True, "task": self.get_agent_task(task_id)}
         finally:
             if self.db_path != ":memory:": conn.close()
@@ -1710,6 +1850,7 @@ class LedgerManager:
         status indefinitely.
         """
         now = datetime.now(timezone.utc).isoformat()
+        stale_session = (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()
         conn = self._get_connection()
         try:
             with conn:
@@ -1720,7 +1861,8 @@ class LedgerManager:
                 ).fetchall()
                 for task_id, agent_id in rows:
                     conn.execute(
-                        "UPDATE agent_tasks SET status = 'Queued', claimed_by = NULL, lease_expires_at = NULL, "
+                        "UPDATE agent_tasks SET status = 'Queued', claimed_by = NULL, claimed_session_id = NULL, "
+                        "offered_session_id = NULL, lease_expires_at = NULL, "
                         "last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE task_id = ?",
                         ("Agent lease expired; resume from recorded checkpoints.", task_id),
                     )
@@ -1728,20 +1870,41 @@ class LedgerManager:
                         conn, task_id, "lease_expired", str(agent_id or "Entigram"),
                         "Agent connection ended; work is ready to resume from its last checkpoint.", {},
                     )
-            return [self.get_agent_task(str(row[0])) for row in rows if self.get_agent_task(str(row[0]))]
+                stale_offers = conn.execute(
+                    "SELECT task_id, offered_session_id FROM agent_tasks WHERE status = 'Assigned' "
+                    "AND offered_session_id IS NOT NULL AND NOT EXISTS "
+                    "(SELECT 1 FROM agent_sessions s WHERE s.session_id = agent_tasks.offered_session_id "
+                    "AND s.last_seen_at >= ?)",
+                    (stale_session,),
+                ).fetchall()
+                for task_id, session_id in stale_offers:
+                    conn.execute(
+                        "UPDATE agent_tasks SET status = 'Queued', assigned_agent_id = NULL, "
+                        "offered_session_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE task_id = ? "
+                        "AND status = 'Assigned' AND offered_session_id = ?",
+                        (task_id, session_id),
+                    )
+                    self._record_agent_task_event(
+                        conn, task_id, "offer_expired", "Entigram",
+                        "Receiving session disconnected; handoff is ready to be reassigned.",
+                        {"session_id": session_id},
+                    )
+            recovered_ids = [str(row[0]) for row in rows] + [str(row[0]) for row in stale_offers]
+            return [task for task_id in recovered_ids if (task := self.get_agent_task(task_id))]
         finally:
             if self.db_path != ":memory:": conn.close()
 
     def complete_agent_task(
-        self, task_id: str, agent_id: str, summary: str, *, output: Optional[str] = None
+        self, task_id: str, agent_id: str, summary: str, *, output: Optional[str] = None,
+        session_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Finish a task and retain its bounded, human-readable agent output."""
         return self._finish_agent_task(
-            task_id, agent_id, "Completed", "completed", summary, result_output=output
+            task_id, agent_id, "Completed", "completed", summary, result_output=output, session_id=session_id
         )
 
-    def fail_agent_task(self, task_id: str, agent_id: str, summary: str, *, retryable: bool = False) -> Dict[str, Any]:
-        return self._finish_agent_task(task_id, agent_id, "Queued" if retryable else "Failed", "failed", summary, retryable=retryable)
+    def fail_agent_task(self, task_id: str, agent_id: str, summary: str, *, retryable: bool = False, session_id: Optional[str] = None) -> Dict[str, Any]:
+        return self._finish_agent_task(task_id, agent_id, "Queued" if retryable else "Failed", "failed", summary, retryable=retryable, session_id=session_id)
 
     def request_task_review(self, task_id: str, actor_id: str, summary: str) -> Dict[str, Any]:
         """Stop work and expose an unresolved policy or evidence question to the operator."""
@@ -1752,7 +1915,8 @@ class LedgerManager:
                     """
                     UPDATE agent_tasks
                     SET status = 'NeedsReview', approval_status = 'Pending', last_error = ?,
-                        claimed_by = NULL, lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP
+                        claimed_by = NULL, claimed_session_id = NULL, offered_session_id = NULL,
+                        lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP
                     WHERE task_id = ? AND status NOT IN ('Completed', 'Cancelled', 'DeadLetter')
                     """, (summary, task_id),
                 )
@@ -1889,7 +2053,8 @@ class LedgerManager:
                     """
                     UPDATE agent_tasks
                     SET status = 'Cancelled', approval_status = 'Denied', result_summary = ?,
-                        last_error = NULL, claimed_by = NULL, lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP
+                        last_error = NULL, claimed_by = NULL, claimed_session_id = NULL, offered_session_id = NULL,
+                        lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP
                     WHERE task_id = ? AND status NOT IN ('Completed', 'Cancelled', 'DeadLetter')
                     """, (summary, task_id),
                 )
@@ -1938,6 +2103,7 @@ class LedgerManager:
         *,
         retryable: bool = False,
         result_output: Optional[str] = None,
+        session_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         if not isinstance(summary, str) or not summary.strip():
             return {"ok": False, "reason": "TASK_SUMMARY_REQUIRED"}
@@ -1950,12 +2116,14 @@ class LedgerManager:
                     SET status = ?, result_summary = CASE WHEN ? = 'Completed' THEN ? ELSE result_summary END,
                         result_output = CASE WHEN ? = 'Completed' THEN ? ELSE result_output END,
                         last_error = CASE WHEN ? = 'Completed' THEN NULL ELSE ? END,
-                        claimed_by = NULL, lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP
+                        claimed_by = NULL, claimed_session_id = NULL, offered_session_id = NULL,
+                        lease_expires_at = NULL, updated_at = CURRENT_TIMESTAMP
                     WHERE task_id = ? AND claimed_by = ? AND status IN ('Claimed', 'Running')
+                      AND (claimed_session_id IS NULL OR claimed_session_id = ?)
                     """,
                     (
                         status, status, summary, status,
-                        (result_output or "")[:50000], status, summary, task_id, agent_id,
+                        (result_output or "")[:50000], status, summary, task_id, agent_id, session_id,
                     ),
                 )
                 if result.rowcount != 1:
@@ -2041,7 +2209,7 @@ class LedgerManager:
                 "title, task_type, risk_level, required_score, details, status, approval_status, "
                 "action_contract_ref, assigned_agent_id, assignment_rationale, claimed_by, "
                 "lease_expires_at, last_heartbeat_at, attempt_count, last_error, result_summary, result_output, "
-                f"created_at, updated_at FROM agent_tasks {where} "
+                f"created_at, updated_at, claimed_session_id, offered_session_id FROM agent_tasks {where} "
                 "ORDER BY created_at DESC, id DESC LIMIT ?",
                 params + [limit],
             )
@@ -2340,6 +2508,8 @@ class LedgerManager:
             "result_output": row[21],
             "created_at": row[22],
             "updated_at": row[23],
+            "claimed_session_id": row[24],
+            "offered_session_id": row[25],
         }
 
     def _hibernation_row_to_dict(self, row) -> Dict[str, Any]:
