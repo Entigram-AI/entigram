@@ -28,6 +28,7 @@ boot.json
 .etg/*.db-shm
 .etg/*.db-wal
 .etg/*.db-journal
+.etg/.trust.lock
 .etg/audit_ed25519_private.pem
 **/.etg/audit_ed25519_private.pem
 .etg/package_signing_ed25519_private.pem
