@@ -6,6 +6,7 @@ import json
 import importlib.util
 import getpass
 import re
+import sqlite3
 import shutil
 import subprocess
 import time
@@ -24,6 +25,46 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: artifact.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _agent_task_hook_notice(workspace: Path, runtime: str, payload: dict) -> str:
+    """Surface local inbox presence on agent startup without treating it as authority."""
+    from entigram.sqlite_ledger.manager import LedgerManager
+
+    ledger_path = workspace / ".etg" / "state.db"
+    if not ledger_path.is_file():
+        return ""
+    session_id = (
+        os.environ.get("ENTIGRAM_AGENT_SESSION_ID")
+        or (os.environ.get("CODEX_THREAD_ID") if runtime == "codex" else None)
+        or str(payload.get("session_id") or payload.get("sessionId") or "")
+    )
+    agent_id = os.environ.get("ETG_AGENT_ID") or runtime
+    workspace_id = os.environ.get("ETG_WORKSPACE_ID") or workspace.name
+    if not all(re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", value) for value in (session_id, agent_id, workspace_id)):
+        return ""
+    ledger = None
+    try:
+        ledger = LedgerManager(str(ledger_path))
+        if not ledger.get_agent(agent_id):
+            return ""
+        registered = ledger.register_agent_session(session_id, agent_id, workspace_id)
+        if not registered["ok"]:
+            return ""
+        inbox = ledger.get_agent_inbox(session_id, limit=10)
+        count = len(inbox.get("tasks", []))
+        if not count:
+            return ""
+        return (
+            f"Entigram has {count} task handoff(s) offered to this workspace session. "
+            f"Inspect with `etg broker task-inbox --session {session_id}` before claiming work. "
+            "This notice grants no new authority."
+        )
+    except (OSError, ValueError, sqlite3.Error):
+        return ""
+    finally:
+        if ledger is not None:
+            ledger.close()
 
 
 def _confined_workspace_path(
@@ -2061,6 +2102,27 @@ def _main():
     task_request_parser.add_argument("--action-contract", help="Optional governed action contract reference")
     task_request_parser.add_argument("--json", action="store_true", dest="json_output", help="Print result as JSON")
 
+    task_session_parser = broker_subparsers.add_parser("task-session", help="Register or refresh a workspace-local agent session")
+    task_session_parser.add_argument("--id", required=True, help="Stable live session ID")
+    task_session_parser.add_argument("--agent", required=True, help="Registered agent ID")
+    task_session_parser.add_argument("--workspace", required=True, help="Workspace ID used by its local task ledger")
+    task_session_parser.add_argument("--json", action="store_true", dest="json_output")
+
+    task_inbox_parser = broker_subparsers.add_parser("task-inbox", help="Poll work offered to one active session")
+    task_inbox_parser.add_argument("--session", required=True, help="Registered session ID")
+    task_inbox_parser.add_argument("--watch", action="store_true", help="Keep polling until interrupted")
+    task_inbox_parser.add_argument("--interval", type=float, default=10.0, help="Polling interval in seconds (minimum 5)")
+    task_inbox_parser.add_argument("--json", action="store_true", dest="json_output")
+
+    task_handoff_parser = broker_subparsers.add_parser("task-handoff", help="Offer one held task to another live session")
+    task_handoff_parser.add_argument("--id", required=True, help="Task ID")
+    task_handoff_parser.add_argument("--from-agent", required=True)
+    task_handoff_parser.add_argument("--from-session", required=True)
+    task_handoff_parser.add_argument("--to-agent", required=True)
+    task_handoff_parser.add_argument("--to-session", required=True)
+    task_handoff_parser.add_argument("--summary", required=True, help="Bounded handoff checkpoint")
+    task_handoff_parser.add_argument("--json", action="store_true", dest="json_output")
+
     task_assign_parser = broker_subparsers.add_parser(
         "task-assign",
         help="Assign a task to an agent only if capability gates pass",
@@ -2072,12 +2134,14 @@ def _main():
     task_claim_parser = broker_subparsers.add_parser("task-claim", help="Atomically lease a ready task to an eligible agent")
     task_claim_parser.add_argument("--id", required=True, help="Task ID")
     task_claim_parser.add_argument("--agent", required=True, help="Registered agent ID")
+    task_claim_parser.add_argument("--session", help="Claim as this registered live session")
     task_claim_parser.add_argument("--lease-seconds", type=int, default=300, help="Lease duration from 30 to 3600 seconds")
     task_claim_parser.add_argument("--json", action="store_true", dest="json_output", help="Print result as JSON")
 
     task_heartbeat_parser = broker_subparsers.add_parser("task-heartbeat", help="Renew an active task lease")
     task_heartbeat_parser.add_argument("--id", required=True, help="Task ID")
     task_heartbeat_parser.add_argument("--agent", required=True, help="Claiming agent ID")
+    task_heartbeat_parser.add_argument("--session", help="Session that owns the claim")
     task_heartbeat_parser.add_argument("--lease-seconds", type=int, default=300, help="Lease duration from 30 to 3600 seconds")
     task_heartbeat_parser.add_argument("--summary", default="", help="Safe progress summary")
     task_heartbeat_parser.add_argument("--json", action="store_true", dest="json_output", help="Print result as JSON")
@@ -2085,12 +2149,14 @@ def _main():
     task_complete_parser = broker_subparsers.add_parser("task-complete", help="Record completion of a claimed task")
     task_complete_parser.add_argument("--id", required=True, help="Task ID")
     task_complete_parser.add_argument("--agent", required=True, help="Claiming agent ID")
+    task_complete_parser.add_argument("--session", help="Session that owns the claim")
     task_complete_parser.add_argument("--summary", required=True, help="Safe result summary")
     task_complete_parser.add_argument("--json", action="store_true", dest="json_output", help="Print result as JSON")
 
     task_fail_parser = broker_subparsers.add_parser("task-fail", help="Record a claimed task failure")
     task_fail_parser.add_argument("--id", required=True, help="Task ID")
     task_fail_parser.add_argument("--agent", required=True, help="Claiming agent ID")
+    task_fail_parser.add_argument("--session", help="Session that owns the claim")
     task_fail_parser.add_argument("--summary", required=True, help="Safe failure summary")
     task_fail_parser.add_argument("--retryable", action="store_true", help="Return the task to Queued without auto-dispatch")
     task_fail_parser.add_argument("--json", action="store_true", dest="json_output", help="Print result as JSON")
@@ -2521,11 +2587,16 @@ def _main():
             payload = json.loads(raw_payload) if raw_payload.strip() else {}
         except (OSError, ValueError):
             payload = {}
+        workspace = _resolve_workspace_dir(args.dir)
         result = handle_antigravity_hook(
-            _resolve_workspace_dir(args.dir),
+            workspace,
             args.event,
             payload,
         )
+        if args.event == "pre-invocation" and isinstance(payload, dict) and result.get("decision") != "deny":
+            notice = _agent_task_hook_notice(workspace, "antigravity", payload)
+            if notice:
+                result.setdefault("injectSteps", []).append({"ephemeralMessage": notice})
         print(json.dumps(result, sort_keys=True))
     elif args.command == "agent-hook":
         from entigram.agent_hooks import handle_agent_hook
@@ -2535,12 +2606,23 @@ def _main():
             payload = json.loads(raw_payload) if raw_payload.strip() else {}
         except (OSError, ValueError):
             payload = {}
+        workspace = _resolve_workspace_dir(args.dir)
         result = handle_agent_hook(
-            _resolve_workspace_dir(args.dir),
+            workspace,
             runtime=args.runtime,
             event=args.event,
             payload=payload,
         )
+        if args.event in {"session-start", "post-tool-use"} and isinstance(payload, dict) and result.get("decision") != "deny":
+            notice = _agent_task_hook_notice(workspace, args.runtime, payload)
+            if notice:
+                hook_output = result.setdefault("hookSpecificOutput", {
+                    "hookEventName": "SessionStart" if args.event == "session-start" else "PostToolUse",
+                    "additionalContext": "",
+                })
+                hook_output["additionalContext"] = (
+                    str(hook_output.get("additionalContext") or "") + "\n\n" + notice
+                ).strip()
         print(json.dumps(result, sort_keys=True))
     elif args.command == "agent-hooks":
         from entigram.agent_hooks import agent_hook_status, install_agent_hooks
@@ -4884,6 +4966,50 @@ RELATIONSHIPS:
                 print(f"❌ Task request rejected: {result.get('reason')}")
             if not result.get("ok"):
                 sys.exit(1)
+        elif args.broker_command == "task-session":
+            result = broker.ledger.register_agent_session(args.id, args.agent, args.workspace)
+            if getattr(args, "json_output", False):
+                print(json.dumps(result, indent=2, sort_keys=True))
+            else:
+                print(f"Session {args.id} {'registered' if result['ok'] else 'rejected: ' + result['reason']}")
+            if not result["ok"]:
+                sys.exit(1)
+        elif args.broker_command == "task-inbox":
+            interval = max(5.0, float(args.interval))
+            previous = None
+            while True:
+                session = broker.ledger.get_agent_session(args.session)
+                if not session:
+                    result = {"ok": False, "reason": "SESSION_NOT_REGISTERED"}
+                else:
+                    broker.ledger.register_agent_session(args.session, session["agent_id"], session["workspace_id"])
+                    result = broker.ledger.get_agent_inbox(args.session)
+                if not result["ok"]:
+                    print(json.dumps(result, sort_keys=True) if args.json_output else result["reason"])
+                    sys.exit(1)
+                fingerprint = tuple((task["task_id"], task["updated_at"]) for task in result["tasks"])
+                if fingerprint != previous or not args.watch:
+                    if args.json_output:
+                        print(json.dumps(result, sort_keys=True), flush=True)
+                    elif result["tasks"]:
+                        for task in result["tasks"]:
+                            print(f"{task['task_id']} | {task['title']} | offered to {args.session}", flush=True)
+                    elif not args.watch:
+                        print("No work offered to this session.")
+                previous = fingerprint
+                if not args.watch:
+                    break
+                time.sleep(interval)
+        elif args.broker_command == "task-handoff":
+            result = broker.ledger.handoff_agent_task(
+                args.id, args.from_agent, args.from_session, args.to_agent, args.to_session, args.summary
+            )
+            if getattr(args, "json_output", False):
+                print(json.dumps(result, indent=2, sort_keys=True))
+            else:
+                print(f"Task {args.id} {'offered to ' + args.to_session if result['ok'] else 'handoff rejected: ' + result['reason']}")
+            if not result["ok"]:
+                sys.exit(1)
         elif args.broker_command == "task-assign":
             result = broker.ledger.assign_agent_task(args.id, args.agent)
             if getattr(args, "json_output", False):
@@ -4897,7 +5023,7 @@ RELATIONSHIPS:
             if not result.get("ok"):
                 sys.exit(1)
         elif args.broker_command == "task-claim":
-            result = broker.ledger.claim_agent_task(args.id, args.agent, lease_seconds=args.lease_seconds)
+            result = broker.ledger.claim_agent_task(args.id, args.agent, lease_seconds=args.lease_seconds, session_id=args.session)
             if getattr(args, "json_output", False):
                 print(json.dumps(result, indent=2, sort_keys=True))
             elif result.get("ok"):
@@ -4907,7 +5033,7 @@ RELATIONSHIPS:
             if not result.get("ok"):
                 sys.exit(1)
         elif args.broker_command == "task-heartbeat":
-            result = broker.ledger.heartbeat_agent_task(args.id, args.agent, lease_seconds=args.lease_seconds, summary=args.summary)
+            result = broker.ledger.heartbeat_agent_task(args.id, args.agent, lease_seconds=args.lease_seconds, summary=args.summary, session_id=args.session)
             if getattr(args, "json_output", False):
                 print(json.dumps(result, indent=2, sort_keys=True))
             elif result.get("ok"):
@@ -4917,7 +5043,7 @@ RELATIONSHIPS:
             if not result.get("ok"):
                 sys.exit(1)
         elif args.broker_command == "task-complete":
-            result = broker.ledger.complete_agent_task(args.id, args.agent, args.summary)
+            result = broker.ledger.complete_agent_task(args.id, args.agent, args.summary, session_id=args.session)
             if getattr(args, "json_output", False):
                 print(json.dumps(result, indent=2, sort_keys=True))
             elif result.get("ok"):
@@ -4927,7 +5053,7 @@ RELATIONSHIPS:
             if not result.get("ok"):
                 sys.exit(1)
         elif args.broker_command == "task-fail":
-            result = broker.ledger.fail_agent_task(args.id, args.agent, args.summary, retryable=args.retryable)
+            result = broker.ledger.fail_agent_task(args.id, args.agent, args.summary, retryable=args.retryable, session_id=args.session)
             if getattr(args, "json_output", False):
                 print(json.dumps(result, indent=2, sort_keys=True))
             elif result.get("ok"):
