@@ -439,6 +439,44 @@ class TestBrokerDeliverySnapshots(unittest.TestCase):
                 ledger.close()
             shutil.rmtree(test_dir)
 
+    def test_governed_artifact_fallback_does_not_descend_into_ignored_directories(self):
+        import os
+        import shutil
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from entigram.injector import inject_entigram_manifest
+        from entigram.workspace_contract import governed_artifact_paths
+
+        test_dir = tempfile.mkdtemp()
+        try:
+            inject_entigram_manifest(test_dir, ["Entigram Schemas"], "Codex")
+            included = Path(test_dir, "src", "app.py")
+            included.parent.mkdir()
+            included.write_text("included = True\n")
+            ignored_directory = Path(test_dir, "node_modules", "large-package")
+            ignored_source = ignored_directory / "index.js"
+            ignored_directory.mkdir(parents=True)
+            ignored_source.write_text("ignored = True\n")
+
+            visited = []
+            real_walk = os.walk
+
+            def recording_walk(*args, **kwargs):
+                for directory, subdirectories, filenames in real_walk(*args, **kwargs):
+                    visited.append(Path(directory).resolve())
+                    yield directory, subdirectories, filenames
+
+            with patch("entigram.workspace_contract.os.walk", recording_walk):
+                paths = set(governed_artifact_paths(test_dir))
+
+            self.assertIn(included.resolve(), paths)
+            self.assertNotIn(ignored_source.resolve(), paths)
+            self.assertNotIn(ignored_directory.resolve(), visited)
+        finally:
+            shutil.rmtree(test_dir)
+
     def test_governed_artifacts_use_git_inventory_and_ignore_rules(self):
         import shutil
         import subprocess

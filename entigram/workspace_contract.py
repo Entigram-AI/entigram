@@ -325,6 +325,10 @@ def _globbed_artifact_paths(
         subdirectories[:] = [
             name for name in subdirectories
             if (directory_path / name).resolve() not in child_roots
+            and not _is_ignored_artifact_path(
+                (directory_path / name).relative_to(root),
+                etg_patterns,
+            )
         ]
         for filename in filenames:
             path = directory_path / filename
