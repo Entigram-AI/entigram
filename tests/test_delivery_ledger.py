@@ -299,6 +299,8 @@ class TestBrokerDeliverySnapshots(unittest.TestCase):
         try:
             inject_entigram_manifest(test_dir, ["Entigram Schemas"], "Codex")
             Path(test_dir, "schema.lds").write_text(self.SCHEMA)
+            root_source = Path(test_dir, "portfolio.py")
+            root_source.write_text("portfolio = True\n")
             ledger = LedgerManager(":memory:")
             broker = EntigramBroker(test_dir, ledger=ledger)
 
@@ -474,6 +476,54 @@ class TestBrokerDeliverySnapshots(unittest.TestCase):
             self.assertIn(included.resolve(), paths)
             self.assertNotIn(ignored_source.resolve(), paths)
             self.assertNotIn(ignored_directory.resolve(), visited)
+        finally:
+            shutil.rmtree(test_dir)
+
+    def test_linked_portfolio_inventory_uses_allowed_workspace_proxies_only(self):
+        import os
+        import shutil
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from entigram.injector import inject_entigram_manifest
+        from entigram.workspace_contract import governed_artifact_paths
+        from entigram.workspace_links import decide
+
+        test_dir = tempfile.mkdtemp()
+        try:
+            inject_entigram_manifest(test_dir, ["Entigram Schemas"], "Codex")
+            Path(test_dir, "schema.lds").write_text(self.SCHEMA)
+            root_source = Path(test_dir, "portfolio.py")
+            root_source.write_text("portfolio = True\n")
+            allowed = Path(test_dir, "allowed")
+            denied = Path(test_dir, "denied")
+            for child in (allowed, denied):
+                inject_entigram_manifest(str(child), ["Entigram Schemas"], "Codex")
+                (child / "src").mkdir()
+                (child / "src" / "private.py").write_text("value = True\n")
+            decide(test_dir, "allowed", "allowed")
+            decide(test_dir, "denied", "denied")
+            unrelated = Path(test_dir, "unrelated", "deep", "folder")
+            unrelated.mkdir(parents=True)
+            (unrelated / "large.py").write_text("ignored = True\n")
+
+            visited = []
+            real_walk = os.walk
+
+            def recording_walk(*args, **kwargs):
+                for directory, subdirectories, filenames in real_walk(*args, **kwargs):
+                    visited.append(Path(directory).resolve())
+                    yield directory, subdirectories, filenames
+
+            with patch("entigram.workspace_contract.os.walk", recording_walk):
+                paths = set(governed_artifact_paths(test_dir))
+
+            self.assertIn(root_source.resolve(), paths)
+            self.assertIn((allowed / ".etg" / "entigram.yaml").resolve(), paths)
+            self.assertNotIn((denied / ".etg" / "entigram.yaml").resolve(), paths)
+            self.assertNotIn((allowed / "src" / "private.py").resolve(), paths)
+            self.assertNotIn(unrelated.resolve(), visited)
         finally:
             shutil.rmtree(test_dir)
 
