@@ -16,6 +16,12 @@
 * harden SQLite ledger concurrency with WAL mode and busy timeouts
 * close warning-producing registry, broker, router, and hydration resources
 
+## [2.24.0](https://github.com/Entigram-AI/entigram/compare/v2.23.3...v2.24.0) (2026-10-01)
+
+### Features
+
+* add workspace-local agent session handoff ([#115](https://github.com/Entigram-AI/entigram/issues/115)) ([127a883](https://github.com/Entigram-AI/entigram/commit/127a8837320122ac0182d7576d5845cb95d1309f))
+
 ## [2.23.3](https://github.com/Entigram-AI/entigram/compare/v2.23.2...v2.23.3) (2026-09-26)
 
 * Maintenance release with dependency and internal updates.
