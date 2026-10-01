@@ -866,12 +866,29 @@ def get_hydration_vector(
             improvement_proposals = manager.get_improvement_proposals(limit=10)
             latest_delivery_snapshot = manager.get_latest_snapshot()
             if latest_delivery_snapshot:
-                from entigram.broker import EntigramBroker
-                current_delivery_status = EntigramBroker(
-                    str(target_path),
-                    ledger=manager,
-                    seed_synonyms=False,
-                ).delivery_status()
+                # A linked non-Git workspace is a portfolio container. Its
+                # children are represented by explicit manifest proxies, and
+                # a full drift scan belongs to broker status/check-in rather
+                # than every interactive hydration turn. In particular, an
+                # older snapshot may still carry a large pre-link artifact
+                # inventory that would otherwise make the first root request
+                # unusable.
+                if (target_path / ".etg" / "workspace-links.yaml").is_file():
+                    current_delivery_status = {
+                        "status": "snapshot_pending_refresh",
+                        "snapshot": latest_delivery_snapshot,
+                        "verification": "deferred_for_linked_portfolio",
+                        "recommendations": [
+                            "Run etg broker status or the portfolio check-in to refresh delivery verification."
+                        ],
+                    }
+                else:
+                    from entigram.broker import EntigramBroker
+                    current_delivery_status = EntigramBroker(
+                        str(target_path),
+                        ledger=manager,
+                        seed_synonyms=False,
+                    ).delivery_status()
         except Exception:
             pass
         finally:

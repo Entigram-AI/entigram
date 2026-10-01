@@ -170,7 +170,16 @@ def governed_artifact_paths(target_dir: WorkspacePath) -> List[Path]:
     git_paths = _git_artifact_paths(root, nested_roots)
     if git_paths is not None:
         return _with_nested_workspace_proxies(root, git_paths, nested_roots)
-    paths = _globbed_artifact_paths(root, DEFAULT_GOVERNED_ARTIFACT_GLOBS, nested_roots)
+    # A non-Git workspace with explicit links is a portfolio container, not a
+    # source-tree boundary. Its linked workspaces are represented by their
+    # manifests below; do not recursively inventory every unrelated folder
+    # stored alongside them.
+    paths = _globbed_artifact_paths(
+        root,
+        DEFAULT_GOVERNED_ARTIFACT_GLOBS,
+        nested_roots,
+        root_only=_has_explicit_workspace_links(root),
+    )
     return _with_nested_workspace_proxies(root, paths, nested_roots)
 
 
@@ -185,14 +194,37 @@ def _nested_workspace_roots(root: Path) -> List[Path]:
         children = list(root.iterdir())
     except OSError:
         return []
+    allowed = _allowed_linked_workspace_paths(root)
     return sorted(
         (child.resolve() for child in children
          if child.is_dir() and (
              (child / ".etg" / "entigram.yaml").is_file()
              or (child / ".git").exists()
-         )),
+         ) and (allowed is None or child.resolve() in allowed)),
         key=lambda child: child.as_posix(),
     )
+
+
+def _has_explicit_workspace_links(root: Path) -> bool:
+    return (root / ".etg" / "workspace-links.yaml").is_file()
+
+
+def _allowed_linked_workspace_paths(root: Path) -> Optional[set[Path]]:
+    """Return explicitly allowed child workspaces when a link document exists.
+
+    A portfolio container must not inventory denied or unlinked siblings while
+    computing its own delivery state. Workspaces without a link document retain
+    the legacy direct-child boundary for compatibility.
+    """
+    if not _has_explicit_workspace_links(root):
+        return None
+    from entigram.workspace_links import allowed_children
+
+    return {
+        (root / item["path"]).resolve()
+        for item in allowed_children(root)
+        if isinstance(item.get("path"), str)
+    }
 
 
 def _with_nested_workspace_proxies(
@@ -312,6 +344,8 @@ def _globbed_artifact_paths(
     root: Path,
     patterns: Tuple[str, ...],
     nested_roots: Optional[List[Path]] = None,
+    *,
+    root_only: bool = False,
 ) -> List[Path]:
     etg_patterns = load_etgignore_patterns(root)
     child_roots = set(nested_roots or _nested_workspace_roots(root))
@@ -322,14 +356,17 @@ def _globbed_artifact_paths(
             raise ValueError(f"governed artifact glob must stay inside workspace: {pattern}")
     for directory, subdirectories, filenames in os.walk(root):
         directory_path = Path(directory)
-        subdirectories[:] = [
-            name for name in subdirectories
-            if (directory_path / name).resolve() not in child_roots
-            and not _is_ignored_artifact_path(
-                (directory_path / name).relative_to(root),
-                etg_patterns,
-            )
-        ]
+        if root_only and directory_path == root:
+            subdirectories[:] = []
+        else:
+            subdirectories[:] = [
+                name for name in subdirectories
+                if (directory_path / name).resolve() not in child_roots
+                and not _is_ignored_artifact_path(
+                    (directory_path / name).relative_to(root),
+                    etg_patterns,
+                )
+            ]
         for filename in filenames:
             path = directory_path / filename
             if path.is_symlink() or not path.is_file():
