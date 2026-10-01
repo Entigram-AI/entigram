@@ -141,5 +141,25 @@ class TestHydration(unittest.TestCase):
         )
         self.assertEqual(summary["risk_advisories"][0]["code"], "ETG-RISK-MISSING-CAPABILITY")
 
+    def test_linked_portfolio_hydration_defers_full_delivery_verification(self):
+        from entigram.broker import EntigramBroker
+        from entigram.cli_runner.etg_cli import get_hydration_vector
+        from entigram.workspace_links import decide
+
+        child = Path(self.test_dir) / "linked-child"
+        inject_entigram_manifest(str(child), ["Banking"], "Codex")
+        decide(self.test_dir, "linked-child", "allowed")
+        broker = EntigramBroker(self.test_dir)
+        broker.commission_and_record(proofs=[], agent_id="Codex")
+
+        with patch.object(EntigramBroker, "delivery_status", side_effect=AssertionError("should not scan")):
+            output = json.loads(
+                get_hydration_vector(Path(self.test_dir), full=True).split("\n", 1)[1].rsplit("\n", 1)[0]
+            )
+
+        status = output["ENTIGRAM_BOOT_VECTOR"]["current_delivery_status"]
+        self.assertEqual(status["status"], "snapshot_pending_refresh")
+        self.assertEqual(status["verification"], "deferred_for_linked_portfolio")
+
 if __name__ == "__main__":
     unittest.main()
