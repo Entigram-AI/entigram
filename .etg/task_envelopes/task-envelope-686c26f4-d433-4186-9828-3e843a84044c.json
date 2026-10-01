@@ -1,0 +1,37 @@
+{
+  "accepted_at": "2026-09-27T19:01:00.552608+00:00",
+  "accepted_by": "user:dnyabuti",
+  "affected_paths": [
+    "schema.lds",
+    "entigram/sqlite_ledger/manager.py",
+    "entigram/cli_runner/etg_cli.py",
+    "entigram/agent_dispatch.py",
+    "tests/test_agent_orchestration.py"
+  ],
+  "agent_id": "codex",
+  "created_at": "2026-09-27T19:00:09.056318+00:00",
+  "envelope_id": "task-envelope-686c26f4-d433-4186-9828-3e843a84044c",
+  "intent": "Add workspace-local agent handoff and polling so independently started Codex and Antigravity sessions can share a governed task ledger, transfer active responsibility, and escalate to the operator without broadening authority.",
+  "invariants": [
+    "Workspace ledger is authoritative; Console observes and routes but cannot grant authority",
+    "Atomic claim or transfer prevents two active owners and preserves lease recovery",
+    "Delegation cannot increase requester authority; consequential action still uses approval and action contracts",
+    "Polling never reads sibling workspace ledgers or unregistered agents"
+  ],
+  "proposed_entities_and_relationships": [
+    "Entigram_Agent_Task: one workspace-scoped unit of work with one active owner",
+    "Entigram_Agent_Task_Event: immutable handoff, claim, progress, and escalation history",
+    "Entigram_Agent: registered participant with session-specific presence"
+  ],
+  "status": "accepted",
+  "uncertainty_unknowns": [
+    "Whether active sessions can be woken automatically by their host, versus collecting work on lifecycle hooks or next poll",
+    "Whether session presence requires a new schema entity or can be represented by existing task events and leases"
+  ],
+  "validation_commands": [
+    "pytest tests/test_agent_orchestration.py",
+    "etg broker guard",
+    "etg broker handoff",
+    "etg broker status"
+  ]
+}

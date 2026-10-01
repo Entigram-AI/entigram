@@ -7,7 +7,7 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
-from entigram.cli_runner.etg_cli import main
+from entigram.cli_runner.etg_cli import main, _agent_task_hook_notice
 from entigram.agent_dispatch import AgentTaskDispatcher
 from entigram.reviewer_personas import create_reviewer_persona
 from entigram.sqlite_ledger.manager import LedgerManager
@@ -152,6 +152,97 @@ class TestAgentOrchestrationLedger(unittest.TestCase):
         self.assertTrue(completed["ok"])
         self.assertEqual(completed["task"]["status"], "Completed")
         self.assertEqual(completed["task"]["result_summary"], "Focused tests passed.")
+
+    def test_live_session_handoff_fences_previous_owner_and_preserves_request(self):
+        for agent_id in ("codex", "antigravity"):
+            self.assertTrue(self.ledger.record_agent(
+                agent_id, reliability_score=0.95,
+                capability_scores={"review": 0.95}, allowed_task_classes=["review"],
+            ))
+        self.assertTrue(self.ledger.register_agent_session("codex-thread", "codex", "project")["ok"])
+        self.assertTrue(self.ledger.register_agent_session("agy-thread", "antigravity", "project")["ok"])
+        self.assertTrue(self.ledger.request_agent_task(
+            "shared-review", "Review one project", "review", entity_id="entigram",
+            workspace_id="project", requested_by="user:owner", idempotency_key="shared-review-v1",
+            risk_level="read_only",
+        )["ok"])
+        self.assertTrue(self.ledger.claim_agent_task("shared-review", "codex", session_id="codex-thread")["ok"])
+        handed_off = self.ledger.handoff_agent_task(
+            "shared-review", "codex", "codex-thread", "antigravity", "agy-thread",
+            "Implementation complete; independently check the evidence.",
+        )
+        self.assertTrue(handed_off["ok"])
+        self.assertEqual(handed_off["task"]["requested_by"], "user:owner")
+        self.assertEqual(handed_off["task"]["risk_level"], "read_only")
+        self.assertEqual(handed_off["task"]["offered_session_id"], "agy-thread")
+        self.assertEqual([task["task_id"] for task in self.ledger.get_agent_inbox("agy-thread")["tasks"]], ["shared-review"])
+        self.assertEqual(self.ledger.get_agent_inbox("codex-thread")["tasks"], [])
+        self.assertFalse(self.ledger.claim_agent_task("shared-review", "antigravity")["ok"])
+        self.assertFalse(self.ledger.complete_agent_task("shared-review", "codex", "Stale completion.", session_id="codex-thread")["ok"])
+        self.assertTrue(self.ledger.claim_agent_task("shared-review", "antigravity", session_id="agy-thread")["ok"])
+        self.assertFalse(self.ledger.heartbeat_agent_task("shared-review", "antigravity", session_id="codex-thread")["ok"])
+        self.assertFalse(self.ledger.complete_agent_task("shared-review", "antigravity", "Wrong session.")["ok"])
+        self.assertTrue(self.ledger.complete_agent_task("shared-review", "antigravity", "Review passed.", session_id="agy-thread")["ok"])
+        self.assertEqual(
+            [event["event_type"] for event in self.ledger.get_agent_task_events("shared-review")],
+            ["requested", "claimed", "handed_off", "claimed", "completed"],
+        )
+
+    def test_handoff_rejects_other_workspace_and_recovers_stale_offer(self):
+        for agent_id in ("codex", "antigravity"):
+            self.ledger.record_agent(agent_id, reliability_score=0.95, allowed_task_classes=["*"])
+        self.ledger.register_agent_session("source", "codex", "project")
+        self.ledger.register_agent_session("wrong-workspace", "antigravity", "sibling")
+        self.ledger.register_agent_session("target", "antigravity", "project")
+        self.ledger.request_agent_task(
+            "scoped-handoff", "Review", "review", entity_id="entigram", workspace_id="project",
+            requested_by="user:owner", idempotency_key="scoped-handoff-v1", risk_level="read_only",
+        )
+        self.assertTrue(self.ledger.claim_agent_task("scoped-handoff", "codex", session_id="source")["ok"])
+        denied = self.ledger.handoff_agent_task(
+            "scoped-handoff", "codex", "source", "antigravity", "wrong-workspace", "Review next."
+        )
+        self.assertEqual(denied["reason"], "HANDOFF_WORKSPACE_MISMATCH")
+        self.assertTrue(self.ledger.handoff_agent_task(
+            "scoped-handoff", "codex", "source", "antigravity", "target", "Review next."
+        )["ok"])
+        self.assertFalse(self.ledger.handoff_agent_task(
+            "scoped-handoff", "codex", "source", "antigravity", "target", "Duplicate handoff."
+        )["ok"])
+        conn = self.ledger._get_connection()
+        with conn:
+            conn.execute("UPDATE agent_sessions SET last_seen_at = ? WHERE session_id = ?",
+                         ("2000-01-01T00:00:00+00:00", "target"))
+        recovered = self.ledger.recover_expired_agent_tasks()
+        self.assertEqual([task["task_id"] for task in recovered], ["scoped-handoff"])
+        self.assertEqual(self.ledger.get_agent_task("scoped-handoff")["status"], "Queued")
+        self.assertEqual(self.ledger.get_agent_task_events("scoped-handoff")[-1]["event_type"], "offer_expired")
+
+    def test_startup_hook_reports_only_registered_workspace_inbox(self):
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, root)
+        (root / ".etg").mkdir()
+        ledger = LedgerManager(str(root / ".etg" / "state.db"))
+        self.addCleanup(ledger.close)
+        ledger.record_agent("codex", reliability_score=0.95, allowed_task_classes=["*"])
+        ledger.record_agent("antigravity", reliability_score=0.95, allowed_task_classes=["*"])
+        ledger.register_agent_session("source", "antigravity", root.name)
+        ledger.register_agent_session("target", "codex", root.name)
+        ledger.request_agent_task(
+            "hook-offer", "Check evidence", "review", entity_id="entigram",
+            workspace_id=root.name, requested_by="user:owner", idempotency_key="hook-offer-v1",
+            risk_level="read_only",
+        )
+        ledger.claim_agent_task("hook-offer", "antigravity", session_id="source")
+        self.assertTrue(ledger.handoff_agent_task(
+            "hook-offer", "antigravity", "source", "codex", "target", "Review evidence."
+        )["ok"])
+        with patch.dict(os.environ, {"ENTIGRAM_AGENT_SESSION_ID": "target", "ETG_AGENT_ID": "codex"}):
+            notice = _agent_task_hook_notice(root, "codex", {})
+        self.assertIn("1 task handoff", notice)
+        self.assertIn("task-inbox --session target", notice)
+        with patch.dict(os.environ, {"ENTIGRAM_AGENT_SESSION_ID": "unknown", "ETG_AGENT_ID": "codex"}):
+            self.assertEqual(_agent_task_hook_notice(root, "codex", {}), "")
 
     def test_signed_task_approval_requires_trusted_approver_and_rejects_replay(self):
         root = Path(tempfile.mkdtemp())

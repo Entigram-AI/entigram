@@ -61,6 +61,10 @@ class AgentTaskDispatcher:
                     )
                     continue
             assigned = task.get("assigned_agent_id")
+            # A live-session offer is for that session's inbox, not a new
+            # headless CLI run by the host dispatcher.
+            if task.get("offered_session_id"):
+                continue
             if not assigned or (agent_id and assigned != agent_id):
                 continue
             outcomes.append(self._dispatch_task(task, assigned))

@@ -77,6 +77,8 @@ ATTRIBUTES:
   - assigned_agent_id (String) [EXTERNAL: Entigram_Agent.agent_id]
   - assignment_rationale (Text)
   - claimed_by (String) [EXTERNAL: Entigram_Agent.agent_id]
+  - claimed_session_id (String) [EXTERNAL: Entigram_Agent_Session.session_id]
+  - offered_session_id (String) [EXTERNAL: Entigram_Agent_Session.session_id]
   - lease_expires_at (DateTime)
   - last_heartbeat_at (DateTime)
   - attempt_count (Integer)
@@ -86,12 +88,21 @@ ATTRIBUTES:
   - created_at (DateTime)
   - updated_at (DateTime)
 
+ENTITY: Entigram_Agent_Session
+ATTRIBUTES:
+  - .id (UUID)
+  - session_id (String, MUST, UNIQUE)
+  - agent_id (String, MUST) [EXTERNAL: Entigram_Agent.agent_id]
+  - workspace_id (String, MUST) # local task-ledger boundary, not an authority grant
+  - last_seen_at (DateTime, MUST)
+  - created_at (DateTime)
+
 ENTITY: Entigram_Agent_Task_Event
 ATTRIBUTES:
   - .id (UUID)
   - event_id (String, MUST, UNIQUE)
   - task_id (String, MUST) [EXTERNAL: Entigram_Agent_Task.task_id]
-  - event_type (String, MUST) # requested, assigned, claimed, heartbeat, needs_review, completed, failed, cancelled
+  - event_type (String, MUST) # requested, assigned, claimed, heartbeat, handed_off, offer_expired, lease_expired, needs_review, completed, failed, cancelled
   - actor_id (String, MUST)
   - summary (Text)
   - metadata (JSON) # structured operational metadata; never raw prompt or email content
@@ -419,6 +430,8 @@ RELATIONSHIPS:
 - Entigram_Project (1) [MUST] --- [MAY] (MANY) Entigram_Agent_Hibernation
 - Entigram_Project (1) [MUST] --- [MAY] (MANY) Entigram_Usage_Event
 - Entigram_Agent (1) [MAY] --- [MAY] (MANY) Entigram_Agent_Task
+- Entigram_Agent (1) [MUST] --- [MAY] (MANY) Entigram_Agent_Session
+- Entigram_Agent_Session (1) [MAY] --- [MAY] (MANY) Entigram_Agent_Task
 - Entigram_Agent (1) [MAY] --- [MAY] (MANY) Entigram_Agent_Hibernation
 - Entigram_Project (1) [MUST] --- [MAY] (MANY) Entigram_Conflict
 - Entigram_Project (1) [MUST] --- [MAY] (MANY) Entigram_Resolution
