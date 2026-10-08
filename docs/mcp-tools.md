@@ -9,6 +9,24 @@ authoritative schema paths from `.etg/entigram.yaml`, writes governed proposals
 to `.etg/state.db`, and returns machine-readable envelopes that agents can
 branch on.
 
+## Deployment transports
+
+`stdio` is the default and is the recommended developer-workstation transport.
+For a deployed integration, Entigram supports stateless Streamable HTTP at
+`/mcp`:
+
+```bash
+etg serve --transport streamable-http --host 127.0.0.1 --port 8080
+```
+
+Non-loopback binding is deliberately rejected unless the operator passes
+`--allow-remote-streamable-http`. That acknowledgement is not authentication.
+Use it only behind an OAuth/OIDC-protected reverse proxy or agent gateway that
+enforces identity, scopes, TLS, and request logging. The server does not turn a
+public URL into a trusted boundary by itself. See
+[Gemini Agent Registry deployment](gemini-agent-registry.md) for the supported
+enterprise onboarding path.
+
 ## Response Envelope
 
 Successful responses include `ok: true`.

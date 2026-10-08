@@ -192,18 +192,30 @@ def run_mcp_server(
     transport: str = "stdio",
     host: str = "127.0.0.1",
     port: int = 8080,
+    streamable_http_path: str = "/mcp",
+    allow_remote_streamable_http: bool = False,
 ):
-    if transport not in {"stdio", "sse"}:
-        raise ValueError("transport must be 'stdio' or 'sse'")
+    if transport not in {"stdio", "sse", "streamable-http"}:
+        raise ValueError("transport must be 'stdio', 'sse', or 'streamable-http'")
+    if not streamable_http_path.startswith("/"):
+        raise ValueError("streamable_http_path must start with '/'")
+
+    try:
+        loopback = ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        loopback = host.lower() == "localhost"
+
     if transport == "sse":
-        try:
-            loopback = ipaddress.ip_address(host).is_loopback
-        except ValueError:
-            loopback = host.lower() == "localhost"
         if not loopback:
             raise ValueError(
-                "SSE transport is restricted to loopback until authenticated remote transport is available"
+                "SSE transport is restricted to loopback; use streamable-http behind an authenticated gateway instead"
             )
+    elif transport == "streamable-http" and not loopback and not allow_remote_streamable_http:
+        raise ValueError(
+            "Non-loopback streamable-http requires explicit acknowledgement. "
+            "Deploy only behind an authenticated reverse proxy or agent gateway, then pass "
+            "allow_remote_streamable_http=True. See docs/gemini-agent-registry.md."
+        )
 
     try:
         server = create_mcp_server(target_dir)
@@ -213,5 +225,18 @@ def run_mcp_server(
 
     if transport == "sse":
         server.run(transport=transport, host=host, port=port)
+    elif transport == "streamable-http":
+        # Stateless HTTP avoids persisting protocol sessions in a horizontally
+        # scaled deployment. Authentication belongs at the gateway or proxy;
+        # this process deliberately does not accept unauthenticated exposure by
+        # default (see the non-loopback acknowledgement above).
+        server.run(
+            transport=transport,
+            host=host,
+            port=port,
+            streamable_http_path=streamable_http_path,
+            stateless_http=True,
+            json_response=True,
+        )
     else:
         server.run(transport=transport)
