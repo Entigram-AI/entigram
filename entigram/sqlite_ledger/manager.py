@@ -2,6 +2,7 @@ import json
 import sqlite3
 import uuid
 import hashlib
+from urllib.parse import quote
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Dict, Any
@@ -27,8 +28,11 @@ class ActionAttestationReplayError(ValueError):
 
 
 class LedgerManager:
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, *, read_only: bool = False):
         self.db_path = self._normalize_db_path(db_path)
+        self.read_only = read_only
+        if read_only and self.db_path == ":memory:":
+            raise ValueError("An in-memory ledger cannot be opened read-only.")
         # Keep a persistent connection for in-memory databases to avoid losing data
         self._memory_conn = None
         if self.db_path == ":memory:":
@@ -39,7 +43,12 @@ class LedgerManager:
             )
             self._configure_connection(self._memory_conn)
             
-        self._ensure_db()
+        if read_only:
+            if not Path(self.db_path).is_file():
+                raise FileNotFoundError(f"SQLite ledger does not exist: {self.db_path}")
+            self._assert_checkpointed()
+        else:
+            self._ensure_db()
 
     def _normalize_db_path(self, db_path: str) -> str:
         if db_path == ":memory:":
@@ -57,13 +66,30 @@ class LedgerManager:
     def _get_connection(self):
         if self._memory_conn is not None:
             return self._memory_conn
-        conn = sqlite3.connect(self.db_path, timeout=DEFAULT_SQLITE_TIMEOUT_SEC)
+        if self.read_only:
+            self._assert_checkpointed()
+            uri = "file:" + quote(self.db_path, safe="/") + "?mode=ro&immutable=1"
+            conn = sqlite3.connect(uri, uri=True, timeout=DEFAULT_SQLITE_TIMEOUT_SEC)
+        else:
+            conn = sqlite3.connect(self.db_path, timeout=DEFAULT_SQLITE_TIMEOUT_SEC)
         self._configure_connection(conn)
         return conn
+
+    def _assert_checkpointed(self):
+        # immutable=1 never creates a WAL or shared-memory file. Refuse a live
+        # WAL rather than quietly reporting a stale checkpoint.
+        wal = Path(self.db_path + "-wal")
+        if wal.exists() and wal.stat().st_size:
+            raise sqlite3.OperationalError(
+                f"Read-only status cannot inspect a ledger with an active WAL: {self.db_path}"
+            )
 
     def _configure_connection(self, conn):
         conn.execute(f"PRAGMA busy_timeout={DEFAULT_BUSY_TIMEOUT_MS};")
         conn.execute("PRAGMA foreign_keys=ON;")
+        if self.read_only:
+            conn.execute("PRAGMA query_only=ON;")
+            return
         if self.db_path != ":memory:":
             mode = conn.execute("PRAGMA journal_mode=WAL;").fetchone()
             if not mode or str(mode[0]).lower() != "wal":

@@ -16,6 +16,12 @@
 * harden SQLite ledger concurrency with WAL mode and busy timeouts
 * close warning-producing registry, broker, router, and hydration resources
 
+## [2.24.2](https://github.com/Entigram-AI/entigram/compare/v2.24.1...v2.24.2) (2026-10-01)
+
+### Bug Fixes
+
+* add read-only broker status for scheduled observers ([#117](https://github.com/Entigram-AI/entigram/issues/117)) ([6e0fb96](https://github.com/Entigram-AI/entigram/commit/6e0fb96cddde8132ed2f3d722838e0f7d394a382))
+
 ## [2.24.1](https://github.com/Entigram-AI/entigram/compare/v2.24.0...v2.24.1) (2026-10-01)
 
 ### Bug Fixes

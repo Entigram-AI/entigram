@@ -2381,6 +2381,11 @@ def _main():
         help="Role to apply to --artifact entries",
     )
     status_parser.add_argument("--json", action="store_true", dest="json_output", help="Print result as JSON")
+    status_parser.add_argument(
+        "--read-only",
+        action="store_true",
+        help="Inspect an existing ledger without creating SQLite sidecars or updating the workspace baseline",
+    )
 
     audit_parser = broker_subparsers.add_parser(
         "export-audit",
@@ -4764,7 +4769,14 @@ RELATIONSHIPS:
     elif args.command == "broker":
         from entigram.broker import EntigramBroker
         workspace = _resolve_workspace_dir(args.dir)
-        broker = EntigramBroker(args.dir)
+        read_only_status = args.broker_command in ("status", "diff") and getattr(args, "read_only", False)
+        try:
+            broker = EntigramBroker(args.dir, read_only=read_only_status)
+        except (OSError, sqlite3.Error) as exc:
+            if not read_only_status:
+                raise
+            print(f"Read-only broker status unavailable: {exc}", file=sys.stderr)
+            sys.exit(1)
         
         if args.broker_command == "decide":
             if getattr(args, "json_output", False):
@@ -5298,11 +5310,17 @@ RELATIONSHIPS:
                 def progress(phase):
                     print(f"Broker status: {phase}...", flush=True)
 
-            result = broker.delivery_status(
-                artifact_paths=getattr(args, "artifact", []),
-                artifact_role=getattr(args, "artifact_role", "delivery_artifact"),
-                progress=progress,
-            )
+            try:
+                result = broker.delivery_status(
+                    artifact_paths=getattr(args, "artifact", []),
+                    artifact_role=getattr(args, "artifact_role", "delivery_artifact"),
+                    progress=progress,
+                )
+            except (OSError, sqlite3.Error) as exc:
+                if not read_only_status:
+                    raise
+                print(f"Read-only broker status unavailable: {exc}", file=sys.stderr)
+                sys.exit(1)
             if args.json_output:
                 print(json.dumps(result, indent=2))
             else:
@@ -5876,6 +5894,12 @@ def _cli_workspace(argv) -> Path:
 
 
 def _track_cli_operation(operation: str, argv) -> bool:
+    # A read-only status must not write even the CLI usage receipt. This path
+    # is used by scheduled checks inside read-only agent sandboxes.
+    if operation == "broker" and "--read-only" in argv and any(
+        value in {"status", "diff"} for value in argv[2:]
+    ):
+        return False
     if not operation or operation in {
         "usage",
         "antigravity-hook",
