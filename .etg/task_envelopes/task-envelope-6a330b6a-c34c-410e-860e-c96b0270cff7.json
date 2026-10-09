@@ -1,0 +1,35 @@
+{
+  "accepted_at": "2026-10-08T17:50:15.065536+00:00",
+  "accepted_by": "operator",
+  "affected_paths": [
+    "server.json",
+    "docs/gemini-agent-registry.md",
+    "docs/mcp-tools.md",
+    "entigram/mcp_service.py",
+    "tests/test_mcp_server.py"
+  ],
+  "agent_id": "codex",
+  "created_at": "2026-10-08T17:47:21.777814+00:00",
+  "envelope_id": "task-envelope-6a330b6a-c34c-410e-860e-c96b0270cff7",
+  "intent": "Add a portable remote-MCP deployment configuration and operator workflow for registering Entigram with Gemini Agent Registry, while documenting shared Gemini, ChatGPT/Codex, and Claude onboarding.",
+  "invariants": [
+    "Entigram remains schema-first and local-first by default",
+    "Remote deployment requires explicit operator-owned identity and authorization",
+    "No schema or ledger bypass"
+  ],
+  "proposed_entities_and_relationships": [
+    "Entigram_Project",
+    "Entigram_Agent",
+    "Entigram_Delivery_Evidence"
+  ],
+  "status": "accepted",
+  "uncertainty_unknowns": [
+    "Google Cloud credentials, project, region, OAuth provider, and public deployment endpoint must be supplied by the operator."
+  ],
+  "validation_commands": [
+    "python -m unittest tests.test_mcp_server",
+    "python -m unittest tests.test_agent_policy",
+    "etg broker handoff",
+    "etg broker status"
+  ]
+}
