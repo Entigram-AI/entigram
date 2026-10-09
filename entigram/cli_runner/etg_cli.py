@@ -1528,12 +1528,22 @@ def _main():
     serve_parser.add_argument("--dir", default=".", help="Target directory")
     serve_parser.add_argument(
         "--transport",
-        choices=["stdio", "sse", "graphql"],
+        choices=["stdio", "sse", "streamable-http", "graphql"],
         default="stdio",
-        help="Server transport: stdio MCP (default), sse MCP, or legacy graphql",
+        help="Server transport: stdio MCP (default), streamable-http MCP, loopback SSE MCP, or legacy graphql",
     )
-    serve_parser.add_argument("--host", default="127.0.0.1", help="Host for SSE transport (default: 127.0.0.1)")
-    serve_parser.add_argument("--port", type=int, default=8080, help="Port for SSE or legacy GraphQL (default: 8080)")
+    serve_parser.add_argument("--host", default="127.0.0.1", help="Host for HTTP transports (default: 127.0.0.1)")
+    serve_parser.add_argument("--port", type=int, default=8080, help="Port for HTTP transports or legacy GraphQL (default: 8080)")
+    serve_parser.add_argument(
+        "--mcp-path",
+        default="/mcp",
+        help="Path for streamable-http MCP requests (default: /mcp)",
+    )
+    serve_parser.add_argument(
+        "--allow-remote-streamable-http",
+        action="store_true",
+        help="Acknowledge non-loopback streamable-http deployment behind an authenticated gateway or reverse proxy",
+    )
     serve_parser.add_argument(
         "--auth-token-env",
         default="ENTIGRAM_SERVER_TOKEN",
@@ -3782,6 +3792,8 @@ def _main():
                 transport=args.transport,
                 host=args.host,
                 port=args.port,
+                streamable_http_path=args.mcp_path,
+                allow_remote_streamable_http=args.allow_remote_streamable_http,
             )
 
     elif args.command == "panel-bridge":
