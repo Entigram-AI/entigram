@@ -88,6 +88,30 @@ ATTRIBUTES:
   - created_at (DateTime)
   - updated_at (DateTime)
 
+/* A workspace obligation is not an agent execution lease. The task list is a
+ * projection of these records across registered workspaces. */
+ENTITY: Entigram_Work_Item
+ATTRIBUTES:
+  - .id (UUID)
+  - work_item_id (String, MUST, UNIQUE)
+  - schema_version (Integer) # versioned Console projection; v1 owner queue upgrades to v2
+  - workspace_id (String, MUST)
+  - type (String, MUST) # task, decision, follow_up, gate
+  - status (String, MUST) # open, waiting, needs_owner, done, cancelled
+  - title (String, MUST)
+  - next_action (Text)
+  - owner (String)
+  - due_on (DateTime)
+  - review_on (DateTime)
+  - source (String) # workspace-local evidence pointer, never an authority grant
+  - source_seen_mtime_ns (Integer) # local change-detection hint, never completion proof
+  - evidence (Text)
+  - linked_agent_task_id (String) [EXTERNAL: Entigram_Agent_Task.task_id]
+  - history (JSON) # provenance and owner-approved transitions
+  - proposals (JSON) # advisory agent proposals, not applied changes
+  - created_at (DateTime)
+  - updated_at (DateTime)
+
 ENTITY: Entigram_Agent_Session
 ATTRIBUTES:
   - .id (UUID)
@@ -427,6 +451,8 @@ RELATIONSHIPS:
 - Entigram_Package (1) [MUST] --- [MAY] (MANY) Entigram_Agent
 - Entigram_Project (1) [MUST] --- [MAY] (MANY) Entigram_Agent
 - Entigram_Project (1) [MUST] --- [MAY] (MANY) Entigram_Agent_Task
+- Entigram_Project (1) [MUST] --- [MAY] (MANY) Entigram_Work_Item
+- Entigram_Work_Item (1) [MAY] --- [MAY] (MANY) Entigram_Agent_Task
 - Entigram_Project (1) [MUST] --- [MAY] (MANY) Entigram_Agent_Hibernation
 - Entigram_Project (1) [MUST] --- [MAY] (MANY) Entigram_Usage_Event
 - Entigram_Agent (1) [MAY] --- [MAY] (MANY) Entigram_Agent_Task
