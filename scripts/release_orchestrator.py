@@ -57,7 +57,9 @@ def run_git(args: list[str], cwd: Path) -> str:
         text=True,
         check=True,
     )
-    return result.stdout.strip()
+    # Git log uses ASCII record/field separators. str.strip() also removes
+    # those controls, which erases the empty-body field of the final commit.
+    return result.stdout.rstrip("\r\n")
 
 
 def get_latest_tag(repo_dir: Path) -> Optional[str]:
