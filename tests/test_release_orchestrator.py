@@ -1,6 +1,7 @@
 import datetime
 import json
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 
@@ -9,6 +10,7 @@ from scripts.release_orchestrator import (
     bump_version,
     compile_release_notes,
     determine_bump_type,
+    get_commits_since_tag,
     parse_commit_record,
     update_changelog,
     update_release_please_manifest,
@@ -16,6 +18,25 @@ from scripts.release_orchestrator import (
 
 
 class TestReleaseOrchestrator(unittest.TestCase):
+    def test_empty_body_feature_commit_is_detected_since_tag(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            repo = Path(tmpdir)
+            def git(*args):
+                subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
+
+            git("init", "-q", "-b", "main")
+            git("config", "user.name", "Test")
+            git("config", "user.email", "test@example.com")
+            git("commit", "--allow-empty", "-qm", "chore: prior release")
+            git("tag", "v2.25.0")
+            git("commit", "--allow-empty", "-qm", "feat: model standard Entigram work items (#119)")
+
+            commits = get_commits_since_tag(repo, "v2.25.0")
+            self.assertEqual(len(commits), 1)
+            self.assertEqual(commits[0].body, "")
+            self.assertEqual(commits[0].pr_number, "119")
+            self.assertEqual(determine_bump_type(commits), ("minor", True))
+
     def test_parse_conventional_feat_with_pr(self):
         record = "abc1234567890\x1fAlice\x1ffeat(auth): add OAuth2 provider (#120)\x1fDetails about provider"
         info = parse_commit_record(record)

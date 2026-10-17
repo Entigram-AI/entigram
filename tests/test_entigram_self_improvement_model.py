@@ -29,6 +29,7 @@ class TestEntigramSelfImprovementModel(unittest.TestCase):
             "Entigram_Delivery_Drift",
             "Entigram_Agent_Task",
             "Entigram_Work_Item",
+            "Entigram_Work_Item_Candidate",
             "Entigram_Agent_Hibernation",
             "Entigram_Usage_Event",
         }
@@ -49,6 +50,10 @@ class TestEntigramSelfImprovementModel(unittest.TestCase):
                          "next_action", "owner", "due_on", "review_on", "source",
                          "source_seen_mtime_ns", "evidence", "linked_agent_task_id", "history",
                          "proposals"}.issubset(work_item_attrs))
+
+        candidate_attrs = {attr["name"] for attr in entities["Entigram_Work_Item_Candidate"].attributes}
+        self.assertTrue({"candidate_id", "workspace_id", "proposed_by", "agent_task_id", "type",
+                         "title", "reason", "status", "accepted_work_item_id"}.issubset(candidate_attrs))
 
         hibernation_attrs = {attr["name"] for attr in entities["Entigram_Agent_Hibernation"].attributes}
         self.assertTrue({"hibernate_id", "remaining_tokens", "resume_after", "next_action"}.issubset(hibernation_attrs))
@@ -78,6 +83,8 @@ class TestEntigramSelfImprovementModel(unittest.TestCase):
         self.assertIn(("Entigram_Project", "Entigram_Agent_Task"), relationship_pairs)
         self.assertIn(("Entigram_Project", "Entigram_Work_Item"), relationship_pairs)
         self.assertIn(("Entigram_Work_Item", "Entigram_Agent_Task"), relationship_pairs)
+        self.assertIn(("Entigram_Project", "Entigram_Work_Item_Candidate"), relationship_pairs)
+        self.assertIn(("Entigram_Work_Item_Candidate", "Entigram_Work_Item"), relationship_pairs)
         self.assertIn(("Entigram_Project", "Entigram_Agent_Hibernation"), relationship_pairs)
         self.assertIn(("Entigram_Project", "Entigram_Usage_Event"), relationship_pairs)
         self.assertIn(("Entigram_Agent", "Entigram_Agent_Task"), relationship_pairs)
@@ -98,6 +105,7 @@ class TestEntigramSelfImprovementModel(unittest.TestCase):
         self.assertIn("mk:Entigram_Delivery_Drift a owl:Class", ttl)
         self.assertIn("mk:Entigram_Agent_Task a owl:Class", ttl)
         self.assertIn("mk:Entigram_Work_Item a owl:Class", ttl)
+        self.assertIn("mk:Entigram_Work_Item_Candidate a owl:Class", ttl)
         self.assertIn("mk:Entigram_Agent_Hibernation a owl:Class", ttl)
         self.assertIn("mk:Entigram_Usage_Event a owl:Class", ttl)
         self.assertIn("mk:Entigram_Agent_proof_capabilities a owl:DatatypeProperty", ttl)
