@@ -112,6 +112,28 @@ ATTRIBUTES:
   - created_at (DateTime)
   - updated_at (DateTime)
 
+/* A nomination exists before there is a Work Item. Only an owner may accept
+ * it into the queue; agent observations cannot directly create obligations. */
+ENTITY: Entigram_Work_Item_Candidate
+ATTRIBUTES:
+  - .id (UUID)
+  - candidate_id (String, MUST, UNIQUE)
+  - workspace_id (String, MUST)
+  - proposed_by (String, MUST)
+  - agent_task_id (String) [EXTERNAL: Entigram_Agent_Task.task_id]
+  - type (String, MUST) # task, decision, follow_up, gate
+  - title (String, MUST)
+  - next_action (Text)
+  - owner (String)
+  - due_on (DateTime)
+  - review_on (DateTime)
+  - source (String)
+  - reason (Text, MUST)
+  - status (String, MUST) # pending, accepted, rejected
+  - accepted_work_item_id (String) [EXTERNAL: Entigram_Work_Item.work_item_id]
+  - created_at (DateTime)
+  - reviewed_at (DateTime)
+
 ENTITY: Entigram_Agent_Session
 ATTRIBUTES:
   - .id (UUID)
@@ -452,6 +474,8 @@ RELATIONSHIPS:
 - Entigram_Project (1) [MUST] --- [MAY] (MANY) Entigram_Agent
 - Entigram_Project (1) [MUST] --- [MAY] (MANY) Entigram_Agent_Task
 - Entigram_Project (1) [MUST] --- [MAY] (MANY) Entigram_Work_Item
+- Entigram_Project (1) [MUST] --- [MAY] (MANY) Entigram_Work_Item_Candidate
+- Entigram_Work_Item_Candidate (1) [MAY] --- [MAY] (1) Entigram_Work_Item
 - Entigram_Work_Item (1) [MAY] --- [MAY] (MANY) Entigram_Agent_Task
 - Entigram_Project (1) [MUST] --- [MAY] (MANY) Entigram_Agent_Hibernation
 - Entigram_Project (1) [MUST] --- [MAY] (MANY) Entigram_Usage_Event

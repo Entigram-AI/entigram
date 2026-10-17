@@ -5,11 +5,11 @@ agent_governance:
 cli_engine: Antigravity
 integrity_fingerprint:
   ontology_checksum: da8d24642b423541d38cd817337ba50db5edb9d3726115152d5c606e0a4e0e8e
-  schema_checksum: dd3e0dd0ee1b878abed53996a30d561f128440e67d27512525689836cd80436f
+  schema_checksum: 56a3a31856e0cdf5d2d66c7148062d9464d26e4963d3ca0e5a7d765f5cce78eb
   schema_path_checksums:
-    schema.lds: dd3e0dd0ee1b878abed53996a30d561f128440e67d27512525689836cd80436f
+    schema.lds: 56a3a31856e0cdf5d2d66c7148062d9464d26e4963d3ca0e5a7d765f5cce78eb
   trust_registry_checksum: 27bd107e225be8ad20c1d115f788646bfd0c2c5909f1ca443748d13ea37436b7
-last_locked: '2026-10-17 18:11:19'
+last_locked: '2026-10-17 18:48:36'
 last_updated: '2026-09-07 11:11:22'
 packages:
   Entigram Schemas: 0.0.1
