@@ -131,6 +131,15 @@ agent's adapter is missing; `etg broker deliver` and `etg broker handoff`
 refuse to create a delivery snapshot; `etg broker status` reports governance
 enforcement as required rather than current.
 
+For an unattended read-only check-in, use `etg broker status --read-only` in
+each workspace being observed. This opens the existing ledger without creating
+SQLite sidecars, recording CLI usage, or updating the active-change baseline.
+It reports adapter readiness without treating the observer as the workspace's
+operating agent. If the ledger has an uncheckpointed WAL, the command refuses
+to report potentially stale data; treat that workspace's status as unknown.
+This observation does not replace `etg broker handoff` and normal status for a
+writable governed session.
+
 Add and install the matching adapter with:
 
 ```bash

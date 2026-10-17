@@ -4,9 +4,10 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from entigram.injector import inject_entigram_manifest
-from entigram.mcp_server import create_mcp_server
+from entigram.mcp_server import create_mcp_server, run_mcp_server
 from entigram.usage import MCP_TOOL_DECLARATIONS
 
 
@@ -90,3 +91,42 @@ class TestMCPServerContract(unittest.TestCase):
                 self.assertEqual(len(result.content), 1)
                 payload = json.loads(result.content[0].text)
                 self.assertIn("ok", payload)
+
+    def test_streamable_http_requires_explicit_remote_acknowledgement(self):
+        with self.assertRaisesRegex(ValueError, "explicit acknowledgement"):
+            run_mcp_server(
+                self.test_dir,
+                transport="streamable-http",
+                host="0.0.0.0",
+            )
+
+    def test_streamable_http_uses_stateless_mcp_endpoint(self):
+        class FakeServer:
+            def __init__(self):
+                self.kwargs = None
+
+            def run(self, **kwargs):
+                self.kwargs = kwargs
+
+        fake = FakeServer()
+        with patch("entigram.mcp_server.create_mcp_server", return_value=fake):
+            run_mcp_server(
+                self.test_dir,
+                transport="streamable-http",
+                host="0.0.0.0",
+                port=8443,
+                streamable_http_path="/governance/mcp",
+                allow_remote_streamable_http=True,
+            )
+
+        self.assertEqual(
+            fake.kwargs,
+            {
+                "transport": "streamable-http",
+                "host": "0.0.0.0",
+                "port": 8443,
+                "streamable_http_path": "/governance/mcp",
+                "stateless_http": True,
+                "json_response": True,
+            },
+        )

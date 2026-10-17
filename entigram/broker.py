@@ -31,17 +31,19 @@ class EntigramBroker:
     The semantic governance broker that validates edge-agent state,
     records conflicts, and manages verified cross-domain alignments.
     """
-    def __init__(self, target_dir: str, ledger: LedgerManager = None, seed_synonyms: bool = True):
+    def __init__(self, target_dir: str, ledger: LedgerManager = None, seed_synonyms: bool = True,
+                 read_only: bool = False):
         self.target_dir = Path(target_dir).expanduser().resolve()
         self.etg_dir = self.target_dir / ".etg"
         self.ledger_path = resolve_ledger_path(str(self.target_dir))
-        self.ledger = ledger if ledger is not None else LedgerManager(str(self.ledger_path))
+        self.ledger = ledger if ledger is not None else LedgerManager(str(self.ledger_path), read_only=read_only)
+        self.read_only = read_only
         self._owns_ledger = ledger is None
         self.warden = Warden(str(self.target_dir))
         self._packages_cache = None
         
         # Seed initial synonyms if table is empty (Phase 3 Scalability)
-        if seed_synonyms:
+        if seed_synonyms and not read_only:
             self._seed_synonyms()
 
     def close(self):
@@ -92,6 +94,11 @@ class EntigramBroker:
     def _with_adapter_enforcement(self, status: Dict[str, Any]) -> Dict[str, Any]:
         enforcement = self.active_agent_adapter_status()
         status["adapter_enforcement"] = enforcement
+        # A status-only observer does not become the workspace's operating
+        # agent. Report adapter readiness, but do not replace delivery facts
+        # with an undeclared-observer failure.
+        if self.read_only:
+            return status
         if enforcement["ok"]:
             return status
 
@@ -1027,7 +1034,7 @@ class EntigramBroker:
         if not recommendations:
             recommendations.append("No recommission needed; latest delivery snapshot still matches.")
 
-        if not needs_recommission:
+        if not needs_recommission and not self.read_only:
             try:
                 from .workspace_lifecycle import establish_active_change_baseline
 
