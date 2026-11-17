@@ -24,6 +24,9 @@ def _amount(value):
         valid = False
     if not valid:
         raise ValueError("Invoice totals must be nonnegative amounts with at most two decimal places")
+    # Decimal preserves a sign on zero; sensing compares canonical strings.
+    if amount.is_zero():
+        amount = amount.copy_abs()
     return format(amount, ".2f")
 
 
@@ -48,9 +51,14 @@ def reconcile(csv_path=FIXTURES / "invoices.csv"):
             with Path(csv_path).open(newline="", encoding="utf-8") as source:
                 reader = csv.DictReader(source)
                 required = {"invoice_id", "supplier_id", "supplier_total", "purchase_order_total"}
-                if not required.issubset(reader.fieldnames or []):
+                columns = reader.fieldnames or []
+                if len(columns) != len(set(columns)):
+                    raise ValueError("CSV contains duplicate column names")
+                if not required.issubset(columns):
                     raise ValueError("CSV is missing required invoice columns")
                 for row in reader:
+                    if None in row or any(value is None for value in row.values()):
+                        raise ValueError("CSV row does not match the header columns")
                     if not row["invoice_id"] or not row["supplier_id"]:
                         raise ValueError("Invoice and supplier identifiers are required")
                     supplier = {"invoice_total": _amount(row["supplier_total"])}

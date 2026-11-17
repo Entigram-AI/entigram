@@ -58,3 +58,32 @@ class TestInvoiceLogic(unittest.TestCase):
             )
             self.assertEqual([row["status"] for row in json.loads(result.stdout)], ["conflict", "matched"])
             self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_equivalent_signed_zero_totals_match(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory, "input.csv")
+            for supplier, order in [("-0.00", "0"), ("0.00", "-0"), ("-0", "-0.00")]:
+                with self.subTest(supplier=supplier, order=order):
+                    path.write_text("invoice_id,supplier_id,supplier_total,purchase_order_total\n"
+                                    f"INV-TEST,SUP-TEST,{supplier},{order}\n")
+                    result = reconcile(path)[0]
+                    self.assertEqual(result["status"], "matched")
+                    self.assertEqual(result["supplier_total"], "0.00")
+                    self.assertEqual(result["purchase_order_total"], "0.00")
+
+    def test_rejects_duplicate_headers_and_ragged_rows(self):
+        inputs = [
+            "invoice_id,supplier_id,supplier_total,purchase_order_total,purchase_order_total\n"
+            "INV-TEST,SUP-TEST,10.00,999.00,10.00\n",
+            "invoice_id,supplier_id,supplier_total,purchase_order_total\n"
+            "INV-TEST,SUP-TEST,10.00,10.00,unexpected\n",
+            "invoice_id,supplier_id,supplier_total,purchase_order_total,notes\n"
+            "INV-TEST,SUP-TEST,10.00,10.00\n",
+        ]
+        with TemporaryDirectory() as directory:
+            path = Path(directory, "input.csv")
+            for text in inputs:
+                with self.subTest(csv=text):
+                    path.write_text(text)
+                    with self.assertRaisesRegex(ValueError, "CSV"):
+                        reconcile(path)

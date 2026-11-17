@@ -22,4 +22,6 @@ The companion standard-package change removes `@entigram/ehr-extraction`, `@enti
 
 Existing installations, caches, previously downloaded archives, and historical releases are not remotely deleted. Inventory active workspaces and dependencies, retain any records required by your own retention policy, and review removal of package entities, relationships, and state before changing a workspace. Git history remains available for provenance. Do not assume an old archive is maintained because a local copy still installs.
 
-These changes require review and normal release/deployment steps. Opening or merging the source PRs alone does not update already published Python distributions or deploy the registry Worker.
+Merging the core PR to `main` triggers the configured [release workflow](../.github/workflows/release.yml). When the release plan calls for a new version, that workflow creates a GitHub release and publishes Python/npm packages and a Homebrew update after validation. Existing published versions remain immutable.
+
+Merge the registry guard before the standard-package retirement. Clients tracking the standard-package repository's default branch can see catalog and artifact changes as soon as that branch is updated; no separate catalog release is required for those clients. The hosted Worker is managed through Terraform Cloud: verify a successful apply and the live `410` response before announcing hosted retirement. A green test or Terraform plan alone does not establish that deployment completed.
