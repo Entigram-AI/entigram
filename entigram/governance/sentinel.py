@@ -43,8 +43,8 @@ class SentinelScanner:
         standard_packages = [
             "Entigram Schemas",
             "AWS", "Azure", "GCP", "Banking", "BusinessStrategy", 
-            "ClinicalValidation", "CompetitiveIntelligence", "ContentPublishing", 
-            "EHRExtraction", "GoogleWorkspace", "HIPAACompliance", 
+            "CompetitiveIntelligence", "ContentPublishing",
+            "GoogleWorkspace",
             "MarketingWebsite", "PartnerManagement", "PersonalFinance", 
             "Salesforce", "SpringBoot", "StartupFounder", "SupplyChain", 
             "TechnicalDueDiligence", "Terraform", "XWiki"

@@ -407,8 +407,10 @@ Agents and routers may suggest alignments from schema similarity, partner data, 
 
 - **Partner Reconciliation:** Normalizing and aligning external supplier data with internal systems.
 - **Cross-Domain Integration:** Linking CRM data (Salesforce) to supply-chain or inventory forecasting.
-- **Regulated Data Extraction:** Clinical/EHR extraction with strict validation and conflict gates.
+- **Invoice Reconciliation:** Compare synthetic supplier invoices and purchase orders through verified alignments and conflict sensing. See the [runnable example](examples/invoice_reconciliation/README.md).
 - **Governance for Multi-Agent Ops:** Auditing the "handoff" state between different specialized agents.
+
+The [generic example migration notes](docs/generic-example-migration.md) describe retired examples, package changes, and compatibility.
 
 ## ⚖️ License
 

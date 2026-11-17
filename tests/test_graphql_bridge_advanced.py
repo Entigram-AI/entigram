@@ -4,21 +4,21 @@ from entigram.graphql_bridge import GraphQLBridge
 class TestGraphQLBridgeAdvanced(unittest.TestCase):
     def setUp(self):
         self.context = {
-            "Patient": "http://hl7.org/fhir/Patient",
-            "name": "http://hl7.org/fhir/Patient.name",
-            "Observation": "http://hl7.org/fhir/Observation",
-            "value": "http://hl7.org/fhir/Observation.value",
-            "hasObservation": "mk:hasObservation"
+            "Customer": "https://example.com/schema/Customer",
+            "name": "https://example.com/schema/Customer.name",
+            "Order": "https://example.com/schema/Order",
+            "total": "https://example.com/schema/Order.total",
+            "hasOrder": "mk:hasOrder"
         }
         self.bridge = GraphQLBridge(self.context)
 
     def test_nested_query(self):
         graphql = """
         query {
-          Patient {
+          Customer {
             name
-            hasObservation {
-              value
+            hasOrder {
+              total
             }
           }
         }
@@ -27,14 +27,14 @@ class TestGraphQLBridgeAdvanced(unittest.TestCase):
         
         # Check for nested pattern
         # Prefixed names should not have <>, full URIs should.
-        self.assertIn("?subject mk:hasObservation ?hasObservation", sparql)
-        self.assertIn("?hasObservation <http://hl7.org/fhir/Observation.value> ?value", sparql)
-        self.assertIn("SELECT ?name ?value", sparql)
+        self.assertIn("?subject mk:hasOrder ?hasOrder", sparql)
+        self.assertIn("?hasOrder <https://example.com/schema/Order.total> ?total", sparql)
+        self.assertIn("SELECT ?name ?total", sparql)
 
     def test_pagination(self):
         graphql = """
         query {
-          Patient(first: 10, offset: 20) {
+          Customer(first: 10, offset: 20) {
             name
           }
         }
@@ -47,14 +47,14 @@ class TestGraphQLBridgeAdvanced(unittest.TestCase):
         # By default, we should use OPTIONAL for attributes to avoid failing the whole query if one property is missing
         graphql = """
         {
-          Patient {
+          Customer {
             name
-            birthDate
+            createdAt
           }
         }
         """
         sparql = self.bridge.translate(graphql)
-        self.assertIn("OPTIONAL { ?subject <http://hl7.org/fhir/Patient.name> ?name }", sparql)
+        self.assertIn("OPTIONAL { ?subject <https://example.com/schema/Customer.name> ?name }", sparql)
 
 if __name__ == "__main__":
     unittest.main()

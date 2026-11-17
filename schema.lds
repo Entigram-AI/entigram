@@ -34,7 +34,7 @@ ATTRIBUTES:
   - .id (UUID)
   - name (String, MUST, UNIQUE)
   - description (String)
-  - type (String) # Infrastructure, SaaS, Clinical, Governance, PartnerLink
+  - type (String) # Infrastructure, SaaS, DataIntegration, Governance, PartnerLink
 
 ENTITY: Entigram_Agent
 ATTRIBUTES:
