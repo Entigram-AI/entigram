@@ -1,5 +1,0 @@
-patient_id,full_name,dob,observation_type,observation_value,timestamp
-P101,John Doe,1985-06-15,Glucose,120,2026-05-17 10:00:00
-P101,John Doe,1985-06-15,HeartRate,72,2026-05-17 10:05:00
-P102,Jane Smith,1992-03-22,Glucose,95,2026-05-17 11:00:00
-P102,Jane Smith,1992-03-22,BloodPressure,120/80,2026-05-17 11:10:00

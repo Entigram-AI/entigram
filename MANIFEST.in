@@ -5,3 +5,5 @@ include README.md
 include LICENSE
 include NOTICE
 include TRADEMARKS.md
+recursive-include examples/invoice_reconciliation *.py *.lds *.csv *.md
+include docs/generic-example-migration.md

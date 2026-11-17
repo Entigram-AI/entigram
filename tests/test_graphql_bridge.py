@@ -4,17 +4,17 @@ from entigram.graphql_bridge import GraphQLBridge
 class TestGraphQLBridge(unittest.TestCase):
     def test_basic_translation(self):
         context = {
-            "Patient": "http://hl7.org/fhir/Patient",
-            "name": "http://hl7.org/fhir/Patient.name",
-            "birthDate": "http://hl7.org/fhir/Patient.birthDate"
+            "Customer": "https://example.com/schema/Customer",
+            "name": "https://example.com/schema/Customer.name",
+            "createdAt": "https://example.com/schema/Customer.createdAt"
         }
         bridge = GraphQLBridge(context)
         
         graphql = """
         query {
-          Patient {
+          Customer {
             name
-            birthDate
+            createdAt
           }
         }
         """
@@ -23,11 +23,11 @@ class TestGraphQLBridge(unittest.TestCase):
         
         # Check for variables in SELECT (order independent)
         self.assertIn("?name", sparql.split("WHERE")[0])
-        self.assertIn("?birthDate", sparql.split("WHERE")[0])
+        self.assertIn("?createdAt", sparql.split("WHERE")[0])
         
-        self.assertIn("?subject a <http://hl7.org/fhir/Patient>", sparql)
-        self.assertIn("OPTIONAL { ?subject <http://hl7.org/fhir/Patient.name> ?name }", sparql)
-        self.assertIn("OPTIONAL { ?subject <http://hl7.org/fhir/Patient.birthDate> ?birthDate }", sparql)
+        self.assertIn("?subject a <https://example.com/schema/Customer>", sparql)
+        self.assertIn("OPTIONAL { ?subject <https://example.com/schema/Customer.name> ?name }", sparql)
+        self.assertIn("OPTIONAL { ?subject <https://example.com/schema/Customer.createdAt> ?createdAt }", sparql)
 
     def test_translation_without_query_keyword(self):
         context = {"Account": "mk:SalesforceAccount", "id": "mk:sf_id"}

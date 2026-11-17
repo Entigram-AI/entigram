@@ -16,9 +16,9 @@ _SYNONYMS = {
 }
 
 _SEMANTIC_CLASSES = [
-    {"patient", "user", "person", "individual", "subject"},
-    {"provider", "doctor", "practitioner", "physician"},
-    {"facility", "site", "organization", "clinic", "hospital"},
+    {"customer", "client", "user", "person", "individual", "subject"},
+    {"provider", "supplier", "vendor", "partner"},
+    {"facility", "site", "organization", "warehouse", "office"},
 ]
 
 
@@ -126,11 +126,10 @@ class AlignmentNegotiator:
         
         # Standard block categories
         categories = {
-            "identity": ["user", "person", "account", "profile", "identity", "partner", "vendor", "supplier", "patient", "customer", "client"],
+            "identity": ["user", "person", "account", "profile", "identity", "partner", "vendor", "supplier", "provider", "customer", "client"],
             "transaction": ["order", "invoice", "payment", "transaction", "receipt", "transfer"],
             "product": ["item", "product", "sku", "inventory", "part", "service"],
             "location": ["address", "site", "location", "facility", "warehouse", "office"],
-            "clinical": ["patient", "encounter", "observation", "procedure", "diagnosis", "medication"]
         }
 
         for name, ent in entities.items():
