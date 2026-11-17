@@ -16,6 +16,12 @@
 * harden SQLite ledger concurrency with WAL mode and busy timeouts
 * close warning-producing registry, broker, router, and hydration resources
 
+## [2.26.1](https://github.com/Entigram-AI/entigram/compare/v2.26.0...v2.26.1) (2026-11-17)
+
+### Refactoring
+
+* replace healthcare demos with generic governance examples ([#121](https://github.com/Entigram-AI/entigram/issues/121)) ([4225e22](https://github.com/Entigram-AI/entigram/commit/4225e225cae36fb6f2c342f4e49b799752d96691))
+
 ## [2.26.0](https://github.com/Entigram-AI/entigram/compare/v2.25.0...v2.26.0) (2026-10-17)
 
 ### Features
