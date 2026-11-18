@@ -17,6 +17,16 @@
 * harden SQLite ledger concurrency with WAL mode and busy timeouts
 * close warning-producing registry, broker, router, and hydration resources
 
+## [2.26.2](https://github.com/Entigram-AI/entigram/compare/v2.26.1...v2.26.2) (2026-11-18)
+
+### Bug Fixes
+
+* enforce lifecycle guards in the current Git worktree ([9fb2c04](https://github.com/Entigram-AI/entigram/commit/9fb2c04669f77fb98e886f4ac45fa63496ed941c))
+
+### Miscellaneous
+
+* Merge pull request #122 from Entigram-AI/fix/portable-git-hooks-20261118 ([3305318](https://github.com/Entigram-AI/entigram/commit/3305318c2aa24a6f3d19fa93abc4dcc0cbd08695))
+
 ## [2.26.1](https://github.com/Entigram-AI/entigram/compare/v2.26.0...v2.26.1) (2026-11-17)
 
 ### Refactoring
