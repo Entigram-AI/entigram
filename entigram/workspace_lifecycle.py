@@ -806,18 +806,24 @@ def install_workspace_git_checkin_guard(target_dir: Path) -> Dict[str, Any]:
     if hook_path is None:
         return {"installed": False, "reason": "not_a_local_git_repository"}
 
-    original_content = hook_path.read_text() if hook_path.is_file() else None
-    if original_content and GIT_CHECKIN_GUARD_START in original_content:
+    original_mode = _existing_git_hook_mode(hook_path)
+    original_content = _read_git_hook(hook_path)
+    migrated_content = _migrate_owned_git_guards(original_content)
+    updated_content = (
+        migrated_content
+        if migrated_content and GIT_CHECKIN_GUARD_START in migrated_content
+        else _build_workspace_git_checkin_guard(root, migrated_content)
+    )
+    if updated_content == original_content:
         return {
             "installed": True,
             "changed": False,
             "path": _display_git_hook_path(root, hook_path),
         }
-    original_mode = hook_path.stat().st_mode & 0o777 if hook_path.exists() else None
-    _atomic_write_text(
+    _atomic_write_git_hook(
         hook_path,
-        _build_workspace_git_checkin_guard(root, original_content),
-        mode=original_mode or 0o755,
+        updated_content,
+        mode=original_mode if original_mode is not None else 0o755,
     )
     return {
         "installed": True,
@@ -833,7 +839,7 @@ def remove_workspace_git_checkin_guard(target_dir: Path) -> Dict[str, Any]:
     display_path = _display_git_hook_path(root, hook_path)
     if hook_path is None or not hook_path.is_file():
         return {"removed": False, "path": display_path}
-    original = hook_path.read_text()
+    original = _read_git_hook(hook_path)
     if GIT_CHECKIN_GUARD_START not in original:
         return {"removed": False, "path": display_path}
     updated = re.sub(
@@ -849,7 +855,7 @@ def remove_workspace_git_checkin_guard(target_dir: Path) -> Dict[str, Any]:
             "path": display_path,
             "removed_empty_hook": True,
         }
-    _atomic_write_text(hook_path, updated, mode=hook_path.stat().st_mode & 0o777)
+    _atomic_write_git_hook(hook_path, updated, mode=hook_path.stat().st_mode & 0o777)
     return {
         "removed": True,
         "path": display_path,
@@ -864,6 +870,8 @@ def workspace_git_checkin_guard_status(target_dir: Path) -> Dict[str, Any]:
         "installed": bool(
             hook_path is not None
             and hook_path.is_file()
+            and hook_path.stat().st_mode & 0o111
+            and os.access(hook_path, os.X_OK)
             and GIT_CHECKIN_GUARD_START in hook_path.read_text()
         ),
         "path": _display_git_hook_path(root, hook_path),
@@ -904,27 +912,130 @@ def _build_workspace_git_checkin_guard(
     root: Path,
     original_content: Optional[str],
 ) -> str:
-    shebang = "#!/bin/sh"
-    remainder = original_content or ""
+    return _prepend_git_guard(
+        _git_checkin_guard_block(GIT_CHECKIN_GUARD_START, GIT_CHECKIN_GUARD_END),
+        original_content,
+    )
+
+
+def _read_git_hook(path: Path) -> Optional[str]:
+    if not path.is_file():
+        return None
+    with path.open(newline="") as hook:
+        return hook.read()
+
+
+def _atomic_write_git_hook(path: Path, content: str, *, mode: int) -> None:
+    # Git scripts and preserved owner content must not receive platform newline
+    # translation. Other lifecycle text files retain their existing behavior.
+    _atomic_write_text(path, content, mode=mode, newline="")
+
+
+def _existing_git_hook_mode(path: Path) -> Optional[int]:
+    if not path.exists():
+        return None
+    mode = path.stat().st_mode & 0o777
+    if not mode & 0o111 or not os.access(path, os.X_OK):
+        raise WorkspaceLifecycleError(
+            "GIT_HOOK_NOT_EXECUTABLE",
+            "Existing Git hook is not executable; review its permissions before installing a guard or pausing.",
+        )
+    return mode
+
+
+def _prepend_git_guard(guard: str, original_content: Optional[str]) -> str:
+    shebang, remainder = "#!/bin/sh", original_content or ""
     if original_content and original_content.startswith("#!"):
         shebang, _, remainder = original_content.partition("\n")
-    quoted_root = shlex.quote(str(root))
-    guard = f"""{GIT_CHECKIN_GUARD_START}
-# Portable Entigram backstop for agents without a native lifecycle adapter.
+    return f"{shebang}\n{guard}" + (f"\n{remainder}" if remainder else "")
+
+
+def _git_checkin_guard_block(start: str, end: str) -> str:
+    return f"""{start}
+# Check the actual Git worktree's active or paused governance state.
+if ! command -v git >/dev/null 2>&1; then
+  echo "Entigram lifecycle guard requires the git command." >&2
+  exit 1
+fi
+if ! entigram_worktree_root=$(git rev-parse --show-toplevel 2>/dev/null); then
+  echo "Entigram lifecycle guard cannot resolve the current Git worktree." >&2
+  exit 1
+fi
+if [ -z "$entigram_worktree_root" ]; then
+  echo "Entigram lifecycle guard requires a nonempty Git worktree root." >&2
+  exit 1
+fi
 if ! command -v etg >/dev/null 2>&1; then
   echo "Entigram lifecycle guard requires the etg command." >&2
   exit 1
 fi
-etg change-status --dir {quoted_root} --enforce
+etg change-status --dir "$entigram_worktree_root" --enforce
 entigram_change_status=$?
 if [ $entigram_change_status -ne 0 ]; then
   echo "Entigram requires a handoff and current status before this commit." >&2
   exit $entigram_change_status
 fi
-{GIT_CHECKIN_GUARD_END}
+{end}
 """
-    suffix = remainder.lstrip("\n")
-    return f"{shebang}\n{guard}" + (f"\n{suffix}" if suffix else "")
+
+
+def _legacy_git_guard_block(start: str, end: str, quoted_root: str) -> str:
+    paused = start == PAUSE_GIT_HOOK_START
+    comment = ("Entigram installs this guard only while workspace governance is paused."
+               if paused else "Portable Entigram backstop for agents without a native lifecycle adapter.")
+    requirement = "Entigram paused-workspace guard" if paused else "Entigram lifecycle guard"
+    command = "pause-status" if paused else "change-status"
+    status = "entigram_pause_status" if paused else "entigram_change_status"
+    message = ("Entigram requires a resume and hydrate check-in before this commit." if paused
+               else "Entigram requires a handoff and current status before this commit.")
+    return f"""{start}
+# {comment}
+if ! command -v etg >/dev/null 2>&1; then
+  echo "{requirement} requires the etg command." >&2
+  exit 1
+fi
+etg {command} --dir {quoted_root} --enforce
+{status}=$?
+if [ ${status} -ne 0 ]; then
+  echo "{message}" >&2
+  exit ${status}
+fi
+{end}
+"""
+
+
+def _migrate_owned_git_guards(content: Optional[str]) -> Optional[str]:
+    """Upgrade only exact known Entigram blocks; preserve every external byte."""
+    if content is None:
+        return None
+    for start, end in ((GIT_CHECKIN_GUARD_START, GIT_CHECKIN_GUARD_END),
+                       (PAUSE_GIT_HOOK_START, PAUSE_GIT_HOOK_END)):
+        if start not in content and end not in content:
+            continue
+        pattern = re.compile(rf"^{re.escape(start)}\r?\n.*?^{re.escape(end)}(?:\r?\n|$)", re.MULTILINE | re.DOTALL)
+        matches = list(pattern.finditer(content))
+        if content.count(start) != 1 or content.count(end) != 1 or len(matches) != 1:
+            raise WorkspaceLifecycleError("GIT_CHECKIN_GUARD_CHANGED", "Entigram Git guard markers are malformed; review the hook before reinstalling.")
+        match = matches[0]
+        block = match.group().replace("\r\n", "\n")
+        if not block.endswith("\n"):
+            block += "\n"
+        portable = _git_checkin_guard_block(start, end)
+        if block == portable:
+            if match.group() != portable:
+                content = content[:match.start()] + portable + content[match.end():]
+            continue
+        command = re.search(r"^etg (?:change-status|pause-status) --dir ([^\r\n]+) --enforce$", block, re.MULTILINE)
+        try:
+            roots = shlex.split(command.group(1)) if command else []
+        except ValueError:
+            roots = []
+        if (len(roots) != 1 or not Path(roots[0]).is_absolute()
+                or shlex.quote(roots[0]) != command.group(1)
+                or block != _legacy_git_guard_block(start, end, command.group(1))):
+            raise WorkspaceLifecycleError("GIT_CHECKIN_GUARD_CHANGED", "Entigram Git guard contents changed; review the hook before reinstalling.")
+        content = content[:match.start()] + portable + content[match.end():]
+    return content
 
 
 def _load_pause_backup(root: Path) -> Dict[str, Any]:
@@ -1094,7 +1205,8 @@ def _prepare_pause_git_hook(root: Path, max_changed_files: int) -> Dict[str, Any
     if hook_path is None:
         return {"installed": False, "reason": "not_a_local_git_repository"}
 
-    original_content = hook_path.read_text() if hook_path.is_file() else None
+    original_mode = _existing_git_hook_mode(hook_path)
+    original_content = _migrate_owned_git_guards(_read_git_hook(hook_path))
     if original_content and (
         PAUSE_GIT_HOOK_START in original_content
         or PAUSE_GIT_HOOK_END in original_content
@@ -1104,7 +1216,6 @@ def _prepare_pause_git_hook(root: Path, max_changed_files: int) -> Dict[str, Any
             f"Refusing to overwrite an existing Entigram paused hook at {hook_path}.",
         )
 
-    original_mode = hook_path.stat().st_mode & 0o777 if hook_path.exists() else None
     paused_content = _build_pause_git_hook(root, max_changed_files, original_content)
     return {
         "installed": True,
@@ -1120,46 +1231,43 @@ def _build_pause_git_hook(
     max_changed_files: int,
     original_content: Optional[str],
 ) -> str:
-    shebang = "#!/bin/sh"
-    remainder = original_content or ""
-    if original_content and original_content.startswith("#!"):
-        shebang, _, remainder = original_content.partition("\n")
-
-    quoted_root = shlex.quote(str(root))
-    guard = f"""{PAUSE_GIT_HOOK_START}
-# Entigram installs this guard only while workspace governance is paused.
-if ! command -v etg >/dev/null 2>&1; then
-  echo "Entigram paused-workspace guard requires the etg command." >&2
-  exit 1
-fi
-etg pause-status --dir {quoted_root} --enforce
-entigram_pause_status=$?
-if [ $entigram_pause_status -ne 0 ]; then
-  echo "Entigram requires a resume and hydrate check-in before this commit." >&2
-  exit $entigram_pause_status
-fi
-{PAUSE_GIT_HOOK_END}
-"""
-    suffix = remainder.lstrip("\n")
-    return f"{shebang}\n{guard}" + (f"\n{suffix}" if suffix else "")
+    return _prepend_git_guard(
+        _git_checkin_guard_block(PAUSE_GIT_HOOK_START, PAUSE_GIT_HOOK_END),
+        original_content,
+    )
 
 
 def _write_pause_git_hook(root: Path, hook: Dict[str, Any]) -> None:
     if not hook.get("installed"):
         return
     path = _pause_hook_path(root, hook)
-    _atomic_write_text(path, hook["paused_content"], mode=0o755)
+    original_mode = hook.get("original_mode")
+    _atomic_write_git_hook(path, hook["paused_content"], mode=original_mode if original_mode is not None else 0o755)
 
 
 def _restore_pause_git_hook(root: Path, hook: Dict[str, Any]) -> None:
     if not hook.get("installed"):
         return
     path = _pause_hook_path(root, hook)
-    original_content = hook.get("original_content")
+    original_content = _migrate_owned_git_guards(hook.get("original_content"))
+    paused_content = _migrate_owned_git_guards(hook.get("paused_content"))
+    # Another active worktree may install the permanent backstop while this
+    # workspace is paused. Retain that recognized addition when removing pause.
+    if not original_content or GIT_CHECKIN_GUARD_START not in original_content:
+        try:
+            current_content = _migrate_owned_git_guards(_read_git_hook(path))
+        except WorkspaceLifecycleError:
+            current_content = None  # Explicit force-resume archives unknown edits.
+        permanent_original = _build_workspace_git_checkin_guard(root, original_content)
+        if current_content in {
+            _build_workspace_git_checkin_guard(root, paused_content), permanent_original,
+        }:
+            original_content = permanent_original
     if original_content is None:
         path.unlink(missing_ok=True)
         return
-    _atomic_write_text(path, original_content, mode=hook.get("original_mode") or 0o755)
+    original_mode = hook.get("original_mode")
+    _atomic_write_git_hook(path, original_content, mode=original_mode if original_mode is not None else 0o755)
 
 
 def _pause_hook_path(root: Path, hook: Dict[str, Any]) -> Path:
@@ -1613,7 +1721,9 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def _atomic_write_text(path: Path, content: str, *, mode: Optional[int] = None) -> None:
+def _atomic_write_text(
+    path: Path, content: str, *, mode: Optional[int] = None, newline: Optional[str] = None,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     existing_mode = None
     if path.exists():
@@ -1621,7 +1731,7 @@ def _atomic_write_text(path: Path, content: str, *, mode: Optional[int] = None) 
     fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
     temp_path = Path(temp_name)
     try:
-        with os.fdopen(fd, "w") as handle:
+        with os.fdopen(fd, "w", newline=newline) as handle:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
@@ -1688,12 +1798,20 @@ def _resume_conflicts(root: Path, backup: Dict[str, Any]) -> List[str]:
     git_hook = backup.get("git_hook") or {}
     if git_hook.get("installed"):
         path = root / git_hook["path"]
-        current_content = path.read_text() if path.is_file() else None
-        known_hook_values = {
-            git_hook.get("paused_content"),
-            git_hook.get("original_content"),
-        }
-        if current_content not in known_hook_values:
+        try:
+            current_content = _migrate_owned_git_guards(_read_git_hook(path))
+            original_content = _migrate_owned_git_guards(git_hook.get("original_content"))
+            paused_content = _migrate_owned_git_guards(git_hook.get("paused_content"))
+            known_hook_values = {paused_content, original_content}
+            if not original_content or GIT_CHECKIN_GUARD_START not in original_content:
+                known_hook_values.update({
+                    _build_workspace_git_checkin_guard(root, paused_content),
+                    _build_workspace_git_checkin_guard(root, original_content),
+                })
+            known = current_content in known_hook_values
+        except WorkspaceLifecycleError:
+            known = False
+        if not known:
             conflicts.append(git_hook["path"])
     return sorted(set(conflicts))
 
