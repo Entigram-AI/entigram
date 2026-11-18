@@ -182,6 +182,12 @@ def _pre_invocation(
         "stop_reminded": False,
         "runtime": runtime,
     }
+    # Context refreshes and resumed conversations retain their original
+    # observation. In particular, never backfill a legacy session after writes.
+    if session is not None:
+        for key in ("start_filesystem_observation", "start_changed_files"):
+            if key in session:
+                record[key] = session[key]
     _update_session(root, conversation_id, record)
 
     if state == "paused":
@@ -201,6 +207,10 @@ def _pre_invocation(
         }
 
     check_in = active_change_status(root)
+    if session is None:
+        record["start_filesystem_observation"] = check_in.get("filesystem_observation")
+        record["start_changed_files"] = check_in["budget"]["changed_files"]
+        _update_session(root, conversation_id, record)
     schema_paths = [
         str((root / path).resolve())
         for path in manifest.get("schema_paths", ["schema.lds"])
@@ -340,6 +350,29 @@ def _post_tool_use(
     return {}
 
 
+def _unchanged_preexisting_observation(session: Dict[str, Any], status: Dict[str, Any]) -> bool:
+    def valid(value: Any) -> bool:
+        return (
+            isinstance(value, dict)
+            and set(value) == {"version", "digest"}
+            and type(value.get("version")) is int
+            and value["version"] == 1
+            and isinstance(value.get("digest"), str)
+            and re.fullmatch(r"[0-9a-f]{64}", value["digest"]) is not None
+        )
+
+    started_dirty = session.get("start_changed_files")
+    start = session.get("start_filesystem_observation")
+    current = status.get("filesystem_observation")
+    return (
+        type(started_dirty) is int
+        and started_dirty > 0
+        and valid(start)
+        and valid(current)
+        and start == current
+    )
+
+
 def _stop(
     root: Path,
     payload: Dict[str, Any],
@@ -353,21 +386,32 @@ def _stop(
     if session.get("stop_reminded"):
         return {}
 
-    check_in = active_change_status(root)
-    if not check_in["budget"]["changed_files"]:
-        return {}
-
-    session["stop_reminded"] = True
-    _update_session(root, conversation_id, session)
-    return {
-        "decision": "continue",
-        "reason": (
+    try:
+        check_in = active_change_status(root)
+        if not check_in["budget"]["changed_files"]:
+            return {}
+        if _unchanged_preexisting_observation(session, check_in):
+            return {}
+        reason = (
             "Entigram detected workspace changes since the last check-in "
             f"({check_in['budget']['changed_files']}/"
             f"{check_in['budget']['max_changed_files']} files). Run `etg broker handoff` "
             "and `etg broker status` before ending this session."
-        ),
-    }
+        )
+    except (WorkspaceLifecycleError, OSError, ValueError):
+        reason = (
+            "Entigram could not verify the current workspace observation. Run "
+            "`etg broker handoff` and `etg broker status` before ending this session."
+        )
+
+    session["stop_reminded"] = True
+    try:
+        _update_session(root, conversation_id, session)
+    except (OSError, ValueError):
+        # Failure to retain the reminder must not turn an unknown observation
+        # into permission to end without the existing governance check-in.
+        pass
+    return {"decision": "continue", "reason": reason}
 
 
 def _hook_error(event: str, message: str) -> Dict[str, Any]:

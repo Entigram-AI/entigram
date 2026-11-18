@@ -258,6 +258,76 @@ class TestWorkspaceLifecycle(unittest.TestCase):
         self.assertEqual(exit_code, 2)
         self.assertIn("ACTIVE_CHANGE_CHECK_IN_REQUIRED", output)
 
+    def test_active_filesystem_observation_is_stable_without_resetting_dirty_baseline(self):
+        establish_active_change_baseline(self.root, reason="accepted before session")
+        baseline_path = self.root / lifecycle_module.ACTIVE_CHANGE_BASELINE_PATH
+        baseline_bytes = baseline_path.read_bytes()
+        baseline_mtime = baseline_path.stat().st_mtime_ns
+        for number in range(5):
+            (self.root / f"existing-dirt-{number}.txt").write_text(f"{number}\n")
+
+        first = active_change_status(self.root)
+        repeated = active_change_status(self.root)
+
+        observation = first["filesystem_observation"]
+        self.assertEqual(set(observation), {"version", "digest"})
+        self.assertEqual(type(observation["version"]), int)
+        self.assertEqual(observation["version"], 1)
+        self.assertRegex(observation["digest"], r"^[0-9a-f]{64}$")
+        self.assertEqual(first, repeated)
+        self.assertEqual(first["status"], "warning")
+        self.assertEqual(first["budget"]["changed_files"], 5)
+        self.assertEqual(baseline_path.read_bytes(), baseline_bytes)
+        self.assertEqual(baseline_path.stat().st_mtime_ns, baseline_mtime)
+
+    def test_active_filesystem_observation_detects_new_files(self):
+        establish_active_change_baseline(self.root, reason="test")
+        before = active_change_status(self.root)
+
+        (self.root / "new-source.txt").write_text("new source\n")
+        after = active_change_status(self.root)
+
+        self.assertNotEqual(before["filesystem_observation"], after["filesystem_observation"])
+        self.assertEqual(after["budget"]["changed_files"], 1)
+        self.assertEqual(after["changes"]["created"], ["new-source.txt"])
+
+    def test_active_filesystem_observation_detects_repeated_edits_and_deletion_at_same_dirty_count(self):
+        source = self.root / "source.txt"
+        source.write_text("baseline\n")
+        establish_active_change_baseline(self.root, reason="test")
+        baseline_path = self.root / lifecycle_module.ACTIVE_CHANGE_BASELINE_PATH
+        baseline_bytes = baseline_path.read_bytes()
+
+        source.write_text("first dirty version\n")
+        first = active_change_status(self.root)
+        source.write_text("second dirty version with a different size\n")
+        second = active_change_status(self.root)
+        source.unlink()
+        deleted = active_change_status(self.root)
+
+        self.assertEqual([status["budget"]["changed_files"] for status in (first, second, deleted)], [1, 1, 1])
+        self.assertEqual(first["changes"]["modified"], ["source.txt"])
+        self.assertEqual(second["changes"]["modified"], ["source.txt"])
+        self.assertEqual(deleted["changes"]["deleted"], ["source.txt"])
+        self.assertEqual(len({status["filesystem_observation"]["digest"] for status in (first, second, deleted)}), 3)
+        self.assertEqual(baseline_path.read_bytes(), baseline_bytes)
+
+    def test_active_filesystem_observation_ignores_lifecycle_session_records(self):
+        establish_active_change_baseline(self.root, reason="test")
+        (self.root / "existing-dirt.txt").write_text("preserved workspace dirt\n")
+        before = active_change_status(self.root)
+        marker = self.root / ".etg" / "lifecycle" / "session-observation.json"
+
+        marker.write_text(json.dumps({"session": "fixture", "attempts": 0}))
+        created = active_change_status(self.root)
+        marker.write_text(json.dumps({"session": "fixture", "attempts": 1}))
+        modified = active_change_status(self.root)
+        marker.unlink()
+        deleted = active_change_status(self.root)
+
+        for status in (created, modified, deleted):
+            self.assertEqual(status, before)
+
     def test_active_change_budget_warns_at_threshold_before_exhaustion(self):
         establish_active_change_baseline(self.root, reason="test")
         for number in range(5):

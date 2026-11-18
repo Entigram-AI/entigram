@@ -756,6 +756,14 @@ def active_change_status(target_dir: Path) -> Dict[str, Any]:
             "modified": modified,
             "deleted": deleted,
         },
+        # This describes the same size/mtime observation used above, not content
+        # integrity, write authority, or a current delivery snapshot.
+        "filesystem_observation": {
+            "version": 1,
+            "digest": hashlib.sha256(
+                json.dumps(current, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest(),
+        },
         "baseline": {
             "recorded_at": record["recorded_at"],
             "reason": record.get("reason"),
