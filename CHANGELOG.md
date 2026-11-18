@@ -17,6 +17,16 @@
 * harden SQLite ledger concurrency with WAL mode and busy timeouts
 * close warning-producing registry, broker, router, and hydration resources
 
+## [2.26.3](https://github.com/Entigram-AI/entigram/compare/v2.26.2...v2.26.3) (2026-11-18)
+
+### Bug Fixes
+
+* avoid Stop reminders for unchanged preexisting drift ([990396a](https://github.com/Entigram-AI/entigram/commit/990396a388f8e16583ae3e3e8fa0c5119e367dcd))
+
+### Miscellaneous
+
+* Merge pull request #123 from Entigram-AI/fix/session-stop-attribution-20261118 ([384ef9c](https://github.com/Entigram-AI/entigram/commit/384ef9cc12e651cd4392c336f42b2df2c7d27a4e))
+
 ## [2.26.2](https://github.com/Entigram-AI/entigram/compare/v2.26.1...v2.26.2) (2026-11-18)
 
 ### Bug Fixes
