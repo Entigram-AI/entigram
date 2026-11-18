@@ -371,7 +371,7 @@ class TestWorkspaceLifecycle(unittest.TestCase):
         self.assertTrue(pause_result["git_pre_commit_guard"])
         paused_hook = hook_path.read_text()
         self.assertIn("entigram paused change budget", paused_hook)
-        self.assertIn("pause-status --dir", paused_hook)
+        self.assertIn("change-status --dir", paused_hook)
         self.assertIn("echo original hook", paused_hook)
         self.assertTrue(hook_path.stat().st_mode & stat.S_IXUSR)
 

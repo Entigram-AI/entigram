@@ -106,6 +106,18 @@ etg agent-hooks install
 etg agent-hooks status
 ```
 
+The shared Git hook resolves the current worktree with `git rev-parse
+--show-toplevel` on every invocation, then enforces that worktree's active or
+paused state. Missing Git, a missing `etg`, or an unavailable worktree root blocks
+the commit. Re-running `agent-hooks install` upgrades recognized older owned
+guard blocks, including paused guards, while preserving other hook text and
+permissions. An unchanged portable guard is left untouched; edited or malformed
+owned blocks require review. Existing pause backups remain resumable after an
+upgrade and restore portable guards instead of old absolute workspace paths.
+An existing non-executable hook blocks installation and pause before hook or
+pause-state changes; review its permissions explicitly instead of letting Git
+silently skip a claimed guard.
+
 ### Workspace-agent enforcement
 
 Every new workspace declares the agents that may operate in it. Initialization
@@ -209,7 +221,8 @@ hydrate
 
 Use `etg pause --max-changed-files N` only when a different bounded window is
 appropriate. `etg pause-status --enforce` exits nonzero only after the budget
-has been exceeded; the temporary pre-commit guard uses that mode, allowing the
+has been exceeded; the temporary pre-commit guard uses unified `change-status`
+enforcement for the current worktree, allowing the
 budgeted set of changes but preventing an oversized paused commit. Resume
 restores any pre-existing local `pre-commit` hook or removes Entigram's
 temporary hook.

@@ -13,6 +13,7 @@
 
 ### Bug Fixes
 
+* enforce each Git worktree's own active or paused change budget and safely upgrade older shared hook guards
 * harden SQLite ledger concurrency with WAL mode and busy timeouts
 * close warning-producing registry, broker, router, and hydration resources
 
