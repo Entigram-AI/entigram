@@ -68,3 +68,19 @@ whole workspace. They do not hibernate or resume an individual agent.
 Use broker hibernation for continuity across agent token/time limits. Use
 workspace pause when the operator intentionally wants Entigram context and
 governance gates disabled until a later session.
+
+## Session Stop Observations
+
+A new lifecycle session records a versioned fingerprint of the existing
+workspace size/mtime observation. If the workspace was already dirty and that
+observation is unchanged at Stop, the hook does not require another handoff
+solely for those preexisting changes. The global change budget and dirty state
+remain visible; this does not mark delivery current or grant write authority.
+
+New drift, legacy or malformed checkpoints, and unavailable observations retain
+the conservative handoff reminder. Repeated startup, context refresh and resumed
+conversations retain the original checkpoint; external changes during or between
+those invocations may still require a handoff. Size/mtime equality is an
+observation under the existing scan contract, not proof of content integrity or
+which actor changed a file. Pre-tool admission, Warden, task preparation, Git
+guards and the workspace check-in baseline remain unchanged.
