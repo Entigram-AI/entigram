@@ -1,6 +1,10 @@
 import hashlib
+import errno
 import os
 import json
+import stat
+import sys
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Optional, Any, List
@@ -44,6 +48,147 @@ class Warden:
         self.target_dir = Path(target_dir).expanduser().resolve()
         self.manifest_path = self.target_dir / ".etg" / "entigram.yaml"
         self.last_halt_event: Optional[HaltEvent] = None
+
+    @staticmethod
+    def _darwin_acl(fd: int) -> bytes:
+        """Capture the native ACL without resolving principal names or changing it."""
+        import ctypes
+        import struct
+
+        class AttributeList(ctypes.Structure):
+            _fields_ = [("bitmapcount", ctypes.c_uint16), ("reserved", ctypes.c_uint16),
+                        ("common", ctypes.c_uint32), ("volume", ctypes.c_uint32),
+                        ("directory", ctypes.c_uint32), ("file", ctypes.c_uint32),
+                        ("fork", ctypes.c_uint32)]
+
+        native = ctypes.CDLL(None, use_errno=True)
+        get_attributes = native.fgetattrlist
+        get_attributes.argtypes = [ctypes.c_int, ctypes.POINTER(AttributeList), ctypes.c_void_p,
+                                  ctypes.c_size_t, ctypes.c_ulong]
+        get_attributes.restype = ctypes.c_int
+        # sys/attr.h: ATTR_CMN_EXTENDED_SECURITY, returned as attrreference_t.
+        requested = AttributeList(5, 0, 0x00400000, 0, 0, 0, 0)
+        buffer = ctypes.create_string_buffer(65536)
+        if get_attributes(fd, ctypes.byref(requested), buffer, len(buffer), 0) != 0:
+            raise OSError(ctypes.get_errno(), "Cannot read manifest ACL")
+        total, offset, length = struct.unpack_from("=IiI", buffer.raw)
+        start = 4 + offset  # Offset is relative to the attrreference at byte 4.
+        if not 12 <= total <= len(buffer) or start < 12 or start + length > total:
+            raise OSError(errno.ENOTSUP, "Cannot capture complete manifest ACL")
+        return buffer.raw[start:start + length]
+
+    @staticmethod
+    def _windows_access_descriptor(path: Path) -> bytes:
+        """Read Windows access constraints; fail if access cannot be compared."""
+        import ctypes
+        from ctypes import wintypes
+
+        read_security = ctypes.WinDLL("advapi32", use_last_error=True).GetFileSecurityW
+        read_security.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.LPVOID,
+                                 wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+        read_security.restype = wintypes.BOOL
+        needed = wintypes.DWORD()
+        # Owner, group, DACL, integrity label, resource attributes, central
+        # policy, process-trust label and access filter; no audit privilege.
+        information = 0x1F7
+        read_security(str(path), information, None, 0, ctypes.byref(needed))
+        if not 0 < needed.value <= 65536:
+            raise ctypes.WinError(ctypes.get_last_error())
+        descriptor = ctypes.create_string_buffer(needed.value)
+        if not read_security(str(path), information, descriptor, needed.value, ctypes.byref(needed)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return descriptor.raw[:needed.value]
+
+    def _write_manifest(self, manifest: Dict[str, Any]) -> None:
+        """Publish complete YAML without changing access or a followed symlink."""
+        import yaml
+
+        content = yaml.dump(manifest, default_flow_style=False)
+        target = self.manifest_path.resolve(strict=True)
+        temporary_path = None
+        try:
+            # This is a real write-permission/ACL check, without O_TRUNC. A
+            # writable directory must not bypass a read-only existing file.
+            with target.open("r+b") as original:
+                source = os.fstat(original.fileno())
+                if not stat.S_ISREG(source.st_mode) or source.st_nlink != 1:
+                    raise OSError(errno.EMLINK, "Atomic Warden writes require a single-link regular manifest", str(target))
+                source_acl = self._darwin_acl(original.fileno()) if sys.platform == "darwin" else None
+                access_descriptor = self._windows_access_descriptor(target) if os.name == "nt" else None
+                fd, name = tempfile.mkstemp(prefix=f".{target.name}.", dir=str(target.parent))
+                temporary_path = Path(name)
+                with os.fdopen(fd, "w") as temporary:
+                    created = os.fstat(temporary.fileno())
+                    if (source.st_uid, source.st_gid) != (created.st_uid, created.st_gid):
+                        os.chown(temporary_path, source.st_uid, source.st_gid)
+                    attributes = None
+                    if hasattr(os, "listxattr"):
+                        attributes = {key: os.getxattr(original.fileno(), key)
+                                      for key in os.listxattr(original.fileno())}
+                    if sys.platform == "darwin":
+                        # copyfile.h: COPYFILE_ACL | COPYFILE_XATTR. Keep this
+                        # native operation narrow; mode/owner are checked below.
+                        import ctypes
+
+                        copy_metadata = ctypes.CDLL(None, use_errno=True).fcopyfile
+                        copy_metadata.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
+                        copy_metadata.restype = ctypes.c_int
+                        if copy_metadata(original.fileno(), temporary.fileno(), None, 5) != 0:
+                            error = ctypes.get_errno()
+                            raise OSError(error, os.strerror(error), str(target))
+                    elif attributes is not None:
+                        for key in set(os.listxattr(temporary.fileno())) - set(attributes):
+                            os.removexattr(temporary.fileno(), key)
+                        for key, value in attributes.items():
+                            os.setxattr(temporary.fileno(), key, value)
+                    elif os.name != "nt":
+                        raise OSError(errno.ENOTSUP, "Cannot preserve manifest access metadata", str(target))
+                    os.chmod(temporary_path, stat.S_IMODE(source.st_mode))
+                    def verify_access():
+                        live = os.fstat(original.fileno())
+                        named = target.stat()
+                        if (named.st_dev, named.st_ino) != (source.st_dev, source.st_ino):
+                            raise OSError(errno.ESTALE, "Manifest target changed before publication", str(target))
+                        if (live.st_mode, live.st_uid, live.st_gid, live.st_nlink,
+                            getattr(live, "st_flags", 0), getattr(live, "st_file_attributes", 0)) != (
+                            source.st_mode, source.st_uid, source.st_gid, source.st_nlink,
+                            getattr(source, "st_flags", 0), getattr(source, "st_file_attributes", 0)):
+                            raise OSError(errno.ESTALE, "Manifest access changed before publication", str(target))
+                        if source_acl is not None and source_acl != self._darwin_acl(original.fileno()):
+                            raise OSError(errno.ESTALE, "Manifest ACL changed before publication", str(target))
+                        if attributes is not None and attributes != {
+                            key: os.getxattr(original.fileno(), key) for key in os.listxattr(original.fileno())
+                        }:
+                            raise OSError(errno.ESTALE, "Manifest attributes changed before publication", str(target))
+                        if access_descriptor is not None and access_descriptor != self._windows_access_descriptor(target):
+                            raise OSError(errno.ESTALE, "Manifest access descriptor changed before publication", str(target))
+                        current = os.fstat(temporary.fileno())
+                        if (stat.S_IMODE(current.st_mode), current.st_uid, current.st_gid,
+                            getattr(current, "st_flags", 0), getattr(current, "st_file_attributes", 0)) != (
+                            stat.S_IMODE(source.st_mode), source.st_uid, source.st_gid,
+                            getattr(source, "st_flags", 0), getattr(source, "st_file_attributes", 0)):
+                            raise OSError(errno.ENOTSUP, "Cannot preserve manifest owner/mode/flags", str(target))
+                        if attributes is not None and attributes != {
+                            key: os.getxattr(temporary.fileno(), key) for key in os.listxattr(temporary.fileno())
+                        }:
+                            raise OSError(errno.ENOTSUP, "Cannot preserve manifest extended attributes", str(target))
+                        if source_acl is not None and source_acl != self._darwin_acl(temporary.fileno()):
+                            raise OSError(errno.ENOTSUP, "Cannot preserve manifest ACL", str(target))
+                        if access_descriptor is not None and access_descriptor != self._windows_access_descriptor(temporary_path):
+                            raise OSError(errno.ENOTSUP, "Cannot preserve custom manifest access descriptor", str(target))
+
+                    # Establish equivalent access while the temporary file is
+                    # empty, before writing any manifest content into it.
+                    verify_access()
+                    temporary.write(content)
+                    temporary.flush()
+                    verify_access()
+                    os.fsync(temporary.fileno())
+                    verify_access()
+            os.replace(temporary_path, target)
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
 
     def calculate_checksum(self, file_path: str) -> str:
         """Calculates the SHA-256 hash of a file."""
@@ -339,8 +484,7 @@ class Warden:
         manifest.pop("integrity_unlock", None)
         manifest["last_locked"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        with open(self.manifest_path, "w") as f:
-            yaml.dump(manifest, f, default_flow_style=False)
+        self._write_manifest(manifest)
         
         print(f"🔒 [WARDEN] Schema contracts locked via checksum integrity.")
         return True
@@ -385,8 +529,7 @@ class Warden:
             if "last_locked" in manifest:
                 del manifest["last_locked"]
 
-            with open(self.manifest_path, "w") as f:
-                yaml.dump(manifest, f, default_flow_style=False)
+            self._write_manifest(manifest)
             
             print(f"🔓 [WARDEN] Schema contracts UNLOCKED. The domain can now be modified.")
         else:

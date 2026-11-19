@@ -100,6 +100,29 @@ or `etg warden lock` when a governed schema or ontology change requires a new
 lock. Warden fingerprints every file in `schema_paths`; adding an authoritative
 schema requires a new lock before it can authorize alignments or state changes.
 
+Warden publishes lock/unlock manifests through a same-directory temporary file,
+flushes and fsyncs it, then replaces the resolved existing target. A concurrent
+reader sees the complete old or new YAML rather than a truncated intermediate
+document. The existing file must pass a non-truncating read/write open first:
+directory write permission does not bypass file-mode or ACL write denial.
+Fingerprint checks, explicit unlock requirements and fail-closed readers remain
+unchanged. This is read consistency, not multi-writer conflict resolution or a
+power-loss durability guarantee, and does not establish the cause of a historical
+runtime failure.
+
+Owner, mode, file flags and available extended attributes must be preserved.
+On macOS, the native `fcopyfile` ACL/extended-attribute operation must succeed;
+on Linux, extended attributes (including access ACLs) are copied and compared.
+The target inode and captured access metadata are rechecked after writing and
+fsync, so detected access tightening or target replacement stops publication.
+On Windows, the existing and temporary owner/group/access descriptors must match;
+unsupported custom access constraints fail before publication. Windows audit
+SACL copying is not claimed by this check. Metadata-copy, serialization and
+pre-publication fsync failures leave the original manifest intact. Existing
+manifest symlinks keep their link and update the resolved target. Hard-linked
+manifests are refused unchanged, since replacing just one name would split the
+shared inode. Metadata that cannot be preserved is rejected rather than stripped.
+
 `governed_artifact_globs` is optional. It selects project files that delivery
 snapshots must anchor and compare in both directions, including newly added
 files. Without it, Entigram uses `git ls-files` to include tracked and untracked
