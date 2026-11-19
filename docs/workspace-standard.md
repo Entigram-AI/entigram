@@ -200,13 +200,28 @@ an enforced agent can make governed writes:
 etg task prepare --id <task-id> --description-file <path>
 ```
 
-Task preparation runs hydration, records the task description hash, base
+Task preparation defers full hydration and records the task description hash, base
 revision, governance fingerprints, repository file inventory, referenced files,
 dependency manifests, and schema entities under
 `.etg/lifecycle/task-context.json`. The inventory is read-only and deterministic;
 model-generated interpretations are proposals and are never trusted as schema
 or authorization. Existing workspaces remain compatible until they opt into
 `governance.require_task_prepare: true`.
+
+Git-backed inventories retain the paths returned by Git, including tracked
+files under otherwise ignored directories. When that inventory is unavailable
+or empty, the filesystem fallback prunes `.git`, `.etg`, `.venv`, `venv`,
+`node_modules`, `__pycache__`, `build`, and `dist` before descent. It also skips
+directories with a nested `.git` marker or `.etg/entigram.yaml` manifest and
+does not follow directory symlinks. Nested workspace contents therefore do not
+become part of the parent's fallback task inventory.
+
+Repeated `--scope` values describe the supplied task scope; they do not filter
+the repository inventory or grant write authority. Preparation removes exact
+leading `./` prefixes and preserves dotfiles such as `.etg/schedules/intake.yaml`.
+Absolute paths and `..` components remain visible as supplied rather than being
+rewritten into apparently relative paths. Workspace policy and action admission
+remain responsible for authorizing consequential effects.
 
 Before sending the task to an LLM, an integration can render the compact,
 deterministic expectation envelope:
