@@ -17,6 +17,16 @@
 * harden SQLite ledger concurrency with WAL mode and busy timeouts
 * close warning-producing registry, broker, router, and hydration resources
 
+## [2.26.4](https://github.com/Entigram-AI/entigram/compare/v2.26.3...v2.26.4) (2026-11-19)
+
+### Bug Fixes
+
+* prune task inventory and preserve dotfile scope ([1c68e2b](https://github.com/Entigram-AI/entigram/commit/1c68e2b8aba232ddc43c99e215908234b8428fea))
+
+### Miscellaneous
+
+* Merge pull request #124 from Entigram-AI/fix/task-context-inventory-and-dot-scopes ([4c09d9b](https://github.com/Entigram-AI/entigram/commit/4c09d9b4c7cecfd3c4779ec13188cba542481657))
+
 ## [2.26.3](https://github.com/Entigram-AI/entigram/compare/v2.26.2...v2.26.3) (2026-11-18)
 
 ### Bug Fixes
