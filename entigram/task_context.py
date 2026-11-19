@@ -65,10 +65,21 @@ def _tracked_paths(root: Path) -> list[str]:
     if paths:
         return sorted(paths)
     ignored = {".git", ".etg", ".venv", "venv", "node_modules", "__pycache__", "build", "dist"}
-    for path in root.rglob("*"):
-        if not path.is_file() or any(part in ignored for part in path.relative_to(root).parts):
-            continue
-        paths.add(path.relative_to(root).as_posix())
+    for directory, subdirectories, filenames in os.walk(root, topdown=True, followlinks=False):
+        parent = Path(directory)
+        # Prune before descending: filtering yielded files still traverses
+        # generated trees and repositories belonging to nested workspaces.
+        subdirectories[:] = [
+            name for name in subdirectories
+            if name not in ignored
+            and not (parent / name).is_symlink()
+            and not (parent / name / ".git").exists()
+            and not (parent / name / ".etg" / "entigram.yaml").is_file()
+        ]
+        for name in filenames:
+            path = parent / name
+            if name not in ignored and path.is_file():
+                paths.add(path.relative_to(root).as_posix())
     return sorted(paths)
 
 
@@ -303,7 +314,16 @@ def prepare_task(
         "reason": "Run `hydrate` explicitly to generate the full workspace vector.",
     }
     report("Recording deterministic task context")
-    scope_values = sorted({str(value).strip().lstrip("./") for value in (scope or []) if str(value).strip()})
+    scope_values: set[str] = set()
+    for value in scope or []:
+        relative = str(value).strip()
+        if not relative:
+            continue
+        # Scope is descriptive, not path admission. Preserve dots, absolute
+        # paths and traversal components rather than disguising them.
+        while relative.startswith("./"):
+            relative = relative[2:]
+        scope_values.add(relative)
     dependency_files = [path for path in paths if path in _INVENTORY_FILES or Path(path).name in _INVENTORY_FILES]
     context: dict[str, Any] = {
         "version": TASK_CONTEXT_VERSION,
@@ -319,7 +339,7 @@ def prepare_task(
         "file_count": len(paths),
         "files": paths,
         "referenced_files": _referenced_paths(description, paths),
-        "scope": scope_values,
+        "scope": sorted(scope_values),
         "dependency_files": [_file_record(root, path) for path in dependency_files],
         "schema_entities": _schema_entities(root),
         "hydration": hydration,

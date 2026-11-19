@@ -1,6 +1,7 @@
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -11,6 +12,7 @@ from unittest.mock import patch
 from entigram.antigravity_hooks import handle_antigravity_hook
 from entigram.injector import inject_entigram_manifest
 from entigram.task_context import (
+    _tracked_paths,
     build_expectation_envelope,
     load_task_context,
     prepare_task,
@@ -94,6 +96,31 @@ class TestTaskContext(unittest.TestCase):
         policy.write_text(policy.read_text() + "\nchanged\n")
         self.assertEqual(task_context_status(self.root)["status"], "stale")
 
+    def test_scope_preserves_dotfiles_and_removes_only_dot_slash_prefixes(self):
+        result = prepare_task(
+            self.root,
+            task_id="dotfile-scope",
+            description="Update the declared configuration files.",
+            scope=[" .etg/schedules/intake.yaml ", "./.etg/schedules/intake.yaml",
+                   "././.github/workflows/check.yml", "src/work.py"],
+        )
+        expected = [".etg/schedules/intake.yaml", ".github/workflows/check.yml", "src/work.py"]
+        self.assertEqual(result["task"]["scope"], expected)
+        self.assertEqual(result["expectation"]["scope"], expected)
+        self.assertEqual(load_task_context(self.root)["scope"], expected)
+
+    def test_descriptive_scope_does_not_disguise_escape_or_absolute_paths(self):
+        supplied = ["../outside.py", "../../other.py", "/absolute/work.py",
+                    "src/../work.py", "..hidden.py"]
+        result = prepare_task(
+            self.root,
+            task_id="descriptive-scope",
+            description="Record supplied scope without granting write authority.",
+            scope=supplied + ["./../outside.py"],
+        )
+        self.assertEqual(result["task"]["scope"], sorted(supplied))
+        self.assertEqual(result["expectation"]["trust_boundary"]["writes"], "subject_to_workspace_policy")
+
     def test_cli_task_prepare_emits_json(self):
         from entigram.cli_runner.etg_cli import main
 
@@ -165,6 +192,90 @@ class TestTaskContext(unittest.TestCase):
         self.assertTrue(envelope["discovery"]["allowed"])
         self.assertIn("write_scope_not_explicitly_declared", envelope["unknowns"])
         self.assertIn("no_prompt_file_references_detected", envelope["unknowns"])
+
+
+class TestTaskInventory(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+
+    def write(self, relative, text="source\n"):
+        path = self.root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+        return path
+
+    def scan_without_descending(self, blocked):
+        original_scandir = os.scandir
+        visited = []
+
+        def guarded_scandir(path):
+            directory = Path(path)
+            self.assertFalse(any(directory == item or item in directory.parents for item in blocked),
+                             f"inventory descended into excluded subtree: {directory}")
+            visited.append(directory)
+            return original_scandir(path)
+
+        with patch("entigram.task_context._git", return_value=None), patch("os.scandir", guarded_scandir):
+            paths = _tracked_paths(self.root)
+        return paths, visited
+
+    def test_fallback_prunes_excluded_subtrees_before_reading_them(self):
+        ignored = [".git", ".etg", ".venv", "venv", "node_modules", "__pycache__", "build", "dist"]
+        blocked = [self.write(f"{name}/deep/package.json").parents[1] for name in ignored]
+        self.write("src/main.py")
+        self.write("src/build")
+        self.write(".env")
+        paths, visited = self.scan_without_descending(blocked)
+        self.assertEqual(paths, [".env", "src/main.py"])
+        self.assertEqual(set(visited), {self.root, self.root / "src"})
+
+    def test_fallback_prunes_nested_workspace_contents_at_each_boundary(self):
+        self.write("projects/initialized/.etg/entigram.yaml", "status: initialized\n")
+        self.write("projects/git-worktree/.git", "gitdir: /unused\n")
+        (self.root / "git-repository" / ".git").mkdir(parents=True)
+        blocked = [self.root / relative for relative in
+                   ["projects/initialized", "projects/git-worktree", "git-repository"]]
+        for directory in blocked:
+            self.write(f"{directory.relative_to(self.root)}/src/package.json")
+        self.write("projects/shared/main.py")
+        self.write("root.py")
+        paths, visited = self.scan_without_descending(blocked)
+        self.assertEqual(paths, ["projects/shared/main.py", "root.py"])
+        self.assertEqual(set(visited), {self.root, self.root / "projects", self.root / "projects/shared"})
+
+    def test_fallback_does_not_follow_directory_symlinks(self):
+        with tempfile.TemporaryDirectory() as external:
+            outside = Path(external)
+            (outside / "package.json").write_text("{}")
+            linked_directory = self.root / "linked-directory"
+            linked_directory.symlink_to(outside, target_is_directory=True)
+            (self.root / "linked-file.json").symlink_to(outside / "package.json")
+            original_stat = os.stat
+
+            def guarded_stat(path, *args, **kwargs):
+                self.assertNotIn(linked_directory, Path(path).parents,
+                                 f"inventory probed through directory symlink: {path}")
+                return original_stat(path, *args, **kwargs)
+
+            with patch("os.stat", guarded_stat):
+                paths, _ = self.scan_without_descending([linked_directory, outside])
+        self.assertEqual(paths, ["linked-file.json"])
+
+    @unittest.skipUnless(shutil.which("git"), "Git is required for the inventory compatibility test")
+    def test_git_inventory_keeps_tracked_exclusions_and_untracked_files(self):
+        subprocess.run(["git", "init", "--quiet", str(self.root)], check=True, capture_output=True)
+        self.write(".gitignore", "node_modules/\n")
+        self.write("node_modules/package.json", "{}")
+        self.write("node_modules/ignored.js")
+        self.write(".etg/declared.yaml")
+        self.write("untracked.py")
+        subprocess.run(["git", "-C", str(self.root), "add", "-f", "node_modules/package.json", ".etg/declared.yaml"],
+                       check=True, capture_output=True)
+        with patch("os.scandir", side_effect=AssertionError("successful Git inventory must not walk the tree")):
+            paths = _tracked_paths(self.root)
+        self.assertEqual(paths, [".etg/declared.yaml", ".gitignore", "node_modules/package.json", "untracked.py"])
 
 
 if __name__ == "__main__":
