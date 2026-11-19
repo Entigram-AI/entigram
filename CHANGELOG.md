@@ -17,6 +17,16 @@
 * harden SQLite ledger concurrency with WAL mode and busy timeouts
 * close warning-producing registry, broker, router, and hydration resources
 
+## [2.26.5](https://github.com/Entigram-AI/entigram/compare/v2.26.4...v2.26.5) (2026-11-19)
+
+### Bug Fixes
+
+* publish Warden manifests atomically ([99d8cdb](https://github.com/Entigram-AI/entigram/commit/99d8cdbaf71b58796050924774c6d082e5998849))
+
+### Miscellaneous
+
+* Merge pull request #125 from Entigram-AI/fix/atomic-warden-manifest ([154197a](https://github.com/Entigram-AI/entigram/commit/154197a84ef9e120ea6ad5050692efdf988511f7))
+
 ## [2.26.4](https://github.com/Entigram-AI/entigram/compare/v2.26.3...v2.26.4) (2026-11-19)
 
 ### Bug Fixes
