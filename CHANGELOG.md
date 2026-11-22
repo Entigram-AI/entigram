@@ -17,6 +17,12 @@
 * harden SQLite ledger concurrency with WAL mode and busy timeouts
 * close warning-producing registry, broker, router, and hydration resources
 
+## [2.26.6](https://github.com/Entigram-AI/entigram/compare/v2.26.5...v2.26.6) (2026-11-22)
+
+### Miscellaneous
+
+* Require completed workspace-bound Antigravity readiness ([#126](https://github.com/Entigram-AI/entigram/issues/126)) ([fa205b7](https://github.com/Entigram-AI/entigram/commit/fa205b76949e88995497caa4a264ff67bbf20f37))
+
 ## [2.26.5](https://github.com/Entigram-AI/entigram/compare/v2.26.4...v2.26.5) (2026-11-19)
 
 ### Bug Fixes
