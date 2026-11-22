@@ -46,6 +46,62 @@ class TestAntigravityHooks(unittest.TestCase):
             },
         }
 
+    def test_interrupted_initialization_is_not_ready_and_can_refresh(self):
+        payload = {"conversationId": "interrupted-init"}
+        with patch("entigram.antigravity_hooks.active_change_status", side_effect=OSError("observation unavailable")):
+            result = handle_antigravity_hook(self.root, "pre-invocation", payload)
+        self.assertIn("observation unavailable", str(result))
+        self.assertFalse(self._session(payload["conversationId"])["ready"])
+        self.assertEqual(handle_antigravity_hook(self.root, "pre-tool-use", self._write_payload(payload["conversationId"]))["decision"], "deny")
+        result = handle_antigravity_hook(self.root, "pre-invocation", payload)
+        self.assertTrue(result["injectSteps"])
+        session = self._session(payload["conversationId"])
+        self.assertTrue(session["ready"])
+        self.assertEqual(session["readiness_version"], 1)
+        self.assertEqual(session["workspace_path"], str(self.root.resolve()))
+
+    def test_policy_refresh_invalidates_ready_before_observation(self):
+        payload = {"conversationId": "refresh-interrupted"}
+        handle_antigravity_hook(self.root, "pre-invocation", payload)
+        policy = self.root / ".etg" / "agent_policy.md"
+        policy.write_text(policy.read_text() + "\nReview the changed policy.\n")
+        def interrupted(*args, **kwargs):
+            self.assertFalse(self._session(payload["conversationId"])["ready"])
+            raise OSError("refresh interrupted")
+        with patch("entigram.antigravity_hooks.active_change_status", side_effect=interrupted):
+            handle_antigravity_hook(self.root, "pre-invocation", payload)
+        self.assertFalse(self._session(payload["conversationId"])["ready"])
+
+    def test_legacy_session_cannot_skip_readiness_or_backfill_original_observation(self):
+        payload = {"conversationId": "legacy-incomplete-init"}
+        handle_antigravity_hook(self.root, "pre-invocation", payload)
+        path = self.root / ANTIGRAVITY_SESSION_PATH
+        document = json.loads(path.read_text())
+        record = document["sessions"][payload["conversationId"]]
+        for key in ("ready", "readiness_version", "workspace_path", "start_filesystem_observation", "start_changed_files"):
+            record.pop(key, None)
+        path.write_text(json.dumps(document))
+        result = handle_antigravity_hook(self.root, "pre-invocation", payload)
+        self.assertTrue(result["injectSteps"])
+        refreshed = self._session(payload["conversationId"])
+        self.assertTrue(refreshed["ready"])
+        self.assertNotIn("start_filesystem_observation", refreshed)
+
+    def test_copied_or_stale_ready_context_does_not_allow_writes(self):
+        payload = {"conversationId": "bound-ready-context"}
+        handle_antigravity_hook(self.root, "pre-invocation", payload)
+        path = self.root / ANTIGRAVITY_SESSION_PATH
+        document = json.loads(path.read_text())
+        document["sessions"][payload["conversationId"]]["workspace_path"] = str(self.root / "another-root")
+        path.write_text(json.dumps(document))
+        self.assertEqual(handle_antigravity_hook(self.root, "pre-tool-use", self._write_payload(payload["conversationId"]))["decision"], "deny")
+        handle_antigravity_hook(self.root, "pre-invocation", payload)
+        policy = self.root / ".etg" / "agent_policy.md"
+        policy.write_text(policy.read_text() + "\nChanged after readiness.\n")
+        result = handle_antigravity_hook(self.root, "pre-tool-use", self._write_payload(payload["conversationId"]))
+        self.assertEqual(result["decision"], "deny")
+        self.assertIn("context changed", result["reason"])
+
     def test_init_installs_namespaced_hooks_and_preserves_user_hooks(self):
         hook_path = self.root / ".agents" / "hooks.json"
         hooks = json.loads(hook_path.read_text())

@@ -91,6 +91,19 @@ configuration. They use their host's lifecycle events to:
 4. request one final handoff when an agent attempts to stop with changes since
    the last accepted check-in
 
+Antigravity readiness is published only after initialization observations and
+policy/schema context construction finish. Session records bind readiness version
+1 to the canonical workspace, runtime and governance fingerprint. An interrupted
+initialization remains unready evidence; it cannot be reused as a cached gate or
+authorize governed writes. A later genuine invocation refreshes it. Legacy
+records are refreshed without inventing an original filesystem observation.
+
+Write admission also rejects ready records copied from another workspace or
+whose policy/schema fingerprint has changed. Read-only inspection and existing
+lifecycle recovery commands retain their normal access. Native clients must wait
+for completed initialization before submitting business instructions; session-ID
+existence alone is not readiness.
+
 The Git guard runs `etg change-status --enforce` before a commit in a local Git
 repository. It covers any agent, editor, or script that reaches the normal Git
 commit path. The adapters and guard rescan workspace state at admission or

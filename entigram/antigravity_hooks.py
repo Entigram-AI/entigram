@@ -158,6 +158,14 @@ def _hook_definition(root: Path) -> Dict[str, Any]:
     }
 
 
+def _session_ready(root: Path, session: Optional[Dict[str, Any]], runtime: str) -> bool:
+    return bool(session is not None and session.get("ready") is True
+                and type(session.get("readiness_version")) is int
+                and session["readiness_version"] == 1
+                and session.get("workspace_path") == str(root)
+                and session.get("runtime") == runtime)
+
+
 def _pre_invocation(
     root: Path,
     payload: Dict[str, Any],
@@ -167,11 +175,10 @@ def _pre_invocation(
     conversation_id = _conversation_id(payload)
     manifest = load_manifest(root)
     state = workspace_state(root)
-    if state == "active":
-        ensure_active_change_baseline(root)
     fingerprint = _session_fingerprint(root, manifest, state)
     session = _session_record(root, conversation_id)
-    if session is not None and session.get("fingerprint") == fingerprint:
+    if (_session_ready(root, session, runtime)
+            and session.get("fingerprint") == fingerprint):
         return {"injectSteps": []}
 
     record = {
@@ -181,6 +188,9 @@ def _pre_invocation(
         "writes_observed": 0,
         "stop_reminded": False,
         "runtime": runtime,
+        "ready": False,
+        "readiness_version": 1,
+        "workspace_path": str(root),
     }
     # Context refreshes and resumed conversations retain their original
     # observation. In particular, never backfill a legacy session after writes.
@@ -189,10 +199,14 @@ def _pre_invocation(
             if key in session:
                 record[key] = session[key]
     _update_session(root, conversation_id, record)
+    if state == "active":
+        ensure_active_change_baseline(root)
 
     if state == "paused":
         status = paused_change_status(root)
         budget = status["budget"]
+        record["ready"] = True
+        _update_session(root, conversation_id, record)
         return {
             "injectSteps": [
                 {
@@ -210,7 +224,6 @@ def _pre_invocation(
     if session is None:
         record["start_filesystem_observation"] = check_in.get("filesystem_observation")
         record["start_changed_files"] = check_in["budget"]["changed_files"]
-        _update_session(root, conversation_id, record)
     schema_paths = [
         str((root / path).resolve())
         for path in manifest.get("schema_paths", ["schema.lds"])
@@ -264,6 +277,10 @@ def _pre_invocation(
             )
         }
     )
+    # Publish readiness only after observations and context construction succeed.
+    # An interrupted attempt remains evidence, never a reusable initialized gate.
+    record["ready"] = True
+    _update_session(root, conversation_id, record)
     return {"injectSteps": steps}
 
 
@@ -285,7 +302,7 @@ def _pre_tool_use(
 
     conversation_id = _conversation_id(payload)
     session = _session_record(root, conversation_id)
-    if session is None:
+    if not _session_ready(root, session, runtime):
         return {
             "decision": "deny",
             "reason": "Entigram session gate has not hydrated this workspace yet.",
@@ -293,6 +310,9 @@ def _pre_tool_use(
 
     manifest = load_manifest(root)
     state = workspace_state(root)
+
+    if session.get("fingerprint") != _session_fingerprint(root, manifest, state):
+        return {"decision": "deny", "reason": "Entigram workspace context changed; refresh this session before governed writes."}
 
     if state == "paused":
         status = paused_change_status(root)
