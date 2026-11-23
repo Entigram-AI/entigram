@@ -17,6 +17,16 @@
 * harden SQLite ledger concurrency with WAL mode and busy timeouts
 * close warning-producing registry, broker, router, and hydration resources
 
+## [2.26.7](https://github.com/Entigram-AI/entigram/compare/v2.26.6...v2.26.7) (2026-11-23)
+
+### Bug Fixes
+
+* honor governed exclusions in active workspace observations ([ea03e36](https://github.com/Entigram-AI/entigram/commit/ea03e36df715176a52ac8e005e7a2e7fa5f19640))
+
+### Miscellaneous
+
+* Merge pull request #127 from Entigram-AI/fix/active-observation-ignore-scope ([a6a3af9](https://github.com/Entigram-AI/entigram/commit/a6a3af90755296fc2304fdf7edfa9cd34aa8845d))
+
 ## [2.26.6](https://github.com/Entigram-AI/entigram/compare/v2.26.5...v2.26.6) (2026-11-22)
 
 ### Miscellaneous
