@@ -258,6 +258,51 @@ class TestWorkspaceLifecycle(unittest.TestCase):
         self.assertEqual(exit_code, 2)
         self.assertIn("ACTIVE_CHANGE_CHECK_IN_REQUIRED", output)
 
+    def test_active_observation_uses_exact_runtime_exclusions_without_hiding_source(self):
+        (self.root / ".etgignore").write_text(".runtime/tasks.db*\n.runtime/events.jsonl\n")
+        runtime = self.root / ".runtime"
+        runtime.mkdir()
+        (runtime / "tasks.db").write_text("original database")
+        establish_active_change_baseline(self.root, reason="runtime exclusions")
+        before = active_change_status(self.root)
+        (runtime / "tasks.db").write_text("updated database")
+        (runtime / "tasks.db-wal").write_text("journal")
+        (runtime / "events.jsonl").write_text("event\n")
+        self.assertEqual(active_change_status(self.root), before)
+        (runtime / "schedule-definition.json").write_text("control plane")
+        (self.root / "source.py").write_text("source change")
+        status = active_change_status(self.root)
+        self.assertEqual(status["changes"]["created"], [".runtime/schedule-definition.json", "source.py"])
+
+    def test_ignore_policy_change_filters_legacy_baseline_but_counts_itself(self):
+        runtime = self.root / "runtime.log"
+        runtime.write_text("old observed state")
+        establish_active_change_baseline(self.root, reason="legacy baseline")
+        baseline = (self.root / lifecycle_module.ACTIVE_CHANGE_BASELINE_PATH).read_bytes()
+        (self.root / ".etgignore").write_text("runtime.log\n")
+        runtime.unlink()
+        status = active_change_status(self.root)
+        self.assertEqual(status["changes"], {"created": [".etgignore"], "modified": [], "deleted": []})
+        self.assertEqual((self.root / lifecycle_module.ACTIVE_CHANGE_BASELINE_PATH).read_bytes(), baseline)
+
+    def test_broad_ignore_cannot_hide_governance_inputs_or_nested_workspace_proxy(self):
+        child = self.root / "child"
+        self.assertTrue(inject_entigram_manifest(str(child), ["Entigram Schemas"], "Codex"))
+        hooks = self.root / ".agents" / "hooks.json"
+        hooks.parent.mkdir(exist_ok=True)
+        hooks.write_text("{}")
+        ignore = self.root / ".etgignore"
+        ignore.write_text("*\n")
+        establish_active_change_baseline(self.root, reason="broad exclusion")
+        (self.root / "hidden-runtime.log").write_text("ignored")
+        hooks.write_text('{"changed": true}')
+        (self.root / "schema.lds").write_text(SCHEMA + "\n")
+        ignore.write_text("*\n# policy changed\n")
+        proxy = child / ".etg" / "entigram.yaml"
+        proxy.write_text(proxy.read_text() + "\n")
+        status = active_change_status(self.root)
+        self.assertEqual(status["changes"]["modified"], [".agents/hooks.json", ".etgignore", "child/.etg/entigram.yaml", "schema.lds"])
+
     def test_active_filesystem_observation_is_stable_without_resetting_dirty_baseline(self):
         establish_active_change_baseline(self.root, reason="accepted before session")
         baseline_path = self.root / lifecycle_module.ACTIVE_CHANGE_BASELINE_PATH
