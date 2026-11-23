@@ -11,7 +11,7 @@ import tarfile
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 import yaml
 
@@ -710,8 +710,12 @@ def active_change_status(target_dir: Path) -> Dict[str, Any]:
         )
 
     record = ensure_active_change_baseline(root)
-    baseline = record["baseline"]
-    current = _workspace_metadata_snapshot(root)
+    policy = _active_observation_policy(root)
+    # Older baselines may contain paths now excluded by the governed ignore file.
+    # Compare both sides under the same policy, while counting the policy edit itself.
+    baseline = {path: value for path, value in record["baseline"].items()
+                if _active_observation_includes(path, policy)}
+    current = _workspace_metadata_snapshot(root, policy=policy)
     created = sorted(set(current) - set(baseline))
     deleted = sorted(set(baseline) - set(current))
     modified = sorted(
@@ -1106,8 +1110,37 @@ def _workspace_snapshot(
     return snapshot
 
 
-def _workspace_metadata_snapshot(root: Path) -> Dict[str, List[int]]:
+def _active_observation_policy(root: Path) -> Tuple[List[str], Set[str]]:
+    from .workspace_contract import load_etgignore_patterns
+
+    manifest = load_manifest(root)
+    protected = set(INSTRUCTION_FILES) | {
+        ".etgignore", ".agents/hooks.json", ".codex/hooks.json", ".claude/settings.json",
+    }
+    for path in manifest.get("schema_paths", ["schema.lds"]):
+        try:
+            protected.add((root / str(path)).resolve().relative_to(root).as_posix())
+        except ValueError:
+            # Out-of-workspace schemas are handled by manifest validation; they
+            # are not part of this directory observation.
+            continue
+    return load_etgignore_patterns(root), protected
+
+
+def _active_observation_includes(relative: str, policy: Tuple[List[str], Set[str]]) -> bool:
+    from .workspace_contract import _matches_ignore_pattern
+
+    patterns, protected = policy
+    # Nested workspace manifests remain visible as ownership proxies.
+    if relative in protected or relative.endswith("/.etg/entigram.yaml"):
+        return True
+    return not any(_matches_ignore_pattern(Path(relative), pattern) for pattern in patterns)
+
+
+def _workspace_metadata_snapshot(root: Path, *, policy=None) -> Dict[str, List[int]]:
     """Return lightweight filesystem fingerprints without retaining file content."""
+    if policy is None:
+        policy = _active_observation_policy(root)
     snapshot: Dict[str, List[int]] = {}
     for directory, subdirectories, filenames in os.walk(root, followlinks=False):
         parent = Path(directory)
@@ -1131,8 +1164,11 @@ def _workspace_metadata_snapshot(root: Path) -> Dict[str, List[int]]:
             path = parent / filename
             if path.is_symlink() or not path.is_file():
                 continue
+            relative = path.relative_to(root).as_posix()
+            if not _active_observation_includes(relative, policy):
+                continue
             stat = path.stat()
-            snapshot[path.relative_to(root).as_posix()] = [
+            snapshot[relative] = [
                 int(stat.st_size),
                 int(stat.st_mtime_ns),
             ]

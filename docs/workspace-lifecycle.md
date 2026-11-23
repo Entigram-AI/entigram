@@ -112,6 +112,16 @@ ambient filesystem surveillance and still counts changes made outside an agent's
 own tool calls. Host-level filesystem controls remain necessary for a hard
 guarantee against a process that bypasses both native hooks and Git.
 
+Active filesystem observations also honor root `.etgignore` patterns, using the
+same matching rules as delivery artifact selection. This lets a workspace exclude
+generated service journals without exempting its source or schedule definitions.
+Prefer exact runtime-file patterns. `.etgignore` itself, declared schemas, native
+hook configuration, agent instruction files and nested workspace manifest proxies
+remain observed even under broad patterns. Changing an exclusion is a policy
+change, not a baseline reset: it remains visible until a genuine broker handoff.
+Legacy baseline entries are compared under the current exclusions to avoid false
+deletion reports. Full content snapshots for pause/restore remain unchanged.
+
 To install or inspect adapters in an existing workspace, run:
 
 ```bash

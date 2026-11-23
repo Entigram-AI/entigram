@@ -127,6 +127,29 @@ class TestAntigravityHooks(unittest.TestCase):
             {"team-review": {"Stop": [{"type": "command", "command": "review"}]}},
         )
 
+    def test_ignore_policy_change_invalidates_ready_context(self):
+        payload = {"conversationId": "changed-ignore-policy"}
+        prepare_task(self.root, task_id="test-task", description="Implement work.py")
+        handle_antigravity_hook(self.root, "pre-invocation", payload)
+        (self.root / ".etgignore").write_text("runtime.log\n")
+        result = handle_antigravity_hook(self.root, "pre-tool-use", self._write_payload(payload["conversationId"]))
+        self.assertEqual(result["decision"], "deny")
+        self.assertIn("context changed", result["reason"])
+        handle_antigravity_hook(self.root, "pre-invocation", payload)
+        self.assertEqual(handle_antigravity_hook(self.root, "pre-tool-use", self._write_payload(payload["conversationId"]))["decision"], "allow")
+
+    def test_runtime_journal_drift_does_not_request_stop_handoff_but_source_edit_does(self):
+        (self.root / ".etgignore").write_text("runtime.log\n")
+        establish_active_change_baseline(self.root, reason="accepted runtime exclusion")
+        payload = {"conversationId": "runtime-only-session"}
+        handle_antigravity_hook(self.root, "pre-invocation", payload)
+        (self.root / "runtime.log").write_text("background service activity")
+        result = handle_antigravity_hook(self.root, "stop", payload)
+        self.assertNotIn("broker handoff", str(result))
+        (self.root / "source.py").write_text("unaccepted source edit")
+        result = handle_antigravity_hook(self.root, "stop", payload)
+        self.assertIn("broker handoff", str(result))
+
     def test_pre_invocation_loads_context_and_active_budget_blocks_next_write(self):
         write = self._write_payload()
         blocked = handle_antigravity_hook(self.root, "pre-tool-use", write)

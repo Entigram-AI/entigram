@@ -615,6 +615,7 @@ def _session_fingerprint(
         "workspace_state": state,
         "manifest_sha256": _manifest_semantic_digest(root / ".etg" / "entigram.yaml"),
         "policy_sha256": _file_digest(root / ".etg" / "agent_policy.md"),
+        "observation_ignore_sha256": _file_digest(root / ".etgignore"),
         "schemas": {
             str(path): _file_digest(root / str(path))
             for path in schema_paths
