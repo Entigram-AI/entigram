@@ -17,6 +17,16 @@
 * harden SQLite ledger concurrency with WAL mode and busy timeouts
 * close warning-producing registry, broker, router, and hydration resources
 
+## [2.26.8](https://github.com/Entigram-AI/entigram/compare/v2.26.7...v2.26.8) (2026-11-24)
+
+### Documentation
+
+* lead with shared workspace context and clear rules ([72e16c6](https://github.com/Entigram-AI/entigram/commit/72e16c65c12162b05c00721a73100cdc6b4adf39))
+
+### Miscellaneous
+
+* Merge pull request #128 from Entigram-AI/docs/plain-language-positioning ([c7d7630](https://github.com/Entigram-AI/entigram/commit/c7d7630a2d433f25389c8d6e5eddf6572a998171))
+
 ## [2.26.7](https://github.com/Entigram-AI/entigram/compare/v2.26.6...v2.26.7) (2026-11-23)
 
 ### Bug Fixes
