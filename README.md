@@ -2,22 +2,22 @@
   <img src="docs/assets/entigram-logo.svg" alt="Entigram" width="520">
 </p>
 
-# Entigram: The Semantic Governance Layer for Enterprise Agents
+# Entigram: Shared Context and Rules for AI Agents
 
 <!-- mcp-name: io.github.entigram-ai/entigram -->
 
 [![M8ven Verified](https://m8ven.ai/badge/mcp/entigram-ai-entigram-2fzem6)](https://m8ven.ai/mcp/entigram-ai-entigram-2fzem6)
 <!-- m8ven-verify: edc3592a94786ccd5ba9725301dc70a5 -->
 
-**Entigram** is a schema-first control plane for enterprise agents that grounds agent behavior in verified domain models, approved semantic alignments, and auditable state transitions.
+**Entigram** gives participating AI agents shared workspace context, explicit domain models, and a record of accepted decisions.
 
-It provides the infrastructure to build **constrained autonomy**, ensuring that agents operate across fragmented enterprise systems without inventing fields, joins, entities, or state transitions.
+It is a schema-first control plane. Its governed CLI and MCP interfaces check proposed concepts, semantic alignments, and state transitions against the workspace's models and approvals.
 
-## 🎯 The Entigram Thesis
+## 🎯 Keep Agents Working from the Same Context
 
-Enterprise agent adoption fails when agents lack trustworthy domain context and enforceable schema boundaries. Entigram provides governed interfaces between participating agents and enterprise state.
+An agent picking up a workspace needs its current models, rules, and settled decisions. When several agents share the work, they also need a consistent way to check proposed changes and resolve conflicts.
 
-> **Defensible Grounding:** Entigram's governed CLI and MCP interfaces reject unsupported concepts and unverified mappings before they enter participating operational workflows.
+> **Governed Interfaces:** Entigram's CLI and MCP interfaces reject unsupported concepts and unverified mappings before accepting them as operational facts.
 
 ## 🛠️ Key Capabilities
 
@@ -421,4 +421,4 @@ branding, or hosted-service marks is governed separately by
 [`TRADEMARKS.md`](TRADEMARKS.md).
 
 ---
-*Entigram: Grounding agentic autonomy in enterprise reality.*
+*Entigram: Shared context and clear rules for agent workspaces.*
